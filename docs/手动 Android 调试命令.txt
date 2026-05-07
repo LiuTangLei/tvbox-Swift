@@ -1,0 +1,95 @@
+手动调试速查
+
+优先用脚本，不要再手打一长串命令。
+
+脚本位置：
+
+```text
+/Users/lei/code/tv/scripts/reset_tvbox_debug_env.sh
+/Users/lei/code/tv/scripts/reinstall_and_launch_tvbox_debug.sh
+```
+
+一、删除两个应用和本地缓存
+
+```bash
+cd /Users/lei/code/tv
+chmod +x scripts/reset_tvbox_debug_env.sh scripts/reinstall_and_launch_tvbox_debug.sh
+./scripts/reset_tvbox_debug_env.sh
+```
+
+只看将要执行什么，不真正删除：
+
+```bash
+./scripts/reset_tvbox_debug_env.sh --dry-run
+```
+
+这个脚本会处理：
+
+- Android emulator 里的 `com.fongmi.android.tv`
+- Android 外部存储目录 `Android/data|media|obb/com.fongmi.android.tv`
+- macOS Debug app `/private/tmp/tvbox-dd/Build/Products/Debug/TVBox.app`
+- 可选安装版 `/Applications/TVBox.app`
+- macOS 偏好、WebKit、Caches、HTTPStorages、Saved Application State、Containers
+
+二、全新安装并直接跑起来
+
+```bash
+cd /Users/lei/code/tv
+./scripts/reinstall_and_launch_tvbox_debug.sh
+```
+
+只预览命令：
+
+```bash
+./scripts/reinstall_and_launch_tvbox_debug.sh --dry-run
+```
+
+如果你已经手动删过，不想再跑 reset：
+
+```bash
+./scripts/reinstall_and_launch_tvbox_debug.sh --skip-reset
+```
+
+这个脚本会处理：
+
+- 重新构建 Android Debug APK
+- 重新构建 macOS Debug app
+- 安装 Android app 到 `emulator-5554`
+- 启动 Android app 并转发 `tcp:9978`
+- 检查 `http://127.0.0.1:9978/health`
+- 打开 macOS Debug app
+
+三、日志命令
+
+Android：
+
+```bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/Library/Android/sdk/platform-tools:$PATH"
+adb -s emulator-5554 logcat -c
+adb -s emulator-5554 logcat -v time | rg 'Bridge|BridgeQr|BridgeTokens|TV-player|NanoHTTPD|AndroidRuntime|Exception|NullPointer|Broken pipe|Socket|扫码|WindowManager'
+```
+
+macOS：
+
+```bash
+log stream --style compact --info --predicate 'process == "TVBox" OR subsystem == "com.tvbox.app"'
+```
+
+最近 10 分钟 macOS 日志：
+
+```bash
+log show --last 10m --style compact --predicate 'process == "TVBox" OR subsystem == "com.tvbox.app"' | tail -200
+```
+
+四、手工确认 Android app 在前台
+
+```bash
+adb -s emulator-5554 shell am start -W \
+  -a android.intent.action.MAIN \
+  -c android.intent.category.LEANBACK_LAUNCHER \
+  -n com.fongmi.android.tv/.ui.activity.HomeActivity
+
+adb -s emulator-5554 shell dumpsys window | rg 'mCurrentFocus|mFocusedApp'
+```
+
+如果这里不是 `com.fongmi.android.tv/.ui.activity.HomeActivity`，那次 QR / Jar 弹窗测试结果就不可靠。

@@ -5,11 +5,13 @@ struct SettingsView: View {
     enum ApiInputType {
         case vod
         case live
+        case bridge
         
         var title: String {
             switch self {
             case .vod: return "点播接口地址"
             case .live: return "直播接口地址"
+            case .bridge: return "Bridge Server 地址"
             }
         }
         
@@ -17,6 +19,7 @@ struct SettingsView: View {
             switch self {
             case .vod: return "请输入点播接口地址"
             case .live: return "请输入直播接口地址（可留空跟随点播）"
+            case .bridge: return "例如 http://192.168.1.10:9978"
             }
         }
     }
@@ -69,6 +72,33 @@ struct SettingsView: View {
                             } label: {
                                 SettingsRow(icon: "server.rack", title: "主页数据源", value: apiConfig.homeSourceBean?.name ?? "", action: nil)
                             }
+                        }
+                        Divider().background(Color.white.opacity(0.1))
+                        HStack(spacing: 16) {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                                .font(.system(size: 16))
+                                .foregroundColor(.orange)
+                                .frame(width: 24)
+                            Text("启用 Type=3 Bridge")
+                                .font(.body)
+                                .foregroundColor(.white.opacity(0.9))
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { viewModel.bridgeEnabled },
+                                set: { viewModel.setBridgeEnabled($0) }
+                            ))
+                            .labelsHidden()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        Divider().background(Color.white.opacity(0.1))
+                        SettingsRow(
+                            icon: "network",
+                            title: "Bridge Server",
+                            value: viewModel.bridgeServerUrl.isEmpty ? viewModel.bridgeStatusText : viewModel.bridgeStatusText
+                        ) {
+                            editingApiType = .bridge
+                            showApiInput = true
                         }
                     }
                     
@@ -315,14 +345,19 @@ struct SettingsView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task {
-                            await viewModel.loadConfig()
-                            if viewModel.configSuccess {
-                                appState.applyLoadedConfigState()
+                            if editingApiType == .bridge {
+                                await viewModel.saveBridgeSettingsAndTest()
                                 showApiInput = false
+                            } else {
+                                await viewModel.loadConfig()
+                                if viewModel.configSuccess {
+                                    appState.applyLoadedConfigState()
+                                    showApiInput = false
+                                }
                             }
                         }
                     } label: {
-                        if viewModel.isLoadingConfig {
+                        if viewModel.isLoadingConfig || viewModel.isTestingBridge {
                             ProgressView()
                         } else {
                             Text("确认")
@@ -330,7 +365,8 @@ struct SettingsView: View {
                     }
                     .disabled(
                         viewModel.isLoadingConfig
-                        || viewModel.vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || viewModel.isTestingBridge
+                        || (editingApiType != .bridge && viewModel.vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     )
                 }
             }
@@ -372,6 +408,8 @@ struct SettingsView: View {
             return $viewModel.vodApiUrl
         case .live:
             return $viewModel.liveApiUrl
+        case .bridge:
+            return $viewModel.bridgeServerUrl
         }
     }
     
@@ -427,22 +465,29 @@ struct SettingsView: View {
                                     HStack(spacing: 8) {
                                         Text(source.name)
                                             .font(.system(size: 16, weight: .semibold))
-                                            .foregroundColor(source.isSupportedInSwift ? .white : .white.opacity(0.5))
+                                            .foregroundColor(source.isPlayableWithBridge ? .white : .white.opacity(0.5))
                                         
                                         // 类型标签
                                         Text(source.typeDescription)
                                             .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(source.isSupportedInSwift ? .orange : .gray)
+                                            .foregroundColor(source.isPlayableWithBridge ? .orange : .gray)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 3)
                                             .background(
                                                 Capsule().fill(
-                                                    source.isSupportedInSwift ? Color.orange.opacity(0.2) : Color.gray.opacity(0.2)
+                                                    source.isPlayableWithBridge ? Color.orange.opacity(0.2) : Color.gray.opacity(0.2)
                                                 )
                                             )
                                         
-                                        if !source.isSupportedInSwift {
-                                            Text("暂不支持")
+                                        if source.requiresBridge && BridgeClient.shared.isEnabled {
+                                            Text("Bridge")
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundColor(.green.opacity(0.9))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 3)
+                                                .background(Capsule().fill(Color.green.opacity(0.15)))
+                                        } else if !source.isPlayableWithBridge {
+                                            Text(source.requiresBridge ? "需 Bridge" : "暂不支持")
                                                 .font(.system(size: 10, weight: .medium))
                                                 .foregroundColor(.red.opacity(0.8))
                                                 .padding(.horizontal, 6)

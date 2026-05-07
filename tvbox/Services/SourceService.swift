@@ -6,6 +6,7 @@ class SourceService {
     static let shared = SourceService()
     
     private let network = NetworkManager.shared
+    private let bridge = BridgeClient.shared
     
     private init() {}
     
@@ -17,8 +18,11 @@ class SourceService {
         guard !api.isEmpty else {
             throw SourceError.emptyApi
         }
+        if sourceBean.requiresBridge {
+            let jsonStr = try await bridge.home(source: sourceBean)
+            return try parseSort(jsonStr, sourceBean: sourceBean)
+        }
         
-        // type=3 (JAR/Spider) 暂不支持
         guard sourceBean.isSupportedInSwift else {
             throw SourceError.unsupportedType(sourceBean.typeDescription)
         }
@@ -166,6 +170,10 @@ class SourceService {
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
+        if sourceBean.requiresBridge {
+            let jsonStr = try await bridge.category(source: sourceBean, sortData: sortData, page: page, filters: filters)
+            return try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+        }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
         
@@ -282,6 +290,10 @@ class SourceService {
     func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
+        if sourceBean.requiresBridge {
+            let jsonStr = try await bridge.detail(source: sourceBean, vodId: vodId)
+            return try parseDetail(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+        }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
         
@@ -358,6 +370,11 @@ class SourceService {
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
+        if sourceBean.requiresBridge {
+            let jsonStr = try await bridge.search(source: sourceBean, keyword: keyword)
+            let videos = try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+            return filterSearchResults(videos, keyword: keyword)
+        }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
         
@@ -404,7 +421,7 @@ class SourceService {
         return await withTaskGroup(of: [Movie.Video].self) { group in
             for source in sources {
                 // 跳过不支持的源类型
-                guard source.isSupportedInSwift && source.isHttpApi else { continue }
+                guard source.isPlayableWithBridge && (source.requiresBridge || source.isHttpApi) else { continue }
                 
                 group.addTask { [self] in
                     do {

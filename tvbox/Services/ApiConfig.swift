@@ -1,4 +1,5 @@
 import Foundation
+import CommonCrypto
 
 /// 核心配置管理器 - 对应 Android 版 ApiConfig.java
 /// 负责加载和解析远程 JSON 配置，管理视频源列表
@@ -9,6 +10,10 @@ class ApiConfig: ObservableObject {
     private static let maxRedirectCandidates = 20
     private static let rawConfigCacheTTL: TimeInterval = 20
     private static let maxRawConfigCacheEntries = 24
+    private static let configRequestHeaders = [
+        "User-Agent": "okhttp/4.12.0",
+        "Accept": "*/*"
+    ]
     
     struct MultiRepoOption: Identifiable, Equatable {
         let name: String
@@ -221,10 +226,155 @@ class ApiConfig: ObservableObject {
             rawConfigCache.removeValue(forKey: key)
         }
         
-        let content = try await network.getString(from: normalizedUrl)
+        let (data, response) = try await network.getDataWithResponse(
+            from: normalizedUrl,
+            headers: Self.configRequestHeaders
+        )
+        let loadedUrl = response.url?.absoluteString ?? normalizedUrl
+        let content = try Self.decodeConfigPayload(data, loadedFrom: loadedUrl)
         rawConfigCache[key] = RawConfigCacheEntry(content: content, fetchedAt: now)
         trimRawConfigCacheIfNeeded()
         return content
+    }
+    
+    private static func decodeConfigPayload(_ data: Data, loadedFrom urlString: String) throws -> String {
+        guard !data.isEmpty else { throw ConfigError.parseError("配置内容为空") }
+        var text = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? String(decoding: data, as: UTF8.self)
+        if isJsonObject(text) { return fixConfigRelativePaths(text, loadedFrom: urlString) }
+        if text.contains("**") { text = try decodeBase64WrappedConfig(text) }
+        let compact = text.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        if compact.hasPrefix("2423") { text = try decodeCBCConfig(compact) }
+        return fixConfigRelativePaths(text, loadedFrom: urlString)
+    }
+    
+    private static func isJsonObject(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{")
+    }
+    
+    private static func decodeBase64WrappedConfig(_ text: String) throws -> String {
+        guard let range = text.range(
+            of: #"[A-Za-z0-9]{8}\*\*"#,
+            options: .regularExpression
+        ) else {
+            return text
+        }
+        let encoded = String(text[range.upperBound...])
+        guard let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters),
+              let decoded = String(data: data, encoding: .utf8) else {
+            throw ConfigError.parseError("配置 Base64 解码失败")
+        }
+        return decoded
+    }
+    
+    private static func decodeCBCConfig(_ text: String) throws -> String {
+        let marker = "2324"
+        guard let decodedEnvelope = String(data: try hexData(text), encoding: .utf8)?.lowercased(),
+              let keyStart = decodedEnvelope.range(of: "$#")?.upperBound,
+              let keyEnd = decodedEnvelope.range(of: "#$", range: keyStart..<decodedEnvelope.endIndex)?.lowerBound,
+              let markerRange = text.range(of: marker),
+              text.count > 26 else {
+            throw ConfigError.parseError("配置 AES 信封格式无效")
+        }
+        let key = padAESKey(String(decodedEnvelope[keyStart..<keyEnd]))
+        let iv = padAESKey(String(decodedEnvelope.suffix(13)))
+        let cipherStart = markerRange.upperBound
+        let cipherEnd = text.index(text.endIndex, offsetBy: -26)
+        guard cipherStart < cipherEnd else { throw ConfigError.parseError("配置 AES 密文为空") }
+        let cipherText = String(text[cipherStart..<cipherEnd])
+        let decrypted = try aesCBCDecrypt(
+            cipher: try hexData(cipherText),
+            key: Data(key.utf8),
+            iv: Data(iv.utf8)
+        )
+        guard let decoded = String(data: decrypted, encoding: .utf8) else {
+            throw ConfigError.parseError("配置 AES 解密结果不是 UTF-8")
+        }
+        return decoded
+    }
+    
+    private static func hexData(_ text: String) throws -> Data {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count % 2 == 0 else { throw ConfigError.parseError("十六进制配置长度无效") }
+        var data = Data()
+        var index = clean.startIndex
+        while index < clean.endIndex {
+            let next = clean.index(index, offsetBy: 2)
+            guard let byte = UInt8(clean[index..<next], radix: 16) else {
+                throw ConfigError.parseError("十六进制配置包含非法字符")
+            }
+            data.append(byte)
+            index = next
+        }
+        return data
+    }
+    
+    private static func aesCBCDecrypt(cipher: Data, key: Data, iv: Data) throws -> Data {
+        let outputCapacity = cipher.count + kCCBlockSizeAES128
+        var output = Data(count: outputCapacity)
+        var outputLength = 0
+        let status = output.withUnsafeMutableBytes { outputBytes in
+            cipher.withUnsafeBytes { cipherBytes in
+                key.withUnsafeBytes { keyBytes in
+                    iv.withUnsafeBytes { ivBytes in
+                        CCCrypt(
+                            CCOperation(kCCDecrypt),
+                            CCAlgorithm(kCCAlgorithmAES),
+                            CCOptions(kCCOptionPKCS7Padding),
+                            keyBytes.baseAddress,
+                            kCCKeySizeAES128,
+                            ivBytes.baseAddress,
+                            cipherBytes.baseAddress,
+                            cipher.count,
+                            outputBytes.baseAddress,
+                            outputCapacity,
+                            &outputLength
+                        )
+                    }
+                }
+            }
+        }
+        guard status == kCCSuccess else { throw ConfigError.parseError("配置 AES 解密失败: \(status)") }
+        output.removeSubrange(outputLength..<output.count)
+        return output
+    }
+    
+    private static func padAESKey(_ value: String) -> String {
+        value + String(repeating: "0", count: max(0, 16 - value.count))
+    }
+    
+    private static func fixConfigRelativePaths(_ text: String, loadedFrom urlString: String) -> String {
+        var result = text
+        let pattern = #"\"(\.|\.\.)/(.?|.+?)\.js\?(.?|.+?)\""#
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            let matches = regex.matches(in: result, range: range).reversed()
+            for match in matches {
+                guard let matchRange = Range(match.range, in: result) else { continue }
+                let original = String(result[matchRange])
+                var replacement = original
+                    .replacingOccurrences(of: "\"./", with: "\"\(resolveConfigUrl(loadedFrom: urlString, relative: "./"))")
+                    .replacingOccurrences(of: "\"../", with: "\"\(resolveConfigUrl(loadedFrom: urlString, relative: "../"))")
+                replacement = replacement
+                    .replacingOccurrences(of: "./", with: "__JS1__")
+                    .replacingOccurrences(of: "../", with: "__JS2__")
+                result.replaceSubrange(matchRange, with: replacement)
+            }
+        }
+        result = result.replacingOccurrences(of: "../", with: resolveConfigUrl(loadedFrom: urlString, relative: "../"))
+        result = result.replacingOccurrences(of: "./", with: resolveConfigUrl(loadedFrom: urlString, relative: "./"))
+        result = result.replacingOccurrences(of: "__JS1__", with: "./")
+        result = result.replacingOccurrences(of: "__JS2__", with: "../")
+        return result
+    }
+    
+    private static func resolveConfigUrl(loadedFrom urlString: String, relative: String) -> String {
+        guard let base = URL(string: urlString),
+              let resolved = URL(string: relative, relativeTo: base)?.absoluteURL else {
+            return relative
+        }
+        return resolved.standardized.absoluteString
     }
     
     private func trimRawConfigCacheIfNeeded() {
@@ -483,6 +633,16 @@ class ApiConfig: ObservableObject {
             with: "$1",
             options: .regularExpression
         )
+        joined = joined.replacingOccurrences(
+            of: #"([}\]])\s*\n\s*(?=\{)"#,
+            with: "$1,\n",
+            options: .regularExpression
+        )
+        joined = joined.replacingOccurrences(
+            of: #"([}\]])\s*\n\s*(?=\"[^\"]+\"\s*:)"#,
+            with: "$1,\n",
+            options: .regularExpression
+        )
         
         return joined
     }
@@ -589,20 +749,31 @@ class ApiConfig: ObservableObject {
                         quickSearch: site.quickSearch?.value ?? 0,
                         playerType: site.playerType?.value ?? 0,
                         type: site.type?.value ?? 1,
-                        ext: site.ext?.stringValue
+                        ext: site.ext?.stringValue,
+                        jar: site.jar ?? config.spider
                     )
                     sources.append(bean)
                 }
             }
             self.sourceBeanList = sources
+            BridgeClient.shared.updateConfigContext(configUrl: apiUrl, spider: config.spider)
+            if BridgeClient.shared.isEnabled {
+                Task {
+                    try? await BridgeClient.shared.register(
+                        configUrl: apiUrl,
+                        spider: config.spider,
+                        sources: sources.filter { $0.requiresBridge },
+                        replace: true
+                    )
+                }
+            }
             
             // 设置默认主页源：优先选择 Swift 支持的源
             if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
                let found = sources.first(where: { $0.key == saved }) {
                 self.homeSourceBean = found
             } else {
-                // 优先选择支持的源（type 0/1/4），跳过 type=3 (JAR)
-                self.homeSourceBean = sources.first(where: { $0.isSupportedInSwift }) ?? sources.first
+                self.homeSourceBean = sources.first(where: { $0.isPlayableWithBridge }) ?? sources.first
             }
             
             // 解析解析器列表

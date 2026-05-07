@@ -43,6 +43,10 @@ struct Movie: Codable {
         var last: String = ""
         /// 播放来源信息（部分接口会复用该字段）。
         var dt: String = ""
+        /// Android/FongMi 动作卡片标记，存在时应执行 `SiteApi.action` 而不是进入详情。
+        var action: String = ""
+        /// Android/FongMi 标签，例如 folder。
+        var tag: String = ""
         
         init(id: String = UUID().uuidString, name: String = "", pic: String = "",
              note: String = "", sourceKey: String = "") {
@@ -67,6 +71,8 @@ struct Movie: Codable {
             case tid = "type_id"
             case last = "vod_time"
             case dt = "vod_play_from"
+            case action
+            case tag = "vod_tag"
             case sourceKey
         }
         
@@ -96,7 +102,12 @@ struct Movie: Codable {
             }()
             self.last = (try? container.decode(String.self, forKey: .last)) ?? ""
             self.dt = (try? container.decode(String.self, forKey: .dt)) ?? ""
+            self.action = (try? container.decode(String.self, forKey: .action)) ?? ""
+            self.tag = (try? container.decode(String.self, forKey: .tag)) ?? ""
             self.sourceKey = (try? container.decode(String.self, forKey: .sourceKey)) ?? ""
         }
+
+        var isAction: Bool { !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        var isFolder: Bool { tag == "folder" }
     }
 }

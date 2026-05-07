@@ -94,14 +94,25 @@ class NetworkManager {
     /// GET 请求获取原始 Data，支持自动重试和 HTTP 状态码校验。
     func getData(
         from urlString: String,
+        headers: [String: String]? = nil,
         maxRetries: Int = NetworkManager.defaultMaxRetries
     ) async throws -> Data {
+        let (data, _) = try await getDataWithResponse(from: urlString, headers: headers, maxRetries: maxRetries)
+        return data
+    }
+    
+    /// GET 请求获取原始 Data 与 HTTP 响应，支持自动重试和 HTTP 状态码校验。
+    func getDataWithResponse(
+        from urlString: String,
+        headers: [String: String]? = nil,
+        maxRetries: Int = NetworkManager.defaultMaxRetries
+    ) async throws -> (Data, HTTPURLResponse) {
         guard let url = URL(string: urlString.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw NetworkError.invalidURL(urlString)
         }
-        let request = URLRequest(url: url)
-        let (data, _) = try await performRequest(request, maxRetries: maxRetries)
-        return data
+        var request = URLRequest(url: url)
+        headers?.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        return try await performRequest(request, maxRetries: maxRetries)
     }
     
     // MARK: - 带重试的核心请求方法

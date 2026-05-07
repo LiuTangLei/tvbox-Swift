@@ -28,6 +28,8 @@ struct HawkConfig {
     static let HOME_REC_STYLE = "home_rec_style"
     static let HISTORY_NUM = "history_num"
     static let SEARCH_HISTORY = "search_history"
+    static let BRIDGE_ENABLED = "bridge_enabled"
+    static let BRIDGE_SERVER_URL = "bridge_server_url"
 }
 
 /// 通用 Swift 扩展

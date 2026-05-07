@@ -52,6 +52,14 @@ class SettingsViewModel: ObservableObject {
     @Published var vlcBufferMode: VLCBufferMode = .defaultMode
     /// 快进/快退步长（秒）。
     @Published var playTimeStep: Int = 10
+    /// Type=3 Bridge 是否启用。
+    @Published var bridgeEnabled = false
+    /// Type=3 Bridge Server 地址。
+    @Published var bridgeServerUrl: String = ""
+    /// Bridge 连通性状态。
+    @Published var bridgeStatusText: String = "未测试"
+    /// Bridge 检测中状态。
+    @Published var isTestingBridge = false
     /// 缓存占用展示文本。
     @Published var cacheSizeString: String = "0 KB"
     
@@ -80,10 +88,8 @@ class SettingsViewModel: ObservableObject {
         loadApiHistory()
         let hasLegacyPlayer = defaults.object(forKey: HawkConfig.PLAY_TYPE) != nil
         let legacyPlayerRaw = defaults.integer(forKey: HawkConfig.PLAY_TYPE)
-        let defaultVodRaw = PlayerEngine.system.rawValue
-        let defaultLiveRaw = PlayerEngine.isVLCAvailable
-            ? PlayerEngine.vlc.rawValue
-            : PlayerEngine.system.rawValue
+        let defaultVodRaw = PlayerEngine.defaultVodEngine.rawValue
+        let defaultLiveRaw = PlayerEngine.defaultLiveEngine.rawValue
         if defaults.object(forKey: HawkConfig.PLAY_TYPE_VOD) == nil {
             defaults.set(hasLegacyPlayer ? legacyPlayerRaw : defaultVodRaw, forKey: HawkConfig.PLAY_TYPE_VOD)
         }
@@ -105,6 +111,8 @@ class SettingsViewModel: ObservableObject {
         
         let savedStep = defaults.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         playTimeStep = savedStep > 0 ? savedStep : 10
+        bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
+        bridgeServerUrl = defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? ""
         refreshCacheSize()
     }
     
@@ -253,6 +261,46 @@ class SettingsViewModel: ObservableObject {
         guard step > 0 else { return }
         playTimeStep = step
         UserDefaults.standard.set(step, forKey: HawkConfig.PLAY_TIME_STEP)
+    }
+    
+    func setBridgeEnabled(_ enabled: Bool) {
+        bridgeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: HawkConfig.BRIDGE_ENABLED)
+        bridgeStatusText = enabled ? "待检测" : "已停用"
+    }
+    
+    func saveBridgeSettingsAndTest() async {
+        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        bridgeServerUrl = trimmed
+        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        UserDefaults.standard.set(bridgeEnabled, forKey: HawkConfig.BRIDGE_ENABLED)
+        guard bridgeEnabled, !trimmed.isEmpty else {
+            bridgeStatusText = bridgeEnabled ? "未配置" : "已停用"
+            return
+        }
+        await testBridge()
+    }
+    
+    func testBridge() async {
+        guard bridgeEnabled else {
+            bridgeStatusText = "已停用"
+            return
+        }
+        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            bridgeStatusText = "未配置"
+            return
+        }
+        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        isTestingBridge = true
+        defer { isTestingBridge = false }
+        do {
+            let health = try await BridgeClient.shared.health()
+            let portText = health.port.map { ":\($0)" } ?? ""
+            bridgeStatusText = "可用\(portText)"
+        } catch {
+            bridgeStatusText = error.localizedDescription
+        }
     }
     
     /// 设置点播播放器内核

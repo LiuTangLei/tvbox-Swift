@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import Darwin
 
 #if os(macOS)
 import AppKit
@@ -83,6 +84,9 @@ struct PlayerView: View {
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
     
     private var selectedEngine: PlayerEngine {
+        if shouldUseVLCForBridgeProxy {
+            return .vlc
+        }
         let defaults = UserDefaults.standard
         let rawValue: Int
         if defaults.object(forKey: HawkConfig.PLAY_TYPE_VOD) != nil {
@@ -90,9 +94,15 @@ struct PlayerView: View {
         } else if defaults.object(forKey: HawkConfig.PLAY_TYPE) != nil {
             rawValue = legacyPlayTypeRaw
         } else {
-            rawValue = PlayerEngine.system.rawValue
+            rawValue = PlayerEngine.defaultVodEngine.rawValue
         }
         return PlayerEngine.fromStoredValue(rawValue)
+    }
+
+    private var shouldUseVLCForBridgeProxy: Bool {
+        guard PlayerEngine.isVLCAvailable, let url = URL(string: urlString) else { return false }
+        let path = url.path.lowercased()
+        return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
     }
     
     var body: some View {
@@ -173,6 +183,13 @@ struct AVPlayerContentView: View {
     @State private var isDraggingProgress = false
     @State private var draggingSeconds: Double = 0
     @State private var playerObservers: [NSKeyValueObservation] = []
+    @State private var audioTracks: [MediaTrackOption] = []
+    @State private var subtitleTracks: [MediaTrackOption] = []
+    @State private var selectedAudioTrackID: String?
+    @State private var selectedSubtitleTrackID: String?
+    @State private var audioSelectionOptions: [String: AVMediaSelectionOption] = [:]
+    @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
+    @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
     
     var body: some View {
         ZStack {
@@ -180,11 +197,7 @@ struct AVPlayerContentView: View {
                 if let player = player {
                     PlatformVideoPlayer(player: player)
                 } else {
-                    ZStack {
-                        Color.black
-                        ProgressView()
-                            .tint(.white)
-                    }
+                    Color.black
                 }
             }
             .onTapGesture(count: 2) {
@@ -194,9 +207,8 @@ struct AVPlayerContentView: View {
                 togglePlayPauseWithOSD()
             }
 
-            if isPreparing {
-                ProgressView()
-                    .tint(.white)
+            if player == nil || isPreparing {
+                LoadingSpeedOverlay()
             }
 
             if let osdIcon = osdIcon {
@@ -289,7 +301,7 @@ struct AVPlayerContentView: View {
     }
     
     private func bindPlayerObservers(for player: AVPlayer) {
-        playerObservers = [
+        var observations: [NSKeyValueObservation] = [
             player.observe(\.timeControlStatus, options: [.new]) { p, _ in
                 let status = p.timeControlStatus
                 DispatchQueue.main.async { isPlaying = status == .playing }
@@ -314,8 +326,20 @@ struct AVPlayerContentView: View {
                 }
             }
         ]
+        if let item = player.currentItem {
+            observations.append(
+                item.observe(\.status, options: [.initial, .new]) { item, _ in
+                    guard item.status == .readyToPlay else { return }
+                    DispatchQueue.main.async {
+                        refreshMediaTracks(for: player)
+                    }
+                }
+            )
+        }
+        playerObservers = observations
         observePlaybackProgress(for: player)
         observePlaybackEnd(for: player)
+        refreshMediaTracks(for: player)
         isPlaying = player.timeControlStatus == .playing
         isPreparing = player.reasonForWaitingToPlay != nil
         volume = Double(player.volume)
@@ -338,6 +362,9 @@ struct AVPlayerContentView: View {
     private func cleanupPlayer(keepSharedPlayer: Bool = false) {
         let currentPlayer = player
         detachPlayerObservers()
+        if !keepSharedPlayer {
+            resetMediaTracks()
+        }
         
         guard let currentPlayer else { return }
         if keepSharedPlayer, sharedController?.player === currentPlayer {
@@ -438,6 +465,152 @@ struct AVPlayerContentView: View {
         }
         onProgressChanged?(current, duration > 0 ? duration : nil)
     }
+
+    private func refreshMediaTracks(for player: AVPlayer) {
+        guard let item = player.currentItem else {
+            resetMediaTracks()
+            return
+        }
+
+        refreshAudioTracks(for: item)
+        refreshSubtitleTracks(for: item)
+    }
+
+    private func refreshAudioTracks(for item: AVPlayerItem) {
+        audioSelectionOptions.removeAll()
+        audioItemTracks.removeAll()
+
+        if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+            var tracks: [MediaTrackOption] = []
+            if group.allowsEmptySelection {
+                tracks.append(.disabled(kind: .audio, id: "av-audio-disabled"))
+            }
+
+            for (index, option) in group.options.enumerated() {
+                let id = avMediaSelectionID(kind: .audio, index: index, option: option)
+                tracks.append(MediaTrackOption(
+                    id: id,
+                    kind: .audio,
+                    title: avMediaSelectionTitle(option: option, fallback: "音轨 \(index + 1)"),
+                    rawValue: index,
+                    isDisabled: false
+                ))
+                audioSelectionOptions[id] = option
+            }
+
+            let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+            audioTracks = tracks
+            selectedAudioTrackID = selected.flatMap { selectedOption in
+                tracks.first { audioSelectionOptions[$0.id] === selectedOption }?.id
+            } ?? tracks.first(where: { $0.isDisabled })?.id ?? tracks.first?.id
+            return
+        }
+
+        let itemAudioTracks = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
+        guard itemAudioTracks.count > 1 else {
+            audioTracks = []
+            selectedAudioTrackID = nil
+            return
+        }
+
+        var tracks: [MediaTrackOption] = []
+        for (index, itemTrack) in itemAudioTracks.enumerated() {
+            let id = "av-item-audio-\(itemTrack.assetTrack?.trackID ?? CMPersistentTrackID(index + 1))"
+            let title = itemTrack.assetTrack?.languageCode?.nilIfBlank
+                ?? itemTrack.assetTrack?.extendedLanguageTag?.nilIfBlank
+                ?? "音轨 \(index + 1)"
+            let option = MediaTrackOption(id: id, kind: .audio, title: title, rawValue: index, isDisabled: false)
+            tracks.append(option)
+            audioItemTracks[id] = itemTrack
+        }
+
+        audioTracks = tracks
+        selectedAudioTrackID = tracks.first { audioItemTracks[$0.id]?.isEnabled == true }?.id ?? tracks.first?.id
+    }
+
+    private func refreshSubtitleTracks(for item: AVPlayerItem) {
+        subtitleSelectionOptions.removeAll()
+
+        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
+            subtitleTracks = []
+            selectedSubtitleTrackID = nil
+            return
+        }
+
+        var tracks: [MediaTrackOption] = [.disabled(kind: .subtitle, id: "av-subtitle-disabled")]
+        for (index, option) in group.options.enumerated() {
+            let id = avMediaSelectionID(kind: .subtitle, index: index, option: option)
+            tracks.append(MediaTrackOption(
+                id: id,
+                kind: .subtitle,
+                title: avMediaSelectionTitle(option: option, fallback: "字幕 \(index + 1)"),
+                rawValue: index,
+                isDisabled: false
+            ))
+            subtitleSelectionOptions[id] = option
+        }
+
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        subtitleTracks = tracks
+        selectedSubtitleTrackID = selected.flatMap { selectedOption in
+            tracks.first { subtitleSelectionOptions[$0.id] === selectedOption }?.id
+        } ?? tracks.first(where: { $0.isDisabled })?.id
+    }
+
+    private func resetMediaTracks() {
+        audioTracks = []
+        subtitleTracks = []
+        selectedAudioTrackID = nil
+        selectedSubtitleTrackID = nil
+        audioSelectionOptions = [:]
+        subtitleSelectionOptions = [:]
+        audioItemTracks = [:]
+    }
+
+    private func selectAudioTrack(_ track: MediaTrackOption) {
+        guard let item = player?.currentItem else { return }
+        if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+            if track.isDisabled {
+                item.select(nil, in: group)
+            } else if let option = audioSelectionOptions[track.id] {
+                item.select(option, in: group)
+            }
+            refreshAudioTracks(for: item)
+            return
+        }
+
+        guard let selectedItemTrack = audioItemTracks[track.id] else { return }
+        for itemTrack in audioItemTracks.values {
+            itemTrack.isEnabled = itemTrack === selectedItemTrack
+        }
+        refreshAudioTracks(for: item)
+    }
+
+    private func selectSubtitleTrack(_ track: MediaTrackOption) {
+        guard let item = player?.currentItem,
+              let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else { return }
+        if track.isDisabled {
+            item.select(nil, in: group)
+        } else if let option = subtitleSelectionOptions[track.id] {
+            item.select(option, in: group)
+        }
+        refreshSubtitleTracks(for: item)
+    }
+
+    private func avMediaSelectionID(kind: MediaTrackKind, index: Int, option: AVMediaSelectionOption) -> String {
+        "av-\(kind.rawValue)-\(index)-\(option.displayName)-\(option.hash)"
+    }
+
+    private func avMediaSelectionTitle(option: AVMediaSelectionOption, fallback: String) -> String {
+        let displayName = option.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !displayName.isEmpty { return displayName }
+        if let locale = option.locale,
+           let languageCode = locale.language.languageCode?.identifier,
+           let languageName = Locale.current.localizedString(forLanguageCode: languageCode) {
+            return languageName
+        }
+        return fallback
+    }
     
     private var seekStep: Double {
         let saved = UserDefaults.standard.integer(forKey: HawkConfig.PLAY_TIME_STEP)
@@ -490,11 +663,17 @@ struct AVPlayerContentView: View {
             
             // 第二行：控制按钮
             HStack(spacing: 0) {
-                // 左侧区：倍速
-                HStack(spacing: 16) {
+                // 左侧区：倍速、音轨、字幕
+                HStack(spacing: 10) {
                     playbackRateMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                    }
                 }
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 260, alignment: .leading)
                 
                 Spacer()
                 
@@ -639,6 +818,85 @@ struct AVPlayerContentView: View {
         .buttonStyle(.plain)
     }
 
+    private var shouldShowAudioTrackMenu: Bool {
+        audioTracks.filter { !$0.isDisabled }.count > 1 || audioTracks.contains(where: { $0.isDisabled })
+    }
+
+    private var shouldShowSubtitleTrackMenu: Bool {
+        subtitleTracks.filter { !$0.isDisabled }.isEmpty == false
+    }
+
+    private var audioTrackMenu: some View {
+        Menu {
+            ForEach(audioTracks) { track in
+                Button {
+                    wakeUpControls()
+                    selectAudioTrack(track)
+                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                } label: {
+                    trackMenuItem(track: track, selectedID: selectedAudioTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "waveform.circle.fill",
+                title: selectedTrackTitle(in: audioTracks, selectedID: selectedAudioTrackID, fallback: "音轨")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtitleTrackMenu: some View {
+        Menu {
+            ForEach(subtitleTracks) { track in
+                Button {
+                    wakeUpControls()
+                    selectSubtitleTrack(track)
+                    showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                } label: {
+                    trackMenuItem(track: track, selectedID: selectedSubtitleTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "captions.bubble.fill",
+                title: selectedTrackTitle(in: subtitleTracks, selectedID: selectedSubtitleTrackID, fallback: "字幕")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func trackMenuItem(track: MediaTrackOption, selectedID: String?) -> some View {
+        HStack {
+            Text(track.title)
+            if track.id == selectedID {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func trackMenuLabel(icon: String, title: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 12, weight: .bold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 92, alignment: .leading)
+        .background(Color.white.opacity(0.12))
+        .clipShape(Capsule())
+    }
+
+    private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
+        tracks.first { $0.id == selectedID }?.compactTitle ?? fallback
+    }
+
     private var volumeIconName: String {
         if volume <= 0 { return "speaker.slash.fill" }
         if volume < 0.5 { return "speaker.wave.1.fill" }
@@ -717,6 +975,117 @@ struct AVPlayerContentView: View {
         let target = min(max(current + delta, 0), 1)
         player.volume = Float(target)
         showOSD(icon: target <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+    }
+}
+
+struct LoadingSpeedOverlay: View {
+    @StateObject private var trafficMonitor = NetworkTrafficMonitor()
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .tint(.white)
+            Text(trafficMonitor.speedText)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.92))
+                .lineLimit(1)
+                .frame(minWidth: 72)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+        .onAppear { trafficMonitor.start() }
+        .onDisappear { trafficMonitor.stop() }
+    }
+}
+
+@MainActor
+final class NetworkTrafficMonitor: ObservableObject {
+    @Published private(set) var speedText = "0 KB/s"
+
+    private var timer: Timer?
+    private var lastReceivedBytes: UInt64?
+    private var lastSampleDate: Date?
+
+    func start() {
+        timer?.invalidate()
+        lastReceivedBytes = nil
+        lastSampleDate = nil
+        sample()
+
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.sample()
+            }
+        }
+        timer.tolerance = 0.2
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        lastReceivedBytes = nil
+        lastSampleDate = nil
+        speedText = "0 KB/s"
+    }
+
+    private func sample() {
+        let receivedBytes = Self.currentReceivedBytes()
+        let date = Date()
+        defer {
+            lastReceivedBytes = receivedBytes
+            lastSampleDate = date
+        }
+
+        guard let lastReceivedBytes, let lastSampleDate else {
+            speedText = "0 KB/s"
+            return
+        }
+
+        let interval = max(date.timeIntervalSince(lastSampleDate), 0.001)
+        let delta = receivedBytes >= lastReceivedBytes ? receivedBytes - lastReceivedBytes : 0
+        speedText = Self.format(bytesPerSecond: Double(delta) / interval)
+    }
+
+    private static func currentReceivedBytes() -> UInt64 {
+        var addresses: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addresses) == 0 else { return 0 }
+        defer { freeifaddrs(addresses) }
+
+        var total: UInt64 = 0
+        var cursor = addresses
+        while let pointer = cursor {
+            let interface = pointer.pointee
+            cursor = interface.ifa_next
+
+            guard let address = interface.ifa_addr else { continue }
+            guard Int32(address.pointee.sa_family) == AF_LINK else { continue }
+
+            let flags = Int32(interface.ifa_flags)
+            guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0 else { continue }
+            guard let dataPointer = interface.ifa_data else { continue }
+
+            let data = dataPointer.assumingMemoryBound(to: if_data.self).pointee
+            total &+= UInt64(data.ifi_ibytes)
+        }
+        return total
+    }
+
+    private static func format(bytesPerSecond: Double) -> String {
+        let kilobytes = max(bytesPerSecond / 1024.0, 0)
+        if kilobytes < 1000 {
+            return "\(Int(kilobytes.rounded())) KB/s"
+        }
+        return String(format: "%.1f MB/s", kilobytes / 1024.0)
+    }
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

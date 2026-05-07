@@ -1,5 +1,9 @@
 import SwiftUI
 import SwiftData
+import WebKit
+#if os(iOS)
+import UIKit
+#endif
 #if os(macOS)
 import AppKit
 #endif
@@ -49,6 +53,12 @@ struct DetailView: View {
                 videoInfoSection
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
+
+                if shouldShowPlaybackStatus {
+                    playbackStatusSection
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
+                }
                 
                 // 线路选择
                 if viewModel.flags.count > 1 {
@@ -151,6 +161,34 @@ struct DetailView: View {
             }
         }
         #endif
+        .sheet(
+            isPresented: $viewModel.isBridgeTokenPromptPresented,
+            onDismiss: { viewModel.dismissBridgeTokenPromptPresentation() }
+        ) {
+            if let prompt = viewModel.bridgeTokenPrompt {
+                BridgeTokenPromptSheet(
+                    prompt: prompt,
+                    isSubmitting: viewModel.isSubmittingBridgeToken,
+                    errorMessage: viewModel.bridgeTokenErrorMessage,
+                    onCancel: viewModel.cancelBridgeTokenPrompt,
+                    onStartAndroidQrLogin: { prompt in
+                        try await viewModel.startBridgeQrLogin(prompt: prompt)
+                    },
+                    onPollAndroidQrLogin: {
+                        try await viewModel.pollBridgeQrLogin()
+                    },
+                    onActionAndroidQrLogin: { action in
+                        try await viewModel.sendBridgeQrAction(action)
+                    },
+                    onCompleteAndroidQrLogin: {
+                        await viewModel.completeBridgeQrLogin()
+                    },
+                    onSubmit: { values in
+                        Task { await viewModel.submitBridgeToken(values: values) }
+                    }
+                )
+            }
+        }
     }
     
     // MARK: - 视频信息
@@ -214,12 +252,20 @@ struct DetailView: View {
     private var playButton: some View {
         if !viewModel.isPlaying && viewModel.vodInfo != nil {
             Button {
+                guard !viewModel.isResolvingBridgePlayback else { return }
                 viewModel.selectEpisode(index: 0)
                 saveHistoryForCurrentEpisode()
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "play.fill")
-                    Text("立即播放")
+                    if viewModel.isResolvingBridgePlayback {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                        Text("解析中")
+                    } else {
+                        Image(systemName: "play.fill")
+                        Text("立即播放")
+                    }
                 }
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white)
@@ -230,6 +276,7 @@ struct DetailView: View {
                 .shadow(color: .red.opacity(0.4), radius: 10, x: 0, y: 5)
             }
             .buttonStyle(.plain)
+            .disabled(viewModel.isResolvingBridgePlayback)
         }
     }
     
@@ -396,6 +443,8 @@ struct DetailView: View {
             EpisodeListView(
                 episodes: viewModel.currentEpisodes,
                 selectedIndex: viewModel.selectedEpisodeIndex,
+                isResolving: viewModel.isResolvingBridgePlayback,
+                resolvingIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
                     withAnimation {
                         viewModel.selectEpisode(index: index)
@@ -426,6 +475,81 @@ struct DetailView: View {
 
     private var canPlayNextEpisode: Bool {
         viewModel.selectedEpisodeIndex + 1 < viewModel.currentEpisodes.count
+    }
+
+    private var shouldShowPlaybackStatus: Bool {
+        viewModel.isResolvingBridgePlayback
+            || viewModel.bridgeTokenPrompt != nil
+            || !(viewModel.bridgePlaybackMessage ?? "").isEmpty
+            || !(viewModel.errorMessage ?? "").isEmpty
+    }
+
+    @ViewBuilder
+    private var playbackStatusSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if viewModel.isResolvingBridgePlayback {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                    Text(viewModel.bridgePlaybackMessage ?? "正在获取播放地址...")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+            } else if let prompt = viewModel.bridgeTokenPrompt {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: prompt.login == nil ? "key.fill" : "qrcode.viewfinder")
+                        .font(.title3)
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 28)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(prompt.title)
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(prompt.message)
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.65))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Button {
+                        viewModel.presentBridgeTokenPrompt()
+                    } label: {
+                        Text(prompt.login == nil ? "输入 Token" : "扫码登录")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(AppTheme.accentGradient)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else if let message = viewModel.bridgePlaybackMessage, !message.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "key.fill")
+                        .foregroundColor(.yellow)
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if let error = viewModel.errorMessage, !error.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.yellow)
+                    Text(error)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(15)
+        .glassCard(cornerRadius: AppTheme.glassRadius)
     }
     
     private func saveHistoryForCurrentEpisode(progressOverride: Double? = nil) {
@@ -553,6 +677,771 @@ struct DetailView: View {
         appState.exitPlayerFullScreen()
     }
     #endif
+}
+
+struct BridgeTokenPromptSheet: View {
+    let prompt: BridgeTokenPrompt
+    let isSubmitting: Bool
+    let errorMessage: String?
+    let submitTitle: String
+    let onCancel: () -> Void
+    let onStartAndroidQrLogin: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)?
+    let onPollAndroidQrLogin: (() async throws -> BridgeQrStatusResponse)?
+    let onActionAndroidQrLogin: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)?
+    let onCompleteAndroidQrLogin: (() async -> Void)?
+    let onSubmit: ([String: String]) -> Void
+    @State private var values: [String: String]
+    @State private var showWebLogin = false
+    @State private var showAndroidQrLogin = false
+
+    init(
+        prompt: BridgeTokenPrompt,
+        isSubmitting: Bool,
+        errorMessage: String?,
+        submitTitle: String = "保存并重试",
+        onCancel: @escaping () -> Void,
+        onStartAndroidQrLogin: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)? = nil,
+        onPollAndroidQrLogin: (() async throws -> BridgeQrStatusResponse)? = nil,
+        onActionAndroidQrLogin: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)? = nil,
+        onCompleteAndroidQrLogin: (() async -> Void)? = nil,
+        onSubmit: @escaping ([String: String]) -> Void
+    ) {
+        self.prompt = prompt
+        self.isSubmitting = isSubmitting
+        self.errorMessage = errorMessage
+        self.submitTitle = submitTitle
+        self.onCancel = onCancel
+        self.onStartAndroidQrLogin = onStartAndroidQrLogin
+        self.onPollAndroidQrLogin = onPollAndroidQrLogin
+        self.onActionAndroidQrLogin = onActionAndroidQrLogin
+        self.onCompleteAndroidQrLogin = onCompleteAndroidQrLogin
+        self.onSubmit = onSubmit
+        _values = State(initialValue: Dictionary(uniqueKeysWithValues: prompt.fields.map { ($0.key, "") }))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(prompt.message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                if prompt.login?.type.hasPrefix("androidJar") == true {
+                    Section {
+                        Button {
+                            showAndroidQrLogin = true
+                        } label: {
+                            Label("打开 Jar 登录窗口", systemImage: "rectangle.on.rectangle")
+                        }
+                        .disabled(isSubmitting)
+                    }
+                } else if prompt.login?.type != "androidJarQr", prompt.login != nil {
+                    Section {
+                        Button {
+                            showWebLogin = true
+                        } label: {
+                            Label("扫码登录", systemImage: "qrcode.viewfinder")
+                        }
+                        .disabled(isSubmitting)
+                    }
+                }
+
+                Section {
+                    ForEach(prompt.fields) { field in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(field.label)
+                                .font(.subheadline.weight(.semibold))
+                            if field.secure == true && field.multiline != true {
+                                SecureField(field.placeholder ?? field.label, text: binding(for: field.key))
+                                    .textFieldStyle(.roundedBorder)
+                            } else {
+                                TextField(field.placeholder ?? field.label, text: binding(for: field.key), axis: .vertical)
+                                    .textFieldStyle(.roundedBorder)
+                                    .lineLimit(field.multiline == true ? 4...8 : 1...3)
+                            }
+                        }
+                    }
+                }
+
+                if let errorMessage, !errorMessage.isEmpty {
+                    Section {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle(prompt.title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", role: .cancel) {
+                        onCancel()
+                    }
+                    .disabled(isSubmitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSubmitting ? "保存中" : submitTitle) {
+                        onSubmit(trimmedValues)
+                    }
+                    .disabled(isSubmitting || !canSubmit)
+                }
+            }
+        }
+        .sheet(isPresented: $showAndroidQrLogin) {
+            BridgeAndroidQrLoginSheet(
+                prompt: prompt,
+                onStart: onStartAndroidQrLogin,
+                onPoll: onPollAndroidQrLogin,
+                onAction: onActionAndroidQrLogin,
+                onCancel: { showAndroidQrLogin = false },
+                onComplete: {
+                    showAndroidQrLogin = false
+                    if let onCompleteAndroidQrLogin {
+                        await onCompleteAndroidQrLogin()
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: $showWebLogin) {
+            if let login = prompt.login {
+                BridgeWebLoginSheet(
+                    login: login,
+                    isSubmitting: isSubmitting,
+                    onCancel: { showWebLogin = false },
+                    onSubmit: { cookieValue in
+                        var submitted = trimmedValues
+                        let key = login.cookieKey?.isEmpty == false ? login.cookieKey! : "token"
+                        submitted[key] = cookieValue
+                        submitted["token"] = cookieValue
+                        submitted["cookie"] = cookieValue
+                        showWebLogin = false
+                        onSubmit(submitted)
+                    }
+                )
+            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 420, minHeight: 320)
+        #endif
+    }
+
+    private var canSubmit: Bool {
+        trimmedValues.values.contains { !$0.isEmpty }
+    }
+
+    private var trimmedValues: [String: String] {
+        values.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private func binding(for key: String) -> Binding<String> {
+        Binding(
+            get: { values[key, default: ""] },
+            set: { values[key] = $0 }
+        )
+    }
+}
+
+private struct BridgeAndroidQrLoginSheet: View {
+    let prompt: BridgeTokenPrompt
+    let onStart: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)?
+    let onPoll: (() async throws -> BridgeQrStatusResponse)?
+    let onAction: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)?
+    let onCancel: () -> Void
+    let onComplete: () async -> Void
+    @State private var imageData: Data?
+    @State private var canvasWidth: Double = 0
+    @State private var canvasHeight: Double = 0
+    @State private var elements: [BridgeUiElement] = []
+    @State private var selectedInput: BridgeUiElement?
+    @State private var inputText = ""
+    @State private var message = "正在请求 Android Jar 登录窗口..."
+    @State private var errorMessage: String?
+    @State private var isLoading = false
+    @State private var isPolling = false
+    @State private var isCompleting = false
+    @State private var isSendingAction = false
+    @State private var didAutoComplete = false
+    @State private var didFinish = false
+    @State private var pollFailureCount = 0
+    @State private var pollTask: Task<Void, Never>?
+    @State private var toastMessage: String?
+    @State private var toastTask: Task<Void, Never>?
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+
+                if let imageData {
+                    ZStack(alignment: .bottom) {
+                        remoteCanvas(data: imageData)
+                        if let toastMessage, !toastMessage.isEmpty {
+                            Text(toastMessage)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(Color.black.opacity(0.72), in: Capsule())
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 16)
+                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.18), value: toastMessage)
+                }
+
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                if isPolling {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("等待 Android 端登录完成...")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let selectedInput {
+                    HStack(spacing: 8) {
+                        TextField(selectedInput.text?.isEmpty == false ? selectedInput.text! : "输入内容", text: $inputText)
+                            .textFieldStyle(.roundedBorder)
+                        Button(isSendingAction ? "发送中" : "发送") {
+                            Task { await send(.input(element: selectedInput, text: inputText)) }
+                        }
+                        .disabled(isSendingAction)
+                    }
+                }
+
+                if let errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                }
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: 12) {
+                    Button("取消", role: .cancel) { Task { await cancelLogin() } }
+                        .buttonStyle(.bordered)
+                        .disabled(isCompleting)
+
+                    Button("返回") {
+                        Task { await send(.named("back")) }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isCompleting || isSendingAction)
+
+                    Button("刷新") {
+                        Task { await send(.named("refresh")) }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isCompleting || isSendingAction)
+
+                    Button {
+                        Task { await complete() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isCompleting { ProgressView().controlSize(.small) }
+                            Text(isCompleting ? "处理中" : "已完成，重试播放")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isCompleting || didAutoComplete)
+                }
+            }
+            .padding(20)
+            .navigationTitle(prompt.login?.title ?? prompt.title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", role: .cancel) { Task { await cancelLogin() } }
+                        .disabled(isCompleting)
+                }
+            }
+        }
+        .task { await loadQr() }
+        .onDisappear {
+            pollTask?.cancel()
+            pollTask = nil
+            toastTask?.cancel()
+            toastTask = nil
+            guard !didFinish, let onAction else { return }
+            Task { _ = try? await onAction(.named("cancel")) }
+        }
+        #if os(macOS)
+        .frame(minWidth: 460, minHeight: 560)
+        #endif
+    }
+
+    @MainActor
+    private func loadQr() async {
+        guard let onStart else {
+            errorMessage = "当前页面没有连接 Android Jar 弹窗接口"
+            return
+        }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            let response = try await onStart(prompt)
+            apply(response)
+            startPolling()
+        } catch {
+            errorMessage = error.localizedDescription
+            message = "未能打开 Android Jar 登录窗口"
+        }
+    }
+
+    @MainActor
+    private func startPolling() {
+        guard onPoll != nil, pollTask == nil else { return }
+        isPolling = true
+        pollFailureCount = 0
+        pollTask = Task { await pollUntilComplete() }
+    }
+
+    @MainActor
+    private func pollUntilComplete() async {
+        defer {
+            isPolling = false
+            pollTask = nil
+        }
+        while !Task.isCancelled && !didAutoComplete {
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let onPoll else { return }
+            do {
+                let response = try await onPoll()
+                pollFailureCount = 0
+                apply(response)
+                if response.isCompleted {
+                    didAutoComplete = true
+                    errorMessage = nil
+                    message = response.message ?? "Android 端已完成登录，正在重试播放..."
+                    await complete()
+                    return
+                }
+                if response.status == "failed" || response.status == "cancelled" {
+                    errorMessage = response.message ?? "Android Jar 二维码登录未完成"
+                    return
+                }
+                if errorMessage?.hasPrefix("状态检测失败") == true {
+                    errorMessage = nil
+                }
+            } catch {
+                pollFailureCount += 1
+                if pollFailureCount >= 3 {
+                    errorMessage = "状态检测失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func send(_ action: BridgeQrUiAction) async {
+        guard let onAction else {
+            errorMessage = "当前页面没有连接 Android Jar 弹窗操作接口"
+            return
+        }
+        isSendingAction = true
+        errorMessage = nil
+        defer { isSendingAction = false }
+        do {
+            let response = try await onAction(action)
+            apply(response)
+            if action.action == "input" { selectedInput = nil }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func complete() async {
+        let taskToCancel = pollTask
+        pollTask = nil
+        isPolling = false
+        if !didAutoComplete { taskToCancel?.cancel() }
+        didFinish = true
+        isCompleting = true
+        defer { isCompleting = false }
+        await onComplete()
+    }
+
+    @MainActor
+    private func cancelLogin() async {
+        guard !isCompleting else { return }
+        didFinish = true
+        pollTask?.cancel()
+        pollTask = nil
+        isPolling = false
+        if let onAction {
+            isSendingAction = true
+            _ = try? await onAction(.named("cancel"))
+            isSendingAction = false
+        }
+        onCancel()
+    }
+
+    @MainActor
+    private func apply(_ response: BridgeQrLoginResponse) {
+        if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
+        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
+        applyToast(response.toast)
+    }
+
+    @MainActor
+    private func apply(_ response: BridgeQrStatusResponse) {
+        if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
+        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
+        applyToast(response.toast)
+    }
+
+    @MainActor
+    private func applySnapshot(image: String?, width: Double?, height: Double?, elements: [BridgeUiElement]?) {
+        if let data = Self.decodeDataURL(image) { imageData = data }
+        if let width, width > 0 { canvasWidth = width }
+        if let height, height > 0 { canvasHeight = height }
+        if let elements { self.elements = elements }
+    }
+
+    @MainActor
+    private func applyToast(_ toast: BridgeTransientOverlay?) {
+        guard let toast, !toast.message.isEmpty else { return }
+        toastTask?.cancel()
+        toastMessage = toast.message
+        let duration = UInt64(max(toast.durationMs ?? 2200, 800)) * 1_000_000
+        toastTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: duration)
+            } catch {
+                return
+            }
+            await MainActor.run {
+                toastMessage = nil
+                toastTask = nil
+            }
+        }
+    }
+
+    private func remoteCanvas(data: Data) -> some View {
+        GeometryReader { proxy in
+            let layout = canvasLayout(in: proxy.size)
+            ZStack(alignment: .topLeading) {
+                platformImage(data: data)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: layout.displayWidth, height: layout.displayHeight)
+                    .background(Color.black.opacity(0.04))
+                    .position(x: layout.offsetX + layout.displayWidth / 2, y: layout.offsetY + layout.displayHeight / 2)
+                    .gesture(
+                        DragGesture(minimumDistance: 0).onEnded { value in
+                            guard layout.scale > 0 else { return }
+                            let x = Double(value.location.x / layout.scale)
+                            let y = Double(value.location.y / layout.scale)
+                            guard x >= 0, y >= 0, x <= canvasWidth, y <= canvasHeight else { return }
+                            Task { await send(.click(x: x, y: y)) }
+                        }
+                    )
+
+                ForEach(elements.filter { $0.isInteractive && $0.enabled != false }) { element in
+                    Button {
+                        if element.role == "input" {
+                            selectedInput = element
+                            inputText = ""
+                        } else {
+                            Task { await send(.click(element: element)) }
+                        }
+                    } label: {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(element.role == "input" ? Color.accentColor.opacity(0.14) : Color.accentColor.opacity(0.07))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.accentColor.opacity(element.role == "input" ? 0.65 : 0.35), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: CGFloat(element.width) * layout.scale, height: CGFloat(element.height) * layout.scale)
+                    .position(
+                        x: layout.offsetX + CGFloat(element.x + element.width / 2) * layout.scale,
+                        y: layout.offsetY + CGFloat(element.y + element.height / 2) * layout.scale
+                    )
+                    .accessibilityLabel(element.text?.isEmpty == false ? element.text! : element.role)
+                }
+            }
+        }
+        .frame(height: 430)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func canvasLayout(in size: CGSize) -> RemoteCanvasLayout {
+        let sourceWidth = max(CGFloat(canvasWidth), 1)
+        let sourceHeight = max(CGFloat(canvasHeight), 1)
+        let scale = min(size.width / sourceWidth, size.height / sourceHeight)
+        let displayWidth = sourceWidth * scale
+        let displayHeight = sourceHeight * scale
+        return RemoteCanvasLayout(
+            scale: scale,
+            displayWidth: displayWidth,
+            displayHeight: displayHeight,
+            offsetX: (size.width - displayWidth) / 2,
+            offsetY: (size.height - displayHeight) / 2
+        )
+    }
+
+    private static func decodeDataURL(_ value: String?) -> Data? {
+        guard var text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        if let range = text.range(of: "base64,") { text = String(text[range.upperBound...]) }
+        return Data(base64Encoded: text)
+    }
+
+    private func platformImage(data: Data) -> Image {
+        #if os(macOS)
+        if let image = NSImage(data: data) {
+            return Image(nsImage: image)
+        }
+        return Image(systemName: "qrcode")
+        #else
+        if let image = UIImage(data: data) {
+            return Image(uiImage: image)
+        }
+        return Image(systemName: "qrcode")
+        #endif
+    }
+}
+
+private struct RemoteCanvasLayout {
+    let scale: CGFloat
+    let displayWidth: CGFloat
+    let displayHeight: CGFloat
+    let offsetX: CGFloat
+    let offsetY: CGFloat
+}
+
+private struct BridgeWebLoginSheet: View {
+    let login: BridgePromptLogin
+    let isSubmitting: Bool
+    let onCancel: () -> Void
+    let onSubmit: (String) -> Void
+    @State private var webView: WKWebView?
+    @State private var errorMessage: String?
+    @State private var statusMessage = "正在打开登录页..."
+    @State private var isReadingCookies = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let url = URL(string: login.url) {
+                    BridgeLoginWebView(url: url, webView: $webView)
+                } else {
+                    Text("登录地址无效")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+
+                HStack(spacing: 8) {
+                    if isReadingCookies || isSubmitting {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+                if let errorMessage, !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+
+                HStack(spacing: 12) {
+                    Button("取消", role: .cancel) { onCancel() }
+                        .buttonStyle(.bordered)
+                        .disabled(isSubmitting)
+
+                    Button {
+                        Task { await extractCookies() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isReadingCookies || isSubmitting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isReadingCookies || isSubmitting ? "保存中" : "保存登录状态")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSubmitting || isReadingCookies)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+            }
+            .navigationTitle(login.title ?? "扫码登录")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", role: .cancel) { onCancel() }
+                        .disabled(isSubmitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isReadingCookies || isSubmitting ? "保存中" : "保存授权") {
+                        Task { await extractCookies() }
+                    }
+                    .disabled(isSubmitting || isReadingCookies)
+                }
+            }
+        }
+        .task {
+            await waitForLoginPage()
+        }
+        #if os(macOS)
+        .frame(minWidth: 760, minHeight: 620)
+        #endif
+    }
+
+    private func waitForLoginPage() async {
+        while webView == nil && !Task.isCancelled {
+            statusMessage = "正在打开登录页..."
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        statusMessage = "请在隔离登录页完成扫码后点击保存授权"
+    }
+
+    @MainActor
+    private func extractCookies() async -> Bool {
+        guard let webView else {
+            statusMessage = "登录页还在初始化"
+            errorMessage = "请稍等片刻再试"
+            return false
+        }
+        isReadingCookies = true
+        statusMessage = "正在检测登录状态..."
+        errorMessage = nil
+        defer {
+            isReadingCookies = false
+        }
+        let domains = login.domains ?? []
+        let selected = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+            .filter { cookie in matches(cookie: cookie, domains: domains) }
+        let cookieValue = selected
+            .sorted { left, right in
+                left.domain == right.domain ? left.name < right.name : left.domain < right.domain
+            }
+            .map { "\($0.name)=\($0.value)" }
+            .joined(separator: "; ")
+        guard !cookieValue.isEmpty else {
+            statusMessage = "未检测到登录状态"
+            errorMessage = "请先完成网页登录或扫码确认"
+            return false
+        }
+        guard looksAuthenticated(cookies: selected) else {
+            statusMessage = "等待扫码确认..."
+            errorMessage = "请先完成网页登录或扫码确认"
+            return false
+        }
+        isReadingCookies = true
+        statusMessage = "已检测到登录状态，正在保存到 Android Bridge..."
+        errorMessage = nil
+        onSubmit(cookieValue)
+        return true
+    }
+
+    private func matches(cookie: HTTPCookie, domains: [String]) -> Bool {
+        guard !domains.isEmpty else { return true }
+        let cookieDomain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return domains.contains { domain in
+            let normalized = domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return cookieDomain == normalized || cookieDomain.hasSuffix("." + normalized)
+        }
+    }
+
+    private func looksAuthenticated(cookies: [HTTPCookie]) -> Bool {
+        let names = Set(cookies.map { $0.name.lowercased() })
+        let url = login.url.lowercased()
+        if url.contains("quark") || url.contains("uc.cn") {
+            let authNames: Set<String> = ["__pus", "__puus"]
+            return names.contains { authNames.contains($0) }
+        }
+        if url.contains("alipan") || url.contains("aliyundrive") {
+            return names.contains { $0.contains("token") || $0.contains("login") || $0.contains("session") }
+                || cookies.contains { $0.value.count > 80 }
+        }
+        return cookies.contains { $0.value.count > 40 }
+    }
+}
+
+private extension WKHTTPCookieStore {
+    func allCookies() async -> [HTTPCookie] {
+        await withCheckedContinuation { continuation in
+            getAllCookies { cookies in
+                continuation.resume(returning: cookies)
+            }
+        }
+    }
+}
+
+#if os(iOS)
+private struct BridgeLoginWebView: UIViewRepresentable {
+    let url: URL
+    @Binding var webView: WKWebView?
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView(frame: .zero, configuration: makeBridgeLoginConfiguration())
+        DispatchQueue.main.async { webView = view }
+        view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+        return view
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+#else
+private struct BridgeLoginWebView: NSViewRepresentable {
+    let url: URL
+    @Binding var webView: WKWebView?
+
+    func makeNSView(context: Context) -> WKWebView {
+        let view = WKWebView(frame: .zero, configuration: makeBridgeLoginConfiguration())
+        DispatchQueue.main.async { webView = view }
+        view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+        return view
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {}
+}
+#endif
+
+private func makeBridgeLoginConfiguration() -> WKWebViewConfiguration {
+    let configuration = WKWebViewConfiguration()
+    configuration.websiteDataStore = .nonPersistent()
+    return configuration
 }
 
 /// 全屏播放器

@@ -23,10 +23,12 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let type: Int
     /// 扩展参数（remote 源常用）。
     let ext: String?
+    /// type=3 站点级 jar；为空时应使用配置顶层 spider fallback。
+    let jar: String?
     
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
-         playerType: Int = 0, type: Int = 1, ext: String? = nil) {
+            playerType: Int = 0, type: Int = 1, ext: String? = nil, jar: String? = nil) {
         self.key = key
         self.name = name
         self.api = api
@@ -36,15 +38,22 @@ struct SourceBean: Codable, Identifiable, Hashable {
         self.playerType = playerType
         self.type = type
         self.ext = ext
+        self.jar = jar
     }
     
     var isSearchable: Bool { searchable == 1 }
     var isFilterable: Bool { filterable == 1 }
     var isQuickSearchEnabled: Bool { quickSearch == 1 }
     
-    /// 是否在 Swift 版中受支持（type=3 为 JAR/Spider，需要 Java 运行时，暂不支持）
+    /// 是否由 Swift 本地直接支持；type=3 需要 Bridge Server。
     var isSupportedInSwift: Bool {
         return type == 0 || type == 1 || type == 4
+    }
+    
+    var requiresBridge: Bool { type == 3 }
+    
+    var isPlayableWithBridge: Bool {
+        isSupportedInSwift || (requiresBridge && BridgeClient.shared.isEnabled)
     }
     
     /// 类型描述

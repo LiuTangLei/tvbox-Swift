@@ -27,6 +27,16 @@ enum PlayerEngine: Int, CaseIterable, Identifiable {
         return false
         #endif
     }
+
+    /// 默认点播内核。VLCKit 可用时优先使用 VLC，提升格式与字幕/音轨兼容性。
+    static var defaultVodEngine: PlayerEngine {
+        isVLCAvailable ? .vlc : .system
+    }
+
+    /// 默认直播内核。
+    static var defaultLiveEngine: PlayerEngine {
+        isVLCAvailable ? .vlc : .system
+    }
     
     /// 实际可供用户选择的播放器列表。
     /// 当 VLC 不可用时，仅暴露系统播放器，避免无效配置。
@@ -49,6 +59,54 @@ enum PlayerEngine: Int, CaseIterable, Identifiable {
         }
         
         return engine
+    }
+}
+
+/// 媒体轨道类型。
+enum MediaTrackKind: String, Hashable {
+    case audio
+    case subtitle
+
+    var title: String {
+        switch self {
+        case .audio:
+            return "音轨"
+        case .subtitle:
+            return "字幕"
+        }
+    }
+
+    var disabledTitle: String {
+        switch self {
+        case .audio:
+            return "关闭音频"
+        case .subtitle:
+            return "关闭字幕"
+        }
+    }
+}
+
+/// 播放器 UI 使用的统一轨道选项。
+struct MediaTrackOption: Identifiable, Equatable, Hashable {
+    let id: String
+    let kind: MediaTrackKind
+    let title: String
+    let rawValue: Int
+    let isDisabled: Bool
+
+    static func disabled(kind: MediaTrackKind, id: String? = nil) -> MediaTrackOption {
+        MediaTrackOption(
+            id: id ?? "\(kind.rawValue)-disabled",
+            kind: kind,
+            title: kind.disabledTitle,
+            rawValue: -1,
+            isDisabled: true
+        )
+    }
+
+    var compactTitle: String {
+        guard title.count > 8 else { return title }
+        return String(title.prefix(8)) + "..."
     }
 }
 

@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import SwiftUI
+
+private let detailPlaybackLogger = Logger(subsystem: "com.tvbox.app", category: "detail-playback")
 
 struct PlaybackQualityOption: Identifiable, Hashable {
     /// “自动”选项固定标识。
@@ -35,6 +38,10 @@ class DetailViewModel: ObservableObject {
     @Published var selectedEpisodeIndex: Int = 0
     /// 是否处于播放态。
     @Published var isPlaying = false
+    /// Bridge 播放地址解析状态。
+    @Published var isResolvingBridgePlayback = false
+    /// Bridge 播放解析或登录提示。
+    @Published var bridgePlaybackMessage: String?
     /// 当前实际播放地址（可能是原始地址，也可能是清晰度切换后的子流地址）。
     @Published var playUrl: String?
     /// 续播起始位置（秒）。
@@ -43,6 +50,14 @@ class DetailViewModel: ObservableObject {
     @Published var qualityOptions: [PlaybackQualityOption] = []
     /// 当前选中的清晰度 id。
     @Published var selectedQualityId: String = PlaybackQualityOption.autoIdentifier
+    /// Bridge 网盘 Token 输入请求。
+    @Published var bridgeTokenPrompt: BridgeTokenPrompt?
+    /// 是否展示 Bridge Token / 登录弹窗。
+    @Published var isBridgeTokenPromptPresented = false
+    /// Bridge Token 提交状态。
+    @Published var isSubmittingBridgeToken = false
+    /// Bridge Token 提交错误。
+    @Published var bridgeTokenErrorMessage: String?
     /// 播放器高频回调进度，不直接绑定 UI，避免高频刷新引发性能问题。
     private var realtimeProgressSeconds: Double = 0
     
@@ -57,11 +72,15 @@ class DetailViewModel: ObservableObject {
     private var qualityResolveTask: Task<Void, Never>?
     /// 解析令牌，防止异步结果回写到过期状态。
     private var qualityResolveToken = UUID()
+    private var currentSource: SourceBean?
+    private var playbackResolveToken = UUID()
+    private var pendingBridgePlayback: PendingBridgePlayback?
     
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
         guard let source = ApiConfig.shared.getSource(key: video.sourceKey)
                 ?? ApiConfig.shared.homeSourceBean else { return }
+        currentSource = source
         
         isLoading = true
         errorMessage = nil
@@ -73,7 +92,13 @@ class DetailViewModel: ObservableObject {
                 self.selectedEpisodeIndex = info.playIndex
                 self.resumeSeconds = 0
                 self.realtimeProgressSeconds = 0
-                if let episode = info.currentEpisode {
+                self.isResolvingBridgePlayback = false
+                self.bridgePlaybackMessage = nil
+                self.bridgeTokenPrompt = nil
+                self.isBridgeTokenPromptPresented = false
+                if source.requiresBridge {
+                    resetQualityState()
+                } else if let episode = info.currentEpisode {
                     updateQualityOptions(for: episode.url, resetSelection: true)
                 } else {
                     resetQualityState()
@@ -108,28 +133,36 @@ class DetailViewModel: ObservableObject {
         selectedEpisodeIndex = targetIndex
         vodInfo?.playIndex = targetIndex
         let episodeURL = episodes[targetIndex].url
-        updateQualityOptions(for: episodeURL, resetSelection: true)
+        if currentSource?.requiresBridge == true {
+            resetQualityState()
+        } else {
+            updateQualityOptions(for: episodeURL, resetSelection: true)
+        }
         
         // 播放中切线路时，立即切换到新线路对应剧集
-        if isPlaying {
-            playUrl = selectedPlayableURL(fallback: episodeURL)
+        if isPlaying || isResolvingBridgePlayback {
+            startPlayback(episodeURL: episodeURL, flag: selectedFlag)
         }
     }
     
     /// 选择剧集并播放
     func selectEpisode(index: Int) {
-        guard selectedEpisodeIndex != index || !isPlaying else { return }
+        guard selectedEpisodeIndex != index || !isPlaying || isResolvingBridgePlayback else { return }
         selectedEpisodeIndex = index
         vodInfo?.playIndex = index
         resumeSeconds = 0
         realtimeProgressSeconds = 0
+        detailPlaybackLogger.info("select episode index=\(index, privacy: .public) flag=\(self.selectedFlag, privacy: .public) source=\(self.currentSource?.key ?? "", privacy: .public) bridge=\(self.currentSource?.requiresBridge == true, privacy: .public)")
         
         if let episode = vodInfo?.currentEpisode {
-            // 仅当剧集 URL 变化时重置清晰度选择。
-            let shouldResetQuality = qualityBaseEpisodeURL != episode.url
-            updateQualityOptions(for: episode.url, resetSelection: shouldResetQuality)
-            playUrl = selectedPlayableURL(fallback: episode.url)
-            isPlaying = true
+            if currentSource?.requiresBridge == true {
+                resetQualityState()
+            } else {
+                // 仅当剧集 URL 变化时重置清晰度选择。
+                let shouldResetQuality = qualityBaseEpisodeURL != episode.url
+                updateQualityOptions(for: episode.url, resetSelection: shouldResetQuality)
+            }
+            startPlayback(episodeURL: episode.url, flag: selectedFlag)
         }
     }
     
@@ -154,9 +187,12 @@ class DetailViewModel: ObservableObject {
         resumeSeconds = progress
         realtimeProgressSeconds = progress
         let episodeURL = episodes[targetIndex].url
-        updateQualityOptions(for: episodeURL, resetSelection: true)
-        playUrl = selectedPlayableURL(fallback: episodeURL)
-        isPlaying = true
+        if currentSource?.requiresBridge == true {
+            resetQualityState()
+        } else {
+            updateQualityOptions(for: episodeURL, resetSelection: true)
+        }
+        startPlayback(episodeURL: episodeURL, flag: selectedFlag)
     }
     
     /// 选择清晰度
@@ -236,6 +272,131 @@ class DetailViewModel: ObservableObject {
             return selected
         }
         return fallback
+    }
+    
+    private func startPlayback(episodeURL: String, flag: String) {
+        guard let source = currentSource, source.requiresBridge else {
+            playbackResolveToken = UUID()
+            isResolvingBridgePlayback = false
+            bridgePlaybackMessage = nil
+            bridgeTokenPrompt = nil
+            isBridgeTokenPromptPresented = false
+            playUrl = selectedPlayableURL(fallback: episodeURL)
+            isPlaying = true
+            return
+        }
+        let token = UUID()
+        playbackResolveToken = token
+        isPlaying = false
+        isResolvingBridgePlayback = true
+        bridgePlaybackMessage = "正在获取播放地址..."
+        playUrl = nil
+        bridgeTokenPrompt = nil
+        isBridgeTokenPromptPresented = false
+        bridgeTokenErrorMessage = nil
+        errorMessage = nil
+        detailPlaybackLogger.info("bridge play start source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
+        Task { [source, episodeURL, flag, token] in
+            do {
+                let resolvedURL = try await BridgeClient.shared.play(source: source, flag: flag, id: episodeURL)
+                guard playbackResolveToken == token else { return }
+                detailPlaybackLogger.info("bridge play resolved source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
+                isResolvingBridgePlayback = false
+                bridgePlaybackMessage = nil
+                playUrl = resolvedURL
+                isPlaying = true
+                errorMessage = nil
+            } catch {
+                guard playbackResolveToken == token else { return }
+                isResolvingBridgePlayback = false
+                if case BridgeError.tokenRequired(let prompt) = error {
+                    detailPlaybackLogger.info("bridge token required source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public)")
+                    pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
+                    isPlaying = false
+                    playUrl = nil
+                    bridgePlaybackMessage = prompt.message
+                    bridgeTokenErrorMessage = nil
+                    errorMessage = nil
+                    bridgeTokenPrompt = prompt
+                    isBridgeTokenPromptPresented = true
+                    return
+                }
+                detailPlaybackLogger.error("bridge play failed source=\(source.key, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                errorMessage = error.localizedDescription
+                bridgePlaybackMessage = nil
+                isPlaying = false
+            }
+        }
+    }
+
+    func presentBridgeTokenPrompt() {
+        guard bridgeTokenPrompt != nil else { return }
+        isBridgeTokenPromptPresented = true
+    }
+
+    func dismissBridgeTokenPromptPresentation() {
+        isBridgeTokenPromptPresented = false
+    }
+
+    func cancelBridgeTokenPrompt() {
+        bridgeTokenPrompt = nil
+        isBridgeTokenPromptPresented = false
+        bridgeTokenErrorMessage = nil
+        bridgePlaybackMessage = nil
+        isSubmittingBridgeToken = false
+    }
+
+    func submitBridgeToken(values: [String: String]) async {
+        guard let prompt = bridgeTokenPrompt, let pending = pendingBridgePlayback else { return }
+        isSubmittingBridgeToken = true
+        bridgeTokenErrorMessage = nil
+        do {
+            try await BridgeClient.shared.submitToken(source: pending.source, prompt: prompt, values: values)
+            isSubmittingBridgeToken = false
+            bridgeTokenPrompt = nil
+            isBridgeTokenPromptPresented = false
+            bridgeTokenErrorMessage = nil
+            bridgePlaybackMessage = nil
+            let retryEpisodeURL = prompt.retry?.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let retryFlag = prompt.retry?.flag?.trimmingCharacters(in: .whitespacesAndNewlines)
+            startPlayback(
+                episodeURL: retryEpisodeURL?.isEmpty == false ? retryEpisodeURL! : pending.episodeURL,
+                flag: retryFlag?.isEmpty == false ? retryFlag! : pending.flag
+            )
+        } catch {
+            isSubmittingBridgeToken = false
+            bridgeTokenErrorMessage = error.localizedDescription
+        }
+    }
+
+    func startBridgeQrLogin(prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+        guard let pending = pendingBridgePlayback else { throw BridgeError.notConfigured }
+        return try await BridgeClient.shared.qrLogin(source: pending.source, prompt: prompt)
+    }
+
+    func pollBridgeQrLogin() async throws -> BridgeQrStatusResponse {
+        guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
+        return try await BridgeClient.shared.qrStatus(source: pending.source, prompt: prompt)
+    }
+
+    func completeBridgeQrLogin() async {
+        guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { return }
+        do {
+            try await BridgeClient.shared.qrConfirm(source: pending.source, prompt: prompt)
+        } catch {
+            bridgeTokenErrorMessage = error.localizedDescription
+            return
+        }
+        bridgeTokenPrompt = nil
+        isBridgeTokenPromptPresented = false
+        bridgeTokenErrorMessage = nil
+        bridgePlaybackMessage = nil
+        startPlayback(episodeURL: pending.episodeURL, flag: pending.flag)
+    }
+
+    func sendBridgeQrAction(_ action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
+        guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
+        return try await BridgeClient.shared.qrAction(source: pending.source, prompt: prompt, action: action)
     }
     
     /// 重置清晰度解析与选择状态。
@@ -488,5 +649,11 @@ class DetailViewModel: ObservableObject {
             parts.append(tail)
         }
         return parts
+    }
+
+    private struct PendingBridgePlayback {
+        let source: SourceBean
+        let episodeURL: String
+        let flag: String
     }
 }

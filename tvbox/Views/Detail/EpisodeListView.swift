@@ -6,6 +6,10 @@ struct EpisodeListView: View {
     let episodes: [VodInfo.Episode]
     /// 外部传入的当前选中集索引（绝对索引）。
     let selectedIndex: Int
+    /// 当前是否正在解析 Bridge 播放地址。
+    let isResolving: Bool
+    /// 正在解析的剧集索引。
+    let resolvingIndex: Int?
     /// 点击某一集后的回调（返回绝对索引）。
     let onSelect: (Int) -> Void
     
@@ -73,29 +77,39 @@ struct EpisodeListView: View {
                     Button {
                         onSelect(actualIndex)
                     } label: {
-                        Text(episode.name)
-                            .font(.system(size: 13, weight: actualIndex == selectedIndex ? .bold : .medium))
-                            .foregroundColor(actualIndex == selectedIndex ? .white : .white.opacity(0.7))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(
-                                ZStack {
-                                    if actualIndex == selectedIndex {
-                                        AppTheme.accentGradient
-                                    } else {
-                                        Color.white.opacity(0.05)
-                                    }
+                        ZStack {
+                            Text(episode.name)
+                                .font(.system(size: 13, weight: actualIndex == selectedIndex ? .bold : .medium))
+                                .foregroundColor(actualIndex == selectedIndex ? .white : .white.opacity(0.7))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
+                                .opacity(isResolving && resolvingIndex == actualIndex ? 0 : 1)
+
+                            if isResolving && resolvingIndex == actualIndex {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(.white)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(
+                            ZStack {
+                                if actualIndex == selectedIndex {
+                                    AppTheme.accentGradient
+                                } else {
+                                    Color.white.opacity(0.05)
                                 }
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(actualIndex == selectedIndex ? Color.clear : Color.white.opacity(0.1), lineWidth: 0.5)
-                            )
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(actualIndex == selectedIndex ? Color.clear : Color.white.opacity(0.1), lineWidth: 0.5)
+                        )
                     }
                     .buttonStyle(.plain)
+                    .disabled(isResolving)
                 }
             }
             .padding(.horizontal, 20)

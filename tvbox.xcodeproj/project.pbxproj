@@ -33,6 +33,7 @@
 		45D7A96C98872769AE01C131 /* tvboxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D163D4F6A45E9ACA696071 /* tvboxApp.swift */; };
 		485F358B964A4CB6E5AC4E03 /* Movie.swift in Sources */ = {isa = PBXBuildFile; fileRef = D791457269BE952C496ECE55 /* Movie.swift */; };
 		49FCE735A7CD8228369E3824 /* SourceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DFDD8C597739AD4B443C03 /* SourceService.swift */; };
+		4A5B6C7D8E9F001122334455 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5B6C7D8E9F001122334454 /* BridgeClient.swift */; };
 		4C4402D4594D06EA9D76960A /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7F257F6B68F93D58E8C032 /* SettingsViewModel.swift */; };
 		4E84E7083C81F5A8E3C8FFD8 /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131429F267F6A418C282831A /* DetailView.swift */; };
 		5230AE350F993A4792B03F74 /* NetworkManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1006DD8209F63DC3AC3C718 /* NetworkManager.swift */; };
@@ -64,6 +65,7 @@
 		B06E33645C9D8322D7474962 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE52456C613016065CF59F9C /* HistoryView.swift */; };
 		B271873FE89F02840EAC6975 /* VLCPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEDBFF884A656042E3EF74AA /* VLCPlayerView.swift */; };
 		B86C3ACE754B5F52B70588A9 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7752B731B0A015EB4B85BFB1 /* NetworkMonitor.swift */; };
+		B8C9DAEBFC0D112233445566 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5B6C7D8E9F001122334454 /* BridgeClient.swift */; };
 		BB051B00E5F63DCFF9BC013A /* EmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E7FB1EF8D1D9B109BFE7981 /* EmptyStateView.swift */; };
 		BB36351815C53AC6EACB475A /* VodInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA608E781D094B187D3034FD /* VodInfo.swift */; };
 		BD7E2108F8C884E1DD6EC1B9 /* tvboxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D163D4F6A45E9ACA696071 /* tvboxApp.swift */; };
@@ -89,6 +91,7 @@
 		21306B53D5CA8BB88593A55D /* LiveViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveViewModel.swift; sourceTree = "<group>"; };
 		2C92A5E4E28B59BF75D39706 /* HomeViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViewModel.swift; sourceTree = "<group>"; };
 		3EE159FC0B6328166F56CE36 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		4A5B6C7D8E9F001122334454 /* BridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeClient.swift; sourceTree = "<group>"; };
 		54D163D4F6A45E9ACA696071 /* tvboxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tvboxApp.swift; sourceTree = "<group>"; };
 		617855BC3AE2B293C71A0DA4 /* SourceBean.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceBean.swift; sourceTree = "<group>"; };
 		6D8B3DC7E0B9C01A294C47FC /* DetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailViewModel.swift; sourceTree = "<group>"; };
@@ -150,6 +153,7 @@
 			isa = PBXGroup;
 			children = (
 				D6F94E23C5085A1C8ACB4856 /* ApiConfig.swift */,
+				4A5B6C7D8E9F001122334454 /* BridgeClient.swift */,
 				D1006DD8209F63DC3AC3C718 /* NetworkManager.swift */,
 				7752B731B0A015EB4B85BFB1 /* NetworkMonitor.swift */,
 				D5DFDD8C597739AD4B443C03 /* SourceService.swift */,
@@ -427,6 +431,7 @@
 			files = (
 				633ECC16BBEA9AB61841F8A3 /* ApiConfig.swift in Sources */,
 				3E399383D92192CDA8840FEB /* AppConfig.swift in Sources */,
+				4A5B6C7D8E9F001122334455 /* BridgeClient.swift in Sources */,
 				DB893501C654D6CC2D71D198 /* CacheStore.swift in Sources */,
 				0E9ABBA046E84A91B5DC3BBB /* ContentView.swift in Sources */,
 				2C85CE605FC864EB479F3CCC /* DesignSystem.swift in Sources */,
@@ -467,6 +472,7 @@
 			files = (
 				3F69F139D892A91CA7DA6C73 /* ApiConfig.swift in Sources */,
 				D6F4B32786BF79CBF6AB77EA /* AppConfig.swift in Sources */,
+				B8C9DAEBFC0D112233445566 /* BridgeClient.swift in Sources */,
 				6EC44AD626C64BC902CD9D1B /* CacheStore.swift in Sources */,
 				01259DBB84CEFA52CB5BC8C1 /* ContentView.swift in Sources */,
 				16D0E98EA5DF105764396919 /* DesignSystem.swift in Sources */,

@@ -1,0 +1,536 @@
+import Foundation
+import OSLog
+
+private let bridgeClientLogger = Logger(subsystem: "com.tvbox.app", category: "bridge-client")
+
+struct BridgeHealth: Decodable {
+    let ok: Bool
+    let version: String?
+    let address: String?
+    let port: Int?
+    let runtimes: [String: String]?
+}
+
+struct BridgeTransientOverlay: Decodable, Hashable {
+    let type: String?
+    let message: String
+    let durationMs: Int?
+}
+
+struct BridgePlayResponse: Decodable {
+    let ok: Bool?
+    let mode: String?
+    let url: String?
+    let code: String?
+    let message: String?
+    let prompt: BridgeTokenPrompt?
+}
+
+struct BridgeActionResponse: Decodable {
+    let ok: Bool?
+    let mode: String?
+    let action: String?
+    let code: String?
+    let message: String?
+    let prompt: BridgeTokenPrompt?
+    let prompts: [BridgeTokenPrompt]?
+}
+
+struct BridgeQrLoginResponse: Decodable {
+    let ok: Bool?
+    let mode: String?
+    let provider: String?
+    let message: String?
+    let image: String?
+    let width: Double?
+    let height: Double?
+    let elements: [BridgeUiElement]?
+    let toast: BridgeTransientOverlay?
+    let code: String?
+}
+
+struct BridgeQrStatusResponse: Decodable {
+    let ok: Bool?
+    let mode: String?
+    let provider: String?
+    let status: String?
+    let done: Bool?
+    let message: String?
+    let image: String?
+    let width: Double?
+    let height: Double?
+    let elements: [BridgeUiElement]?
+    let toast: BridgeTransientOverlay?
+    let code: String?
+
+    var isCompleted: Bool {
+        done == true || status == "completed" || status == "success"
+    }
+}
+
+struct BridgeUiElement: Decodable, Identifiable, Hashable {
+    let id: String
+    let role: String
+    let text: String?
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+    let enabled: Bool?
+
+    var isInteractive: Bool {
+        role == "button" || role == "input"
+    }
+}
+
+struct BridgeQrUiAction: Encodable, Hashable {
+    let action: String
+    let elementId: String?
+    let text: String?
+    let x: Double?
+    let y: Double?
+
+    static func click(element: BridgeUiElement) -> BridgeQrUiAction {
+        BridgeQrUiAction(action: "click", elementId: element.id, text: nil, x: nil, y: nil)
+    }
+
+    static func click(x: Double, y: Double) -> BridgeQrUiAction {
+        BridgeQrUiAction(action: "click", elementId: nil, text: nil, x: x, y: y)
+    }
+
+    static func input(element: BridgeUiElement, text: String) -> BridgeQrUiAction {
+        BridgeQrUiAction(action: "input", elementId: element.id, text: text, x: nil, y: nil)
+    }
+
+    static func named(_ action: String) -> BridgeQrUiAction {
+        BridgeQrUiAction(action: action, elementId: nil, text: nil, x: nil, y: nil)
+    }
+}
+
+struct BridgeTokenPrompt: Decodable, Identifiable, Hashable {
+    let provider: String
+    let title: String
+    let message: String
+    let login: BridgePromptLogin?
+    let fields: [BridgePromptField]
+    let retry: BridgePromptRetry?
+
+    var id: String {
+        "\(provider)-\(retry?.flag ?? "")-\(retry?.id ?? message)"
+    }
+}
+
+struct BridgePromptField: Decodable, Identifiable, Hashable {
+    let key: String
+    let label: String
+    let placeholder: String?
+    let secure: Bool?
+    let multiline: Bool?
+
+    var id: String { key }
+}
+
+struct BridgePromptLogin: Decodable, Hashable {
+    let type: String
+    let title: String?
+    let url: String
+    let cookieKey: String?
+    let domains: [String]?
+}
+
+struct BridgePromptRetry: Decodable, Hashable {
+    let flag: String?
+    let id: String?
+}
+
+enum BridgeError: LocalizedError {
+    case notConfigured
+    case invalidBaseURL(String)
+    case invalidResponse
+    case server(String)
+    case unsupportedPlayback(String)
+    case tokenRequired(BridgeTokenPrompt)
+    
+    var errorDescription: String? {
+        switch self {
+        case .notConfigured: return "请先在设置中启用并配置 Type=3 Bridge Server"
+        case .invalidBaseURL(let url): return "Bridge Server 地址无效: \(url)"
+        case .invalidResponse: return "Bridge Server 响应无效"
+        case .server(let message): return "Bridge Server 错误: \(message)"
+        case .unsupportedPlayback(let message): return message
+        case .tokenRequired(let prompt): return prompt.message
+        }
+    }
+}
+
+final class BridgeClient {
+    static let shared = BridgeClient()
+    
+    private let session: URLSession
+    private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
+    private let contextQueue = DispatchQueue(label: "com.tvbox.app.bridge-client.context")
+    private var contextConfigUrl = ""
+    private var contextSpider: String?
+    
+    private init() {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 40
+        self.session = URLSession(configuration: config)
+    }
+    
+    var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: HawkConfig.BRIDGE_ENABLED)
+            && !baseURLString.isEmpty
+    }
+    
+    var baseURLString: String {
+        UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func updateConfigContext(configUrl: String, spider: String?) {
+        let trimmedUrl = configUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSpider = spider?.trimmingCharacters(in: .whitespacesAndNewlines)
+        contextQueue.sync {
+            contextConfigUrl = trimmedUrl
+            contextSpider = trimmedSpider?.isEmpty == false ? trimmedSpider : nil
+        }
+    }
+    
+    func health() async throws -> BridgeHealth {
+        let data = try await request(path: "/health", method: "GET", body: Optional<EmptyBody>.none)
+        let health = try decoder.decode(BridgeHealth.self, from: data)
+        guard health.ok else { throw BridgeError.invalidResponse }
+        return health
+    }
+    
+    func register(configUrl: String? = nil, spider: String? = nil, sources: [SourceBean], replace: Bool = false) async throws {
+        guard isEnabled else { throw BridgeError.notConfigured }
+        let context = currentConfigContext()
+        let contextUrl = configUrl ?? context.configUrl
+        let contextSpider = spider ?? context.spider
+        let payload = RegisterRequest(
+            configUrl: contextUrl,
+            spider: contextSpider,
+            replace: replace,
+            client: "tvbox-swift",
+            platform: currentPlatform,
+            preferredLocale: Locale.current.identifier,
+            sites: sources.map(BridgeSiteRequest.init(source:))
+        )
+        let data = try await request(path: "/api/v1/config/register", method: "POST", body: payload)
+        try validateBridgeOK(data)
+    }
+    
+    func home(source: SourceBean) async throws -> String {
+        try await register(sources: [source])
+        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/home", body: EmptyBody())
+    }
+    
+    func category(source: SourceBean, sortData: MovieSort.SortData, page: Int, filters: [String: String]?) async throws -> String {
+        try await register(sources: [source])
+        let payload = CategoryRequest(categoryId: sortData.id, page: page, filters: filters ?? [:])
+        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/category", body: payload)
+    }
+    
+    func detail(source: SourceBean, vodId: String) async throws -> String {
+        try await register(sources: [source])
+        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/detail", body: IdRequest(id: vodId))
+    }
+    
+    func search(source: SourceBean, keyword: String, page: Int = 1) async throws -> String {
+        try await register(sources: [source])
+        let payload = SearchRequest(keyword: keyword, page: page, quick: source.isQuickSearchEnabled)
+        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/search", body: payload)
+    }
+    
+    func play(source: SourceBean, flag: String, id: String) async throws -> String {
+        try await register(sources: [source])
+        let payload = PlayRequest(flag: flag, id: id)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
+        let response = try decoder.decode(BridgePlayResponse.self, from: data)
+        bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        if response.ok == false {
+            if response.code == "token_required", let prompt = response.prompt {
+                throw BridgeError.tokenRequired(prompt)
+            }
+            throw BridgeError.unsupportedPlayback(response.message ?? response.code ?? "Bridge 暂不支持该播放结果")
+        }
+        guard response.mode == "direct", let url = response.url, !url.isEmpty else {
+            throw BridgeError.unsupportedPlayback("Bridge 未返回可直接播放地址")
+        }
+        return url
+    }
+
+    func submitToken(source: SourceBean, prompt: BridgeTokenPrompt, values: [String: String]) async throws {
+        try await register(sources: [source])
+        let token = values["token"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = TokenSubmitRequest(provider: prompt.provider, token: token, values: values)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/token", method: "POST", body: payload)
+        try validateBridgeOK(data)
+        bridgeClientLogger.info("token submitted source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public)")
+    }
+
+    func qrLogin(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+        try await register(sources: [source])
+        let payload = QrLoginRequest(provider: prompt.provider, flag: prompt.retry?.flag, id: prompt.retry?.id)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrLogin", method: "POST", body: payload)
+        let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
+        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录失败") }
+        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge QR 登录")
+        bridgeClientLogger.info("qr login source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public) ok=\(response.ok == true, privacy: .public)")
+        return response
+    }
+
+    func qrStatus(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrStatusResponse {
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrStatus", method: "POST", body: QrStatusRequest(provider: prompt.provider, includeUi: false))
+        let response = try decoder.decode(BridgeQrStatusResponse.self, from: data)
+        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录状态检测失败") }
+        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge QR 登录状态")
+        bridgeClientLogger.info("qr status source=\(source.key, privacy: .public) status=\(response.status ?? "", privacy: .public) done=\(response.done == true, privacy: .public)")
+        return response
+    }
+
+    func qrConfirm(source: SourceBean, prompt: BridgeTokenPrompt) async throws {
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrConfirm", method: "POST", body: QrProviderRequest(provider: prompt.provider))
+        try validateBridgeOK(data)
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            try validateProvider(object["provider"] as? String, expected: prompt.provider, operation: "Bridge QR 确认")
+        }
+    }
+
+    func qrAction(source: SourceBean, prompt: BridgeTokenPrompt, action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
+        let payload = QrActionRequest(provider: prompt.provider, action: action.action, elementId: action.elementId, text: action.text, x: action.x, y: action.y)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrAction", method: "POST", body: payload)
+        let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
+        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 操作失败") }
+        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge Jar UI 操作")
+        return response
+    }
+
+    func action(source: SourceBean, action: String) async throws -> BridgeActionResponse {
+        try await register(sources: [source])
+        let payload = ActionRequest(action: action)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
+        let response = try decoder.decode(BridgeActionResponse.self, from: data)
+        bridgeClientLogger.info("action response source=\(source.key, privacy: .public) action=\(action, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        if response.ok == false {
+            if response.code == "token_required", let prompt = response.prompt {
+                throw BridgeError.tokenRequired(prompt)
+            }
+            throw BridgeError.server(response.message ?? response.code ?? "Bridge action 执行失败")
+        }
+        return response
+    }
+    
+    private func raw<T: Encodable>(path: String, body: T) async throws -> String {
+        let data = try await request(path: path, method: "POST", body: body)
+        try validateBridgeOK(data)
+        guard let text = String(data: data, encoding: .utf8) else { throw BridgeError.invalidResponse }
+        return text
+    }
+    
+    private func request<T: Encodable>(path: String, method: String, body: T?) async throws -> Data {
+        guard isEnabled || path == "/health" else { throw BridgeError.notConfigured }
+        let absolute = normalizedBaseURL() + (path.hasPrefix("/") ? path : "/\(path)")
+        guard let url = URL(string: absolute) else { throw BridgeError.invalidBaseURL(baseURLString) }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try asciiEscapedJSONData(body)
+        }
+        bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public)")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else { throw BridgeError.server("HTTP \(http.statusCode)") }
+        bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
+        return data
+    }
+
+    private func asciiEscapedJSONData<T: Encodable>(_ body: T) throws -> Data {
+        let data = try encoder.encode(body)
+        guard let text = String(data: data, encoding: .utf8) else { return data }
+
+        var escaped = ""
+        escaped.reserveCapacity(text.utf8.count)
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            if value <= 0x7F {
+                escaped.unicodeScalars.append(scalar)
+            } else if value <= 0xFFFF {
+                escaped += String(format: "\\u%04X", value)
+            } else {
+                let plane = value - 0x10000
+                let high = 0xD800 + (plane >> 10)
+                let low = 0xDC00 + (plane & 0x3FF)
+                escaped += String(format: "\\u%04X\\u%04X", high, low)
+            }
+        }
+        return Data(escaped.utf8)
+    }
+    
+    private func validateBridgeOK(_ data: Data) throws {
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        if let ok = object["ok"] as? Bool, !ok {
+            let message = object["message"] as? String
+                ?? object["code"] as? String
+                ?? "未知错误"
+            throw BridgeError.server(message)
+        }
+    }
+
+    private func validateProvider(_ provider: String?, expected: String, operation: String) throws {
+        guard let provider, !provider.isEmpty else { return }
+        guard provider.lowercased() == expected.lowercased() else {
+            throw BridgeError.server("\(operation) provider 不匹配：请求 \(expected)，返回 \(provider)")
+        }
+    }
+    
+    private func normalizedBaseURL() -> String {
+        var value = baseURLString
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    private func currentConfigContext() -> (configUrl: String?, spider: String?) {
+        contextQueue.sync {
+            (contextConfigUrl.nilIfEmpty, contextSpider)
+        }
+    }
+    
+    private func escapePath(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    }
+    
+    private var currentPlatform: String {
+        #if os(iOS)
+        return "iOS"
+        #else
+        return "macOS"
+        #endif
+    }
+}
+
+private struct EmptyBody: Encodable {}
+
+private struct RegisterRequest: Encodable {
+    let configUrl: String?
+    let spider: String?
+    let replace: Bool
+    let client: String
+    let platform: String
+    let preferredLocale: String
+    let sites: [BridgeSiteRequest]
+}
+
+private struct BridgeSiteRequest: Encodable {
+    let key: String
+    let name: String
+    let api: String
+    let searchable: Int
+    let filterable: Int
+    let quickSearch: Int
+    let playerType: Int
+    let type: Int
+    let ext: String?
+    let jar: String?
+    
+    init(source: SourceBean) {
+        key = source.key
+        name = source.name
+        api = source.api
+        searchable = source.searchable
+        filterable = source.filterable
+        quickSearch = source.quickSearch
+        playerType = source.playerType
+        type = source.type
+        ext = source.ext
+        jar = source.jar
+    }
+}
+
+private struct CategoryRequest: Encodable {
+    let categoryId: String
+    let page: Int
+    let filters: [String: String]
+}
+
+private struct IdRequest: Encodable {
+    let id: String
+}
+
+private struct SearchRequest: Encodable {
+    let keyword: String
+    let page: Int
+    let quick: Bool
+}
+
+private struct PlayRequest: Encodable {
+    let flag: String
+    let id: String
+
+    let flagBase64: String
+    let idBase64: String
+
+    init(flag: String, id: String) {
+        self.flag = flag
+        self.id = id
+        self.flagBase64 = Data(flag.utf8).base64EncodedString()
+        self.idBase64 = Data(id.utf8).base64EncodedString()
+    }
+}
+
+private struct TokenSubmitRequest: Encodable {
+    let provider: String
+    let token: String?
+    let values: [String: String]
+}
+
+private struct QrLoginRequest: Encodable {
+    let provider: String
+    let flag: String?
+    let id: String?
+
+    let flagBase64: String?
+    let idBase64: String?
+
+    init(provider: String, flag: String?, id: String?) {
+        self.provider = provider
+        self.flag = flag
+        self.id = id
+        self.flagBase64 = flag.map { Data($0.utf8).base64EncodedString() }
+        self.idBase64 = id.map { Data($0.utf8).base64EncodedString() }
+    }
+}
+
+private struct QrProviderRequest: Encodable {
+    let provider: String
+}
+
+private struct QrStatusRequest: Encodable {
+    let provider: String
+    let includeUi: Bool
+}
+
+private struct QrActionRequest: Encodable {
+    let provider: String
+    let action: String
+    let elementId: String?
+    let text: String?
+    let x: Double?
+    let y: Double?
+}
+
+private struct ActionRequest: Encodable {
+    let action: String
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}

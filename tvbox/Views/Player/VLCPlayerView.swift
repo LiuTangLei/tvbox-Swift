@@ -14,12 +14,17 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private static let maxVolume = 200
     private static let drawableSizeChangeThreshold: CGFloat = 24
     private static let drawableRebindMinimumInterval: TimeInterval = 1.2
+    private static let hasVideoOutSelector = NSSelectorFromString("hasVideoOut")
     // 这些选项在播放器实例级别生效，优先约束 libvlc 的追时钟/丢帧行为。
     private static let stablePlaybackOptions: [String] = [
         "--no-drop-late-frames",
         "--no-skip-frames",
         "--clock-synchro=0",
-        "--clock-jitter=0"
+        "--clock-jitter=0",
+        "--audio-time-stretch",
+        "--no-video-title-show",
+        "--sub-autodetect-file",
+        "--sub-autodetect-fuzzy=3"
     ]
     private static let playerInstanceSelector = NSSelectorFromString("playerInstance")
     private static let libVLCStopAsync: LibVLCStopAsyncFunction? = {
@@ -39,6 +44,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var durationSeconds: Double = 0
     @Published var playbackRate: Float = 1.0
     @Published var volume: Int = defaultVolume
+    @Published var audioTracks: [MediaTrackOption] = []
+    @Published var subtitleTracks: [MediaTrackOption] = []
+    @Published var selectedAudioTrackID: String?
+    @Published var selectedSubtitleTrackID: String?
     #if os(macOS)
     private let persistentDrawableView = NSView(frame: .zero)
     private weak var lastAttachedContainer: NSView?
@@ -47,6 +56,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private weak var lastAttachedContainer: UIView?
     #endif
     private var rebindWorkItems: [DispatchWorkItem] = []
+    private var trackRefreshWorkItems: [DispatchWorkItem] = []
     private var lastDrawableContainerIdentifier: ObjectIdentifier?
     private var lastDrawableContainerSize: CGSize = .zero
     private var lastDrawableRebindAt: Date = .distantPast
@@ -66,9 +76,12 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var hasAttemptedSoftDecodeFallback = false
     private var bufferMode: VLCBufferMode = .defaultMode
     private var bufferingFallbackWorkItem: DispatchWorkItem?
+    private var missingVideoOutputFallbackWorkItem: DispatchWorkItem?
+    private var hasReboundDrawableForMissingVideoOutput = false
     private var delayedPreparingWorkItem: DispatchWorkItem?
     private var currentMediaURLString: String?
     private var currentMediaIsLive = false
+    private var currentMediaIsBridgeProxy = false
     private var currentMediaDecodeMode: VideoDecodeMode = .auto
     private var currentMediaBufferMode: VLCBufferMode = .defaultMode
     private var onProgressChanged: ((Double, Double?) -> Void)?
@@ -77,6 +90,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private let progressUpdateIntervalVod: TimeInterval = 0.5
     private let progressUpdateIntervalLive: TimeInterval = 1.0
     private let bufferingFallbackThresholdLive: TimeInterval = 4.0
+    private let bufferingFallbackThresholdVod: TimeInterval = 3.0
+    private let missingVideoOutputMinimumPlaybackSeconds: TimeInterval = 2.0
+    private let missingVideoOutputFallbackThreshold: TimeInterval = 2.0
     private let bufferingConfirmDelayVod: TimeInterval = 0.35
     private let bufferingIndicatorDelayVod: TimeInterval = 1.2
     private let vodBufferingProgressAdvanceThreshold: Double = 0.25
@@ -120,17 +136,24 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         onPlaybackFailed: (() -> Void)?
     ) {
         let targetURLString = url.absoluteString
+        let targetIsBridgeProxy = Self.isBridgeProxyURL(url)
         let isNewMedia = currentMediaURLString != targetURLString || currentMediaIsLive != isLive
         if isNewMedia {
             resetPlaybackRecoveryState()
         }
         syncDecodeModeFromSettings()
         syncBufferModeFromSettings()
+        let effectiveDecodeMode = Self.effectiveDecodeMode(
+            configured: decodeMode,
+            isLive: isLive,
+            isBridgeProxy: targetIsBridgeProxy
+        )
         
         // 同一路径/同场景（点播或直播）时复用当前实例，避免切全屏触发重新加载
         if currentMediaURLString == targetURLString,
            currentMediaIsLive == isLive,
-           currentMediaDecodeMode == decodeMode,
+           currentMediaIsBridgeProxy == targetIsBridgeProxy,
+           currentMediaDecodeMode == effectiveDecodeMode,
            currentMediaBufferMode == bufferMode,
            mediaPlayer.media != nil {
             self.onProgressChanged = onProgressChanged
@@ -139,6 +162,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             self.isLive = isLive
             applyPlaybackRate()
             applyVolume()
+            refreshTrackOptions()
             refreshPlaybackFlags()
             emitProgress()
             return
@@ -167,14 +191,20 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "network-caching": cacheConfig.network,
             "live-caching": cacheConfig.live,
             "file-caching": cacheConfig.file,
-            "http-reconnect": 1
+            "http-reconnect": 1,
+            "http-continuous": 1,
+            "http-forward-cookies": 1,
+            "audio-time-stretch": 1,
+            "sub-autodetect-file": 1,
+            "sub-autodetect-fuzzy": 3,
+            "subsdec-encoding": "UTF-8"
         ]
         if !isLive {
             mediaOptions["avcodec-hurry-up"] = 0
             mediaOptions["clock-synchro"] = 0
         }
 
-        if let hwOption = decodeMode.vlcHardwareDecodeOption {
+        if let hwOption = effectiveDecodeMode.vlcHardwareDecodeOption {
             mediaOptions["avcodec-hw"] = hwOption
         }
         if isLive {
@@ -193,10 +223,13 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.play()
         applyPlaybackRate()
         applyVolume()
+        refreshTrackOptions()
+        scheduleTrackRefreshes()
         startProgressTimer()
         currentMediaURLString = targetURLString
         currentMediaIsLive = isLive
-        currentMediaDecodeMode = decodeMode
+        currentMediaIsBridgeProxy = targetIsBridgeProxy
+        currentMediaDecodeMode = effectiveDecodeMode
         currentMediaBufferMode = bufferMode
     }
     
@@ -204,6 +237,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         stopProgressTimer()
         resetPlaybackRecoveryState()
         cancelScheduledRebinds()
+        cancelScheduledTrackRefreshes()
         stopMediaPlayer()
         mediaPlayer.media = nil
         onProgressChanged = nil
@@ -212,8 +246,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         pendingSeekSeconds = nil
         setPlaybackStatus(preparing: false, playing: false)
         resetProgressState()
+        resetTrackOptions()
         currentMediaURLString = nil
         currentMediaIsLive = false
+        currentMediaIsBridgeProxy = false
         currentMediaDecodeMode = .auto
         currentMediaBufferMode = .defaultMode
     }
@@ -265,6 +301,18 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         } else {
             setVolume(0)
         }
+    }
+
+    func selectAudioTrack(_ track: MediaTrackOption) {
+        guard track.kind == .audio else { return }
+        mediaPlayer.currentAudioTrackIndex = Int32(track.rawValue)
+        refreshTrackOptions()
+    }
+
+    func selectSubtitleTrack(_ track: MediaTrackOption) {
+        guard track.kind == .subtitle else { return }
+        mediaPlayer.currentVideoSubTitleIndex = Int32(track.rawValue)
+        refreshTrackOptions()
     }
     
     #if os(macOS)
@@ -386,6 +434,97 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private func cancelScheduledRebinds() {
         rebindWorkItems.forEach { $0.cancel() }
         rebindWorkItems.removeAll()
+    }
+
+    private func scheduleTrackRefreshes() {
+        cancelScheduledTrackRefreshes()
+        [0.2, 0.8, 2.0].forEach { delay in
+            let workItem = DispatchWorkItem { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.refreshTrackOptions()
+                }
+            }
+            trackRefreshWorkItems.append(workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    }
+
+    private func cancelScheduledTrackRefreshes() {
+        trackRefreshWorkItems.forEach { $0.cancel() }
+        trackRefreshWorkItems.removeAll()
+    }
+
+    private func refreshTrackOptions() {
+        let audioOptions = Self.trackOptions(
+            kind: .audio,
+            names: Self.anyArray(mediaPlayer.audioTrackNames),
+            indexes: Self.anyArray(mediaPlayer.audioTrackIndexes)
+        )
+        let subtitleOptions = Self.trackOptions(
+            kind: .subtitle,
+            names: Self.anyArray(mediaPlayer.videoSubTitlesNames),
+            indexes: Self.anyArray(mediaPlayer.videoSubTitlesIndexes)
+        )
+        let selectedAudioID = audioOptions.first { $0.rawValue == Int(mediaPlayer.currentAudioTrackIndex) }?.id
+            ?? audioOptions.first?.id
+        let selectedSubtitleID = subtitleOptions.first { $0.rawValue == Int(mediaPlayer.currentVideoSubTitleIndex) }?.id
+            ?? subtitleOptions.first { $0.isDisabled }?.id
+            ?? subtitleOptions.first?.id
+
+        if audioTracks != audioOptions { audioTracks = audioOptions }
+        if subtitleTracks != subtitleOptions { subtitleTracks = subtitleOptions }
+        if selectedAudioTrackID != selectedAudioID { selectedAudioTrackID = selectedAudioID }
+        if selectedSubtitleTrackID != selectedSubtitleID { selectedSubtitleTrackID = selectedSubtitleID }
+    }
+
+    private func resetTrackOptions() {
+        audioTracks = []
+        subtitleTracks = []
+        selectedAudioTrackID = nil
+        selectedSubtitleTrackID = nil
+    }
+
+    private static func trackOptions(kind: MediaTrackKind, names: [Any], indexes: [Any]) -> [MediaTrackOption] {
+        let count = min(names.count, indexes.count)
+        guard count > 0 else { return [] }
+        return (0..<count).compactMap { position in
+            guard let rawValue = intValue(indexes[position]) else { return nil }
+            let rawName = String(describing: names[position])
+            let title = trackTitle(kind: kind, rawName: rawName, rawValue: rawValue, position: position)
+            return MediaTrackOption(
+                id: "vlc-\(kind.rawValue)-\(rawValue)-\(position)",
+                kind: kind,
+                title: title,
+                rawValue: rawValue,
+                isDisabled: rawValue < 0
+            )
+        }
+    }
+
+    private static func anyArray(_ value: Any) -> [Any] {
+        if let array = value as? [Any] { return array }
+        if let array = value as? NSArray { return array.map { $0 } }
+        return []
+    }
+
+    private static func intValue(_ value: Any) -> Int? {
+        if let number = value as? NSNumber { return number.intValue }
+        if let int = value as? Int { return int }
+        if let int32 = value as? Int32 { return Int(int32) }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    private static func trackTitle(kind: MediaTrackKind, rawName: String, rawValue: Int, position: Int) -> String {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if rawValue < 0 || lower == "disabled" || lower == "disable" || lower == "none" {
+            return kind.disabledTitle
+        }
+        if trimmed.isEmpty || lower == "unknown" {
+            return "\(kind.title) \(position + 1)"
+        }
+        return trimmed
     }
 
     private func hasSignificantContainerSizeChange(to newSize: CGSize) -> Bool {
@@ -530,6 +669,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     
     private func emitProgress() {
         refreshPlaybackFlags()
+        monitorVideoOutputRecoveryIfNeeded()
         guard !isLive else { return }
         let current = currentSeconds()
         guard current.isFinite, current >= 0 else { return }
@@ -617,13 +757,13 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func scheduleBufferingFallbackIfNeeded() {
-        guard isLive else { return }
+        guard isLive || currentMediaIsBridgeProxy else { return }
         guard bufferingFallbackWorkItem == nil else { return }
         guard !hasAttemptedSoftDecodeFallback else { return }
-        guard decodeMode != .software else { return }
+        guard currentMediaDecodeMode != .software else { return }
         guard mediaPlayer.media != nil else { return }
 
-        let delay = bufferingFallbackThresholdLive
+        let delay = isLive ? bufferingFallbackThresholdLive : bufferingFallbackThresholdVod
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 self?.attemptSoftDecodeFallbackIfNeeded()
@@ -638,10 +778,31 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         bufferingFallbackWorkItem = nil
     }
 
+    private func scheduleMissingVideoOutputFallbackIfNeeded() {
+        guard missingVideoOutputFallbackWorkItem == nil else { return }
+        guard !hasAttemptedSoftDecodeFallback else { return }
+        guard currentMediaDecodeMode != .software else { return }
+        guard mediaPlayer.media != nil else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.attemptSoftDecodeFallbackForMissingVideoIfNeeded()
+            }
+        }
+        missingVideoOutputFallbackWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + missingVideoOutputFallbackThreshold, execute: workItem)
+    }
+
+    private func cancelMissingVideoOutputFallbackTimer() {
+        missingVideoOutputFallbackWorkItem?.cancel()
+        missingVideoOutputFallbackWorkItem = nil
+    }
+
     private func attemptSoftDecodeFallbackIfNeeded() {
         cancelBufferingFallbackTimer()
+        cancelMissingVideoOutputFallbackTimer()
         guard !hasAttemptedSoftDecodeFallback else { return }
-        guard decodeMode != .software else { return }
+        guard currentMediaDecodeMode != .software else { return }
         guard let urlString = currentMediaURLString, let url = URL(string: urlString) else { return }
         guard mediaPlayer.media != nil else { return }
 
@@ -656,6 +817,53 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             onPlaybackEnded: onPlaybackEnded,
             onPlaybackFailed: onPlaybackFailed
         )
+    }
+
+    private func attemptSoftDecodeFallbackForMissingVideoIfNeeded() {
+        missingVideoOutputFallbackWorkItem = nil
+        guard !isLive else { return }
+        guard mediaPlayer.media != nil else { return }
+        guard mediaPlayer.isPlaying || mediaPlayer.state == .playing else { return }
+        guard !hasVideoOutput() else { return }
+        attemptSoftDecodeFallbackIfNeeded()
+    }
+
+    private func monitorVideoOutputRecoveryIfNeeded() {
+        guard !isLive else { return }
+        guard mediaPlayer.media != nil else {
+            cancelMissingVideoOutputFallbackTimer()
+            hasReboundDrawableForMissingVideoOutput = false
+            return
+        }
+        guard mediaPlayer.isPlaying || mediaPlayer.state == .playing else {
+            cancelMissingVideoOutputFallbackTimer()
+            hasReboundDrawableForMissingVideoOutput = false
+            return
+        }
+        guard currentSeconds() >= missingVideoOutputMinimumPlaybackSeconds else { return }
+
+        if hasVideoOutput() {
+            cancelMissingVideoOutputFallbackTimer()
+            hasReboundDrawableForMissingVideoOutput = false
+            return
+        }
+
+        if !hasReboundDrawableForMissingVideoOutput {
+            hasReboundDrawableForMissingVideoOutput = true
+            refreshDrawableBinding()
+            resumePlaybackAfterDrawableRebindIfNeeded()
+        }
+        setPlaybackStatus(preparing: true, playing: false)
+        scheduleMissingVideoOutputFallbackIfNeeded()
+    }
+
+    private func hasVideoOutput() -> Bool {
+        let selector = Self.hasVideoOutSelector
+        guard mediaPlayer.responds(to: selector) else { return true }
+        typealias HasVideoOutGetter = @convention(c) (AnyObject, Selector) -> Bool
+        let imp = mediaPlayer.method(for: selector)
+        let getter = unsafeBitCast(imp, to: HasVideoOutGetter.self)
+        return getter(mediaPlayer, selector)
     }
 
     private func handleBufferingState() {
@@ -687,6 +895,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         cancelBufferingFallbackTimer()
         applyPlaybackRate()
         applyVolume()
+        refreshTrackOptions()
         applyPendingSeekIfNeeded()
     }
 
@@ -740,6 +949,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             isPlaying = false
         }
         scheduleDelayedPreparingIndicatorForVod()
+        scheduleBufferingFallbackIfNeeded()
     }
 
     private func isStillStalledSinceBufferingStartedVod() -> Bool {
@@ -758,9 +968,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     private func resetPlaybackRecoveryState() {
         cancelBufferingFallbackTimer()
+        cancelMissingVideoOutputFallbackTimer()
         cancelDelayedPreparingIndicator()
         cancelPendingVodBufferingConfirmation()
         hasAttemptedSoftDecodeFallback = false
+        hasReboundDrawableForMissingVideoOutput = false
         decodeModeOverride = nil
         isInBufferingState = false
         bufferingBaselineSecondsVod = 0
@@ -794,6 +1006,16 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         let raw = mediaPlayer.media?.length.intValue ?? 0
         guard raw > 0 else { return nil }
         return Double(raw) / 1000.0
+    }
+
+    private static func isBridgeProxyURL(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
+    }
+
+    private static func effectiveDecodeMode(configured: VideoDecodeMode, isLive: Bool, isBridgeProxy: Bool) -> VideoDecodeMode {
+        guard !isLive, isBridgeProxy, configured == .auto else { return configured }
+        return .software
     }
 }
 
@@ -833,8 +1055,7 @@ struct VLCVodPlayerView: View {
                 }
             
             if controller.isPreparing {
-                ProgressView()
-                    .tint(.white)
+                LoadingSpeedOverlay()
             }
             
             if let osdIcon = osdIcon {
@@ -1015,11 +1236,17 @@ struct VLCVodPlayerView: View {
             
             // 第二行：控制按钮
             HStack(spacing: 0) {
-                // 左侧区：倍速
-                HStack(spacing: 16) {
+                // 左侧区：倍速、音轨、字幕
+                HStack(spacing: 10) {
                     playbackRateMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                    }
                 }
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 260, alignment: .leading)
                 
                 Spacer()
                 
@@ -1163,6 +1390,85 @@ struct VLCVodPlayerView: View {
         }
         .buttonStyle(.plain)
     }
+
+    private var shouldShowAudioTrackMenu: Bool {
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1 || controller.audioTracks.contains(where: { $0.isDisabled })
+    }
+
+    private var shouldShowSubtitleTrackMenu: Bool {
+        controller.subtitleTracks.filter { !$0.isDisabled }.isEmpty == false
+    }
+
+    private var audioTrackMenu: some View {
+        Menu {
+            ForEach(controller.audioTracks) { track in
+                Button {
+                    wakeUpControls()
+                    controller.selectAudioTrack(track)
+                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                } label: {
+                    trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "waveform.circle.fill",
+                title: selectedTrackTitle(in: controller.audioTracks, selectedID: controller.selectedAudioTrackID, fallback: "音轨")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtitleTrackMenu: some View {
+        Menu {
+            ForEach(controller.subtitleTracks) { track in
+                Button {
+                    wakeUpControls()
+                    controller.selectSubtitleTrack(track)
+                    showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                } label: {
+                    trackMenuItem(track: track, selectedID: controller.selectedSubtitleTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "captions.bubble.fill",
+                title: selectedTrackTitle(in: controller.subtitleTracks, selectedID: controller.selectedSubtitleTrackID, fallback: "字幕")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func trackMenuItem(track: MediaTrackOption, selectedID: String?) -> some View {
+        HStack {
+            Text(track.title)
+            if track.id == selectedID {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func trackMenuLabel(icon: String, title: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 12, weight: .bold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 92, alignment: .leading)
+        .background(Color.white.opacity(0.12))
+        .clipShape(Capsule())
+    }
+
+    private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
+        tracks.first { $0.id == selectedID }?.compactTitle ?? fallback
+    }
     
     private func playbackRateLabel(_ rate: Float) -> String {
         if rate.rounded() == rate {
@@ -1210,8 +1516,7 @@ struct VLCLivePlayerView: View {
                 }
             
             if controller.isPreparing {
-                ProgressView()
-                    .tint(.white)
+                LoadingSpeedOverlay()
             }
             
             if let osdIcon = osdIcon {
@@ -1245,6 +1550,24 @@ struct VLCLivePlayerView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topTrailing) {
+            if shouldShowAudioTrackMenu || shouldShowSubtitleTrackMenu {
+                HStack(spacing: 8) {
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.black.opacity(0.35), in: Capsule())
+                .padding(.top, 18)
+                .padding(.trailing, 18)
+                .environment(\.colorScheme, .dark)
+            }
         }
         .onAppear {
             startPlayback()
@@ -1287,6 +1610,83 @@ struct VLCLivePlayerView: View {
             onPlaybackEnded: nil,
             onPlaybackFailed: onPlaybackFailed
         )
+    }
+
+    private var shouldShowAudioTrackMenu: Bool {
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1 || controller.audioTracks.contains(where: { $0.isDisabled })
+    }
+
+    private var shouldShowSubtitleTrackMenu: Bool {
+        controller.subtitleTracks.filter { !$0.isDisabled }.isEmpty == false
+    }
+
+    private var audioTrackMenu: some View {
+        Menu {
+            ForEach(controller.audioTracks) { track in
+                Button {
+                    controller.selectAudioTrack(track)
+                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                } label: {
+                    trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "waveform.circle.fill",
+                title: selectedTrackTitle(in: controller.audioTracks, selectedID: controller.selectedAudioTrackID, fallback: "音轨")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var subtitleTrackMenu: some View {
+        Menu {
+            ForEach(controller.subtitleTracks) { track in
+                Button {
+                    controller.selectSubtitleTrack(track)
+                    showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                } label: {
+                    trackMenuItem(track: track, selectedID: controller.selectedSubtitleTrackID)
+                }
+            }
+        } label: {
+            trackMenuLabel(
+                icon: "captions.bubble.fill",
+                title: selectedTrackTitle(in: controller.subtitleTracks, selectedID: controller.selectedSubtitleTrackID, fallback: "字幕")
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func trackMenuItem(track: MediaTrackOption, selectedID: String?) -> some View {
+        HStack {
+            Text(track.title)
+            if track.id == selectedID {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func trackMenuLabel(icon: String, title: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 12, weight: .bold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 92, alignment: .leading)
+        .background(Color.white.opacity(0.12))
+        .clipShape(Capsule())
+    }
+
+    private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
+        tracks.first { $0.id == selectedID }?.compactTitle ?? fallback
     }
 }
 

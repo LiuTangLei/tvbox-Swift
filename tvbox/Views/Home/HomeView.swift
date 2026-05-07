@@ -48,7 +48,7 @@ struct HomeView: View {
         HStack(spacing: 15) {
             // 应用名（可切换源）
             Menu {
-                ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift }) { source in
+                ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isPlayableWithBridge }) { source in
                     Button {
                         ApiConfig.shared.setHomeSource(source)
                         Task { await viewModel.refresh() }
@@ -285,7 +285,7 @@ struct HomeView: View {
                         .padding(.horizontal, 40)
                     
                     // 如果是不支持的源类型，显示类型信息
-                    if let source = ApiConfig.shared.homeSourceBean, !source.isSupportedInSwift {
+                    if let source = ApiConfig.shared.homeSourceBean, !source.isPlayableWithBridge {
                         Text("当前源类型: \(source.typeDescription)")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -306,12 +306,22 @@ struct HomeView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(videos) { video in
-                            NavigationLink(value: video) {
-                                VodCardView(video: video)
-                            }
-                            .buttonStyle(.plain)
-                            .onAppear {
-                                Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
+                            if video.isAction {
+                                Button {
+                                    Task { await viewModel.performAction(for: video) }
+                                } label: {
+                                    VodCardView(video: video)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(viewModel.isPerformingAction)
+                            } else {
+                                NavigationLink(value: video) {
+                                    VodCardView(video: video)
+                                }
+                                .buttonStyle(.plain)
+                                .onAppear {
+                                    Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
+                                }
                             }
                         }
                     }
@@ -332,6 +342,57 @@ struct HomeView: View {
         .navigationDestination(for: Movie.Video.self) { video in
             DetailView(video: video)
         }
+        .confirmationDialog("选择登录方式", isPresented: $viewModel.isBridgeActionPromptPresented, titleVisibility: .visible) {
+            ForEach(viewModel.bridgeActionPrompts) { prompt in
+                Button(prompt.title) {
+                    viewModel.selectBridgeActionPrompt(prompt)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("登录状态只保存到 Android Bridge")
+        }
+        .sheet(
+            isPresented: $viewModel.isBridgeTokenPromptPresented,
+            onDismiss: { viewModel.dismissBridgeTokenPromptPresentation() }
+        ) {
+            if let prompt = viewModel.bridgeTokenPrompt {
+                BridgeTokenPromptSheet(
+                    prompt: prompt,
+                    isSubmitting: viewModel.isSubmittingBridgeToken,
+                    errorMessage: viewModel.bridgeTokenErrorMessage,
+                    submitTitle: "保存到 Android",
+                    onCancel: viewModel.cancelBridgeTokenPrompt,
+                    onStartAndroidQrLogin: { prompt in
+                        try await viewModel.startBridgeQrLogin(prompt: prompt)
+                    },
+                    onPollAndroidQrLogin: {
+                        try await viewModel.pollBridgeQrLogin()
+                    },
+                    onActionAndroidQrLogin: { action in
+                        try await viewModel.sendBridgeQrAction(action)
+                    },
+                    onCompleteAndroidQrLogin: {
+                        await viewModel.completeBridgeQrLogin()
+                    },
+                    onSubmit: { values in
+                        Task { await viewModel.submitBridgeToken(values: values) }
+                    }
+                )
+            }
+        }
+        .alert("提示", isPresented: actionMessageBinding) {
+            Button("好", role: .cancel) { viewModel.actionMessage = nil }
+        } message: {
+            Text(viewModel.actionMessage ?? "")
+        }
+    }
+
+    private var actionMessageBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.actionMessage != nil },
+            set: { if !$0 { viewModel.actionMessage = nil } }
+        )
     }
 }
 

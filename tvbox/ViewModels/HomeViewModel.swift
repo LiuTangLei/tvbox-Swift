@@ -21,9 +21,19 @@ class HomeViewModel: ObservableObject {
     @Published var hasMore = true
     /// 错误提示文案。
     @Published var errorMessage: String?
+    @Published var actionMessage: String?
+    @Published var isPerformingAction = false
+    @Published var bridgeActionPrompts: [BridgeTokenPrompt] = []
+    @Published var isBridgeActionPromptPresented = false
+    @Published var bridgeTokenPrompt: BridgeTokenPrompt?
+    @Published var isBridgeTokenPromptPresented = false
+    @Published var isSubmittingBridgeToken = false
+    @Published var bridgeTokenErrorMessage: String?
     
     /// 源数据访问服务。
     private let sourceService = SourceService.shared
+    private let bridge = BridgeClient.shared
+    private var bridgeTokenSource: SourceBean?
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
@@ -137,6 +147,90 @@ class HomeViewModel: ObservableObject {
         let nextPage = currentPage + 1
         await loadCategoryVideos(page: nextPage, sort: sort)
     }
+
+    func performAction(for video: Movie.Video) async {
+        let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !action.isEmpty else { return }
+        guard let source = ApiConfig.shared.getSource(key: video.sourceKey) ?? ApiConfig.shared.homeSourceBean else { return }
+        guard source.requiresBridge else {
+            actionMessage = "当前动作需要 Android Bridge"
+            return
+        }
+        guard !isPerformingAction else { return }
+
+        isPerformingAction = true
+        bridgeTokenErrorMessage = nil
+        defer { isPerformingAction = false }
+
+        do {
+            let response = try await bridge.action(source: source, action: action)
+            handleBridgeActionResponse(response, source: source)
+        } catch BridgeError.tokenRequired(let prompt) {
+            presentBridgeTokenPrompt(prompt, source: source)
+        } catch {
+            actionMessage = error.localizedDescription
+        }
+    }
+
+    func selectBridgeActionPrompt(_ prompt: BridgeTokenPrompt) {
+        guard let source = bridgeTokenSource ?? ApiConfig.shared.homeSourceBean else { return }
+        isBridgeActionPromptPresented = false
+        presentBridgeTokenPrompt(prompt, source: source)
+    }
+
+    func cancelBridgeTokenPrompt() {
+        bridgeTokenPrompt = nil
+        bridgeTokenSource = nil
+        bridgeTokenErrorMessage = nil
+        isBridgeTokenPromptPresented = false
+    }
+
+    func dismissBridgeTokenPromptPresentation() {
+        if !isSubmittingBridgeToken {
+            cancelBridgeTokenPrompt()
+        }
+    }
+
+    func submitBridgeToken(values: [String: String]) async {
+        guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { return }
+        isSubmittingBridgeToken = true
+        bridgeTokenErrorMessage = nil
+        defer { isSubmittingBridgeToken = false }
+
+        do {
+            try await bridge.submitToken(source: source, prompt: prompt, values: values)
+            cancelBridgeTokenPrompt()
+            actionMessage = "授权已保存到 Android Bridge"
+        } catch {
+            bridgeTokenErrorMessage = error.localizedDescription
+        }
+    }
+
+    func startBridgeQrLogin(prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+        guard let source = bridgeTokenSource else { throw BridgeError.notConfigured }
+        return try await bridge.qrLogin(source: source, prompt: prompt)
+    }
+
+    func pollBridgeQrLogin() async throws -> BridgeQrStatusResponse {
+        guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
+        return try await bridge.qrStatus(source: source, prompt: prompt)
+    }
+
+    func completeBridgeQrLogin() async {
+        guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { return }
+        do {
+            try await bridge.qrConfirm(source: source, prompt: prompt)
+            cancelBridgeTokenPrompt()
+            actionMessage = "授权已发送到 Android Bridge"
+        } catch {
+            bridgeTokenErrorMessage = error.localizedDescription
+        }
+    }
+
+    func sendBridgeQrAction(_ action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
+        guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
+        return try await bridge.qrAction(source: source, prompt: prompt, action: action)
+    }
     
     /// 刷新
     func refresh() async {
@@ -157,5 +251,29 @@ class HomeViewModel: ObservableObject {
             selectedSort = firstCategory
             await loadCategoryVideos(page: 1, sort: firstCategory)
         }
+    }
+
+    private func handleBridgeActionResponse(_ response: BridgeActionResponse, source: SourceBean) {
+        switch response.mode {
+        case "cloudLogin":
+            bridgeTokenSource = source
+            bridgeActionPrompts = response.prompts ?? response.prompt.map { [$0] } ?? []
+            if bridgeActionPrompts.count == 1, let prompt = bridgeActionPrompts.first {
+                presentBridgeTokenPrompt(prompt, source: source)
+            } else if bridgeActionPrompts.isEmpty {
+                actionMessage = response.message ?? "Bridge 没有返回可用登录方式"
+            } else {
+                isBridgeActionPromptPresented = true
+            }
+        default:
+            actionMessage = response.message?.isEmpty == false ? response.message : "操作已发送到 Android Bridge"
+        }
+    }
+
+    private func presentBridgeTokenPrompt(_ prompt: BridgeTokenPrompt, source: SourceBean) {
+        bridgeTokenSource = source
+        bridgeTokenPrompt = prompt
+        bridgeTokenErrorMessage = nil
+        isBridgeTokenPromptPresented = true
     }
 }
