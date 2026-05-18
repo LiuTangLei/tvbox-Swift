@@ -236,10 +236,10 @@ final class BridgeClient {
     func register(configUrl: String? = nil, spider: String? = nil, sources: [SourceBean], replace: Bool = false) async throws {
         guard isEnabled else { throw BridgeError.notConfigured }
         let context = currentConfigContext()
-        let contextUrl = configUrl ?? context.configUrl
+        let contextUrl = configUrl ?? context.configUrl ?? ""
         let contextSpider = spider ?? context.spider
         let payload = RegisterRequest(
-            configUrl: contextUrl,
+            configUrl: bridgeReachableConfigUrl(contextUrl),
             spider: contextSpider,
             replace: replace,
             client: "tvbox-swift",
@@ -250,31 +250,38 @@ final class BridgeClient {
         let data = try await request(path: "/api/v1/config/register", method: "POST", body: payload)
         try validateBridgeOK(data)
     }
+
+    private func bridgeReachableConfigUrl(_ urlString: String) -> String? {
+        guard !urlString.isEmpty else { return nil }
+        guard let host = URL(string: urlString)?.host?.lowercased() else { return urlString }
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" { return nil }
+        return urlString
+    }
     
     func home(source: SourceBean) async throws -> String {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/home", body: EmptyBody())
     }
     
     func category(source: SourceBean, sortData: MovieSort.SortData, page: Int, filters: [String: String]?) async throws -> String {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let payload = CategoryRequest(categoryId: sortData.id, page: page, filters: filters ?? [:])
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/category", body: payload)
     }
     
     func detail(source: SourceBean, vodId: String) async throws -> String {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/detail", body: IdRequest(id: vodId))
     }
     
     func search(source: SourceBean, keyword: String, page: Int = 1) async throws -> String {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let payload = SearchRequest(keyword: keyword, page: page, quick: source.isQuickSearchEnabled)
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/search", body: payload)
     }
     
     func play(source: SourceBean, flag: String, id: String) async throws -> String {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let payload = PlayRequest(flag: flag, id: id)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
         let response = try decoder.decode(BridgePlayResponse.self, from: data)
@@ -292,7 +299,7 @@ final class BridgeClient {
     }
 
     func submitToken(source: SourceBean, prompt: BridgeTokenPrompt, values: [String: String]) async throws {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let token = values["token"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let payload = TokenSubmitRequest(provider: prompt.provider, token: token, values: values)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/token", method: "POST", body: payload)
@@ -301,7 +308,7 @@ final class BridgeClient {
     }
 
     func qrLogin(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let payload = QrLoginRequest(provider: prompt.provider, flag: prompt.retry?.flag, id: prompt.retry?.id)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrLogin", method: "POST", body: payload)
         let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
@@ -338,7 +345,7 @@ final class BridgeClient {
     }
 
     func action(source: SourceBean, action: String) async throws -> BridgeActionResponse {
-        try await register(sources: [source])
+        try await registerSourceForRequest(source)
         let payload = ActionRequest(action: action)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
         let response = try decoder.decode(BridgeActionResponse.self, from: data)
@@ -350,6 +357,10 @@ final class BridgeClient {
             throw BridgeError.server(response.message ?? response.code ?? "Bridge action 执行失败")
         }
         return response
+    }
+
+    private func registerSourceForRequest(_ source: SourceBean) async throws {
+        try await register(sources: [source], replace: true)
     }
     
     private func raw<T: Encodable>(path: String, body: T) async throws -> String {
@@ -482,18 +493,40 @@ private struct BridgeSiteRequest: Encodable {
 
 private struct CategoryRequest: Encodable {
     let categoryId: String
+    let categoryIdBase64: String
     let page: Int
     let filters: [String: String]
+
+    init(categoryId: String, page: Int, filters: [String: String]) {
+        self.categoryId = categoryId
+        self.categoryIdBase64 = categoryId.bridgeBase64
+        self.page = page
+        self.filters = filters
+    }
 }
 
 private struct IdRequest: Encodable {
     let id: String
+    let idBase64: String
+
+    init(id: String) {
+        self.id = id
+        self.idBase64 = id.bridgeBase64
+    }
 }
 
 private struct SearchRequest: Encodable {
     let keyword: String
+    let keywordBase64: String
     let page: Int
     let quick: Bool
+
+    init(keyword: String, page: Int, quick: Bool) {
+        self.keyword = keyword
+        self.keywordBase64 = keyword.bridgeBase64
+        self.page = page
+        self.quick = quick
+    }
 }
 
 private struct PlayRequest: Encodable {
@@ -506,15 +539,23 @@ private struct PlayRequest: Encodable {
     init(flag: String, id: String) {
         self.flag = flag
         self.id = id
-        self.flagBase64 = Data(flag.utf8).base64EncodedString()
-        self.idBase64 = Data(id.utf8).base64EncodedString()
+        self.flagBase64 = flag.bridgeBase64
+        self.idBase64 = id.bridgeBase64
     }
 }
 
 private struct TokenSubmitRequest: Encodable {
     let provider: String
     let token: String?
+    let tokenBase64: String?
     let values: [String: String]
+
+    init(provider: String, token: String?, values: [String: String]) {
+        self.provider = provider
+        self.token = token
+        self.tokenBase64 = token?.bridgeBase64
+        self.values = values
+    }
 }
 
 private struct QrLoginRequest: Encodable {
@@ -529,8 +570,8 @@ private struct QrLoginRequest: Encodable {
         self.provider = provider
         self.flag = flag
         self.id = id
-        self.flagBase64 = flag.map { Data($0.utf8).base64EncodedString() }
-        self.idBase64 = id.map { Data($0.utf8).base64EncodedString() }
+        self.flagBase64 = flag?.bridgeBase64
+        self.idBase64 = id?.bridgeBase64
     }
 }
 
@@ -548,15 +589,36 @@ private struct QrActionRequest: Encodable {
     let action: String
     let elementId: String?
     let text: String?
+    let textBase64: String?
     let x: Double?
     let y: Double?
+
+    init(provider: String, action: String, elementId: String?, text: String?, x: Double?, y: Double?) {
+        self.provider = provider
+        self.action = action
+        self.elementId = elementId
+        self.text = text
+        self.textBase64 = text?.bridgeBase64
+        self.x = x
+        self.y = y
+    }
 }
 
 private struct ActionRequest: Encodable {
     let action: String
+    let actionBase64: String
+
+    init(action: String) {
+        self.action = action
+        self.actionBase64 = action.bridgeBase64
+    }
 }
 
 private extension String {
+    var bridgeBase64: String {
+        Data(utf8).base64EncodedString()
+    }
+
     var nilIfEmpty: String? {
         isEmpty ? nil : self
     }
