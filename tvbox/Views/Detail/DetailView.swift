@@ -1454,6 +1454,10 @@ private struct BridgeWebLoginSheet: View {
             return names.contains { $0.contains("token") || $0.contains("login") || $0.contains("session") }
                 || cookies.contains { $0.value.count > 80 }
         }
+        if url.contains("baidu") {
+            let authNames: Set<String> = ["bduss", "stoken", "baiduid", "panweb"]
+            return names.contains { authNames.contains($0) }
+        }
         return cookies.contains { $0.value.count > 40 }
     }
 }

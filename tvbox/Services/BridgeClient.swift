@@ -457,12 +457,26 @@ private struct EmptyBody: Encodable {}
 
 private struct RegisterRequest: Encodable {
     let configUrl: String?
+    let configUrlBase64: String?
     let spider: String?
+    let spiderBase64: String?
     let replace: Bool
     let client: String
     let platform: String
     let preferredLocale: String
     let sites: [BridgeSiteRequest]
+
+    init(configUrl: String?, spider: String?, replace: Bool, client: String, platform: String, preferredLocale: String, sites: [BridgeSiteRequest]) {
+        self.configUrl = configUrl
+        self.configUrlBase64 = configUrl?.bridgeBase64
+        self.spider = spider
+        self.spiderBase64 = spider?.bridgeBase64
+        self.replace = replace
+        self.client = client
+        self.platform = platform
+        self.preferredLocale = preferredLocale
+        self.sites = sites
+    }
 }
 
 private struct BridgeSiteRequest: Encodable {
