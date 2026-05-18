@@ -136,6 +136,7 @@ class SourceService {
                         if let itemData = try? JSONSerialization.data(withJSONObject: item),
                            var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                             video.sourceKey = sourceBean.key
+                            applyBridgeConfigActionIfNeeded(to: &video, sourceKey: sourceBean.key)
                             homeVideos.append(video)
                         }
                     }
@@ -256,6 +257,7 @@ class SourceService {
                     if let itemData = try? JSONSerialization.data(withJSONObject: item),
                        var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                         video.sourceKey = sourceKey
+                        applyBridgeConfigActionIfNeeded(to: &video, sourceKey: sourceKey)
                         videos.append(video)
                     }
                 }
@@ -263,6 +265,38 @@ class SourceService {
         }
         
         return videos
+    }
+
+    private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceKey: String) {
+        guard video.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard sourceKey.localizedCaseInsensitiveContains("wexconfig") || isKnownBridgeConfigActionID(video.id) else { return }
+        guard sourceKey.localizedCaseInsensitiveContains("wexconfig") || looksLikeBridgeConfigItem(video) else { return }
+        video.action = video.id
+    }
+
+    private func isKnownBridgeConfigActionID(_ id: String) -> Bool {
+        let value = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return [
+            "baidupanlogin", "baidupanclear",
+            "quarkcookie", "quarkclearcookie",
+            "ucpancookie", "uctvpancookie", "ucpanallclearcookie",
+            "aliyuntoken", "aliyuncleartoken",
+            "115pancookie", "115panclearcookie",
+            "pan123login"
+        ].contains(value)
+    }
+
+    private func looksLikeBridgeConfigItem(_ video: Movie.Video) -> Bool {
+        let text = [video.id, video.name, video.note].joined(separator: " ").lowercased()
+        return text.contains("cookie")
+            || text.contains("token")
+            || text.contains("网盘")
+            || text.contains("云盘")
+            || text.contains("配置")
+            || text.contains("设置")
+            || text.contains("清除")
+            || text.contains("login")
+            || text.contains("clear")
     }
     
     private func parseXMLVideoList(from xml: String, sourceKey: String) -> [Movie.Video] {

@@ -659,8 +659,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         guard !isLive else { return }
         let maxSeconds = min(durationSeconds > 0 ? durationSeconds : Double(Int32.max) / 1000.0, Double(Int32.max) / 1000.0)
         let value = max(0, min(seconds, maxSeconds))
+        currentTimeSeconds = value
         mediaPlayer.time = VLCTime(int: Int32(value * 1000.0))
-        emitProgress()
+        onProgressChanged?(value, hasValidDuration ? durationSeconds : nil)
     }
     
     nonisolated func mediaPlayerStateChanged(_ aNotification: Notification) {
@@ -1302,6 +1303,17 @@ struct VLCVodPlayerView: View {
     private var totalDisplayText: String {
         controller.hasValidDuration ? controller.durationSeconds.durationString : "--:--"
     }
+
+    private func commitProgressSeek() {
+        let target = clampedProgressSeconds(draggingSeconds)
+        draggingSeconds = target
+        controller.seek(to: target)
+    }
+
+    private func clampedProgressSeconds(_ seconds: Double) -> Double {
+        guard seconds.isFinite else { return 0 }
+        return min(max(seconds, 0), progressUpperBound)
+    }
     
     private func playbackControls(containerWidth: CGFloat) -> some View {
         #if os(iOS)
@@ -1332,7 +1344,7 @@ struct VLCVodPlayerView: View {
                         isDraggingProgress = editing
                         wakeUpControls()
                         if !editing {
-                            controller.seek(to: draggingSeconds)
+                            commitProgressSeek()
                         }
                     }
                 )
@@ -1446,7 +1458,7 @@ struct VLCVodPlayerView: View {
                         isDraggingProgress = editing
                         wakeUpControls()
                         if !editing {
-                            controller.seek(to: draggingSeconds)
+                            commitProgressSeek()
                         }
                     }
                 )
@@ -1465,9 +1477,13 @@ struct VLCVodPlayerView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
-                    audioTrackMenu
-                    subtitleTrackMenu
-                    subtitleStyleMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                        subtitleStyleMenu
+                    }
                 }
                 .frame(width: 356, alignment: .leading)
                 
@@ -1627,7 +1643,7 @@ struct VLCVodPlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.filter { !$0.isDisabled }.count > 1 || controller.audioTracks.contains(where: { $0.isDisabled })
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1644,17 +1660,13 @@ struct VLCVodPlayerView: View {
 
     private var audioTrackMenu: some View {
         Menu {
-            if controller.audioTracks.isEmpty {
-                Text("暂无可选音轨")
-            } else {
-                ForEach(controller.audioTracks) { track in
-                    Button {
-                        wakeUpControls()
-                        controller.selectAudioTrack(track)
-                        showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
-                    } label: {
-                        trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
-                    }
+            ForEach(controller.audioTracks.filter { !$0.isDisabled }) { track in
+                Button {
+                    wakeUpControls()
+                    controller.selectAudioTrack(track)
+                    showOSD(icon: "waveform")
+                } label: {
+                    trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
                 }
             }
         } label: {
@@ -1664,8 +1676,6 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectableAudioTracks)
-        .opacity(hasSelectableAudioTracks ? 1 : 0.55)
     }
 
     private var subtitleTrackMenu: some View {
@@ -1690,8 +1700,6 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectableSubtitleTracks)
-        .opacity(hasSelectableSubtitleTracks ? 1 : 0.55)
     }
 
     private var subtitleStyleMenu: some View {
@@ -1979,7 +1987,7 @@ struct VLCLivePlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.filter { !$0.isDisabled }.count > 1 || controller.audioTracks.contains(where: { $0.isDisabled })
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1988,10 +1996,10 @@ struct VLCLivePlayerView: View {
 
     private var audioTrackMenu: some View {
         Menu {
-            ForEach(controller.audioTracks) { track in
+            ForEach(controller.audioTracks.filter { !$0.isDisabled }) { track in
                 Button {
                     controller.selectAudioTrack(track)
-                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                    showOSD(icon: "waveform")
                 } label: {
                     trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
                 }

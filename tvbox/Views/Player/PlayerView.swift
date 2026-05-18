@@ -821,7 +821,7 @@ struct AVPlayerContentView: View {
                         isDraggingProgress = editing
                         wakeUpControls()
                         if !editing {
-                            seek(to: draggingSeconds)
+                            commitProgressSeek()
                         }
                     }
                 )
@@ -935,7 +935,7 @@ struct AVPlayerContentView: View {
                         isDraggingProgress = editing
                         wakeUpControls()
                         if !editing {
-                            seek(to: draggingSeconds)
+                            commitProgressSeek()
                         }
                     }
                 )
@@ -954,9 +954,13 @@ struct AVPlayerContentView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
-                    audioTrackMenu
-                    subtitleTrackMenu
-                    subtitleStyleMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                        subtitleStyleMenu
+                    }
                 }
                 .frame(width: 356, alignment: .leading)
                 
@@ -1117,7 +1121,7 @@ struct AVPlayerContentView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        audioTracks.filter { !$0.isDisabled }.count > 1 || audioTracks.contains(where: { $0.isDisabled })
+        audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1134,17 +1138,13 @@ struct AVPlayerContentView: View {
 
     private var audioTrackMenu: some View {
         Menu {
-            if audioTracks.isEmpty {
-                Text("暂无可选音轨")
-            } else {
-                ForEach(audioTracks) { track in
-                    Button {
-                        wakeUpControls()
-                        selectAudioTrack(track)
-                        showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
-                    } label: {
-                        trackMenuItem(track: track, selectedID: selectedAudioTrackID)
-                    }
+            ForEach(audioTracks.filter { !$0.isDisabled }) { track in
+                Button {
+                    wakeUpControls()
+                    selectAudioTrack(track)
+                    showOSD(icon: "waveform")
+                } label: {
+                    trackMenuItem(track: track, selectedID: selectedAudioTrackID)
                 }
             }
         } label: {
@@ -1154,8 +1154,6 @@ struct AVPlayerContentView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectableAudioTracks)
-        .opacity(hasSelectableAudioTracks ? 1 : 0.55)
     }
 
     private var subtitleTrackMenu: some View {
@@ -1180,8 +1178,6 @@ struct AVPlayerContentView: View {
             )
         }
         .buttonStyle(.plain)
-        .disabled(!hasSelectableSubtitleTracks)
-        .opacity(hasSelectableSubtitleTracks ? 1 : 0.55)
     }
 
     private var subtitleStyleMenu: some View {
@@ -1312,8 +1308,23 @@ struct AVPlayerContentView: View {
 
     private func seek(to seconds: Double) {
         guard let player = player else { return }
-        let time = CMTime(seconds: seconds, preferredTimescale: 600)
+        let target = clampedProgressSeconds(seconds)
+        currentTime = target
+        draggingSeconds = target
+        let time = CMTime(seconds: target, preferredTimescale: 600)
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    private func commitProgressSeek() {
+        let target = clampedProgressSeconds(draggingSeconds)
+        draggingSeconds = target
+        currentTime = target
+        seek(to: target)
+    }
+
+    private func clampedProgressSeconds(_ seconds: Double) -> Double {
+        guard seconds.isFinite else { return 0 }
+        return min(max(seconds, 0), progressUpperBound)
     }
     
     private func seek(by offset: Double) {
@@ -1422,28 +1433,40 @@ final class NetworkTrafficMonitor: ObservableObject {
     @Published private(set) var speedText = "0 KB/s"
 
     private var timer: Timer?
+    private var warmupWorkItem: DispatchWorkItem?
     private var lastReceivedBytes: UInt64?
     private var lastSampleDate: Date?
 
     func start() {
         timer?.invalidate()
+        warmupWorkItem?.cancel()
         lastReceivedBytes = nil
         lastSampleDate = nil
         sample()
 
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+        let warmupWorkItem = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 self?.sample()
             }
         }
-        timer.tolerance = 0.2
+        self.warmupWorkItem = warmupWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: warmupWorkItem)
+
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.sample()
+            }
+        }
+        timer.tolerance = 0.1
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
 
     func stop() {
         timer?.invalidate()
+        warmupWorkItem?.cancel()
         timer = nil
+        warmupWorkItem = nil
         lastReceivedBytes = nil
         lastSampleDate = nil
         speedText = "0 KB/s"
