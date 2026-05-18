@@ -6,6 +6,8 @@ import AppKit
 
 /// 直播页 - 对应 Android 版 LivePlayActivity
 struct LiveView: View {
+    /// 退出直播回调（iOS 用于返回首页并显示 TabBar）。
+    var onExit: (() -> Void)? = nil
     /// 直播频道与选中状态管理。
     @StateObject private var viewModel = LiveViewModel()
     /// 全局应用状态（用于 macOS 全屏时调整分栏布局）。
@@ -18,6 +20,10 @@ struct LiveView: View {
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
     /// 是否展示左侧频道抽屉。
     @State private var showChannelDrawer = true
+    #if os(iOS)
+    /// iOS 全屏频道覆盖层是否显示。
+    @State private var showChannelOverlay = false
+    #endif
     /// 当前窗口是否处于全屏。
     @State private var isWindowFullScreen = false
     /// 底部频道信息卡最大宽度。
@@ -97,6 +103,9 @@ struct LiveView: View {
             #endif
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarHidden(true)
+            .toolbar(.hidden, for: .navigationBar)
+            .toolbar(.hidden, for: .tabBar)
             #endif
             .onAppear {
                 // 首次进入时加载频道并展示频道信息卡。
@@ -170,6 +179,7 @@ struct LiveView: View {
     
     private var overlayUI: some View {
         ZStack(alignment: .leading) {
+            #if os(macOS)
             if showChannelDrawer {
                 Color.black.opacity(0.22)
                     .ignoresSafeArea()
@@ -180,9 +190,13 @@ struct LiveView: View {
                         }
                     }
             }
+            #endif
             
             VStack(spacing: 0) {
                 HStack {
+                    #if os(iOS)
+                    liveBackButton
+                    #endif
                     channelDrawerToggleButton
                     Spacer()
                 }
@@ -198,19 +212,44 @@ struct LiveView: View {
                 }
             }
             
+            #if os(macOS)
             if showChannelDrawer {
                 channelDrawer
                     .padding(.leading, 12)
                     .padding(.vertical, 20)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
+            #endif
         }
         .animation(.easeInOut(duration: 0.2), value: showCurrentChannelInfo)
+        #if os(macOS)
+        .animation(.easeInOut(duration: 0.2), value: showChannelDrawer)
+        #endif
         .simultaneousGesture(
             TapGesture().onEnded {
                 reportUserActivity()
             }
         )
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showChannelOverlay) {
+            ChannelOverlayView(
+                channelGroups: viewModel.channelGroups,
+                selectedGroupIndex: $viewModel.selectedGroupIndex,
+                currentChannels: viewModel.currentChannels,
+                currentChannel: viewModel.currentChannel,
+                onSelectGroup: { viewModel.selectGroup($0) },
+                onSelectChannel: { channel in
+                    viewModel.selectChannel(channel)
+                    HapticManager.shared.mediumImpact()
+                    showChannelOverlay = false
+                },
+                onDismiss: { showChannelOverlay = false }
+            )
+            .presentationBackground(.clear)
+            .transition(.move(edge: .bottom))
+            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: showChannelOverlay)
+        }
+        #endif
         #if os(macOS)
         .onContinuousHover { phase in
             switch phase {
@@ -266,20 +305,58 @@ struct LiveView: View {
         .glassCard(cornerRadius: 14)
     }
     
+    #if os(iOS)
+    private var liveBackButton: some View {
+        Button {
+            HapticManager.shared.lightImpact()
+            onExit?()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.white.opacity(0.9))
+                .frame(width: 38, height: 38)
+                .background(Color.black.opacity(0.35))
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+    #endif
+    
     private var channelDrawerToggleButton: some View {
         Button {
+            #if os(iOS)
+            HapticManager.shared.lightImpact()
+            showChannelOverlay = true
+            #else
             withAnimation(.easeInOut(duration: 0.2)) {
                 showChannelDrawer.toggle()
             }
+            #endif
         } label: {
             HStack(spacing: 8) {
+                #if os(iOS)
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("频道")
+                    .font(.system(size: 14, weight: .semibold))
+                #else
                 Image(systemName: showChannelDrawer ? "sidebar.left" : "sidebar.right")
                 Text(showChannelDrawer ? "收起菜单" : "频道菜单")
                     .font(.system(size: 13, weight: .semibold))
+                #endif
             }
             .foregroundColor(.white.opacity(0.9))
+            #if os(iOS)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            #else
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            #endif
             .background(Color.black.opacity(0.35))
             .clipShape(Capsule())
             .overlay(
@@ -294,6 +371,61 @@ struct LiveView: View {
     }
     
     private func currentChannelInfo(_ channel: LiveChannelItem) -> some View {
+        #if os(iOS)
+        // iOS: 紧凑的底部信息栏，适合单手操作
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                // 频道名称
+                HStack(spacing: 8) {
+                    Circle().fill(Color.orange).frame(width: 8, height: 8)
+                    Text(channel.channelName)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                }
+                
+                Spacer()
+                
+                // 线路信息
+                if channel.sourceNum > 1 {
+                    Text("线路 \(channel.sourceIndex + 1)/\(channel.sourceNum)")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            
+            // 操作按钮行
+            if channel.sourceNum > 1 {
+                HStack(spacing: 12) {
+                    Button {
+                        HapticManager.shared.mediumImpact()
+                        wakeUpCurrentChannelInfo()
+                        resetFailureTracking(for: viewModel.currentChannel)
+                        viewModel.switchSource()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shuffle")
+                                .font(.system(size: 13))
+                            Text("切换线路")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(AppTheme.accentGradient)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(16)
+        .glassCard(cornerRadius: 14)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        #else
+        // macOS: 保持原有宽屏布局
         HStack(spacing: 15) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
@@ -313,7 +445,6 @@ struct LiveView: View {
             Spacer()
             
             HStack(spacing: 12) {
-                // 切换线路按钮
                 if channel.sourceNum > 1 {
                     Button {
                         wakeUpCurrentChannelInfo()
@@ -334,7 +465,6 @@ struct LiveView: View {
                     .buttonStyle(.plain)
                 }
                 
-                #if os(macOS)
                 Button {
                     wakeUpCurrentChannelInfo()
                     toggleWindowFullScreen()
@@ -355,7 +485,6 @@ struct LiveView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                #endif
             }
         }
         .padding(20)
@@ -363,6 +492,7 @@ struct LiveView: View {
         .frame(maxWidth: currentChannelInfoMaxWidth)
         .frame(maxWidth: .infinity)
         .padding(20)
+        #endif
     }
     
     private func wakeUpCurrentChannelInfo() {
@@ -469,7 +599,12 @@ struct LiveView: View {
         
         cleanupPlayer()
         
-        let playerItem = AVPlayerItem(url: url)
+        // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
+        let headers: [String: String] = [
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]
+        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+        let playerItem = AVPlayerItem(asset: asset)
         // 直播场景优先实时性，避免过多缓冲导致内存上涨
         playerItem.preferredForwardBufferDuration = 3
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused = false

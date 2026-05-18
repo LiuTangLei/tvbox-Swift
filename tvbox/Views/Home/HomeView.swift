@@ -5,12 +5,11 @@ struct HomeView: View {
     @StateObject private var viewModel = HomeViewModel()
     @EnvironmentObject var appState: AppState
     @State private var categoryScrollAnchorId: String?
-    @State private var categoryDragTranslation: CGFloat = 0
     
     // 网格布局
     #if os(iOS)
     private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
+        GridItem(.adaptive(minimum: 100, maximum: 140), spacing: 10)
     ]
     #else
     private let columns = [
@@ -42,11 +41,11 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - 顶部栏
+    // MARK: - 顶部栏（源选择器）
     
     private var headerBar: some View {
-        HStack(spacing: 15) {
-            // 应用名（可切换源）
+        HStack(spacing: 12) {
+            // 源切换按钮
             Menu {
                 ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isPlayableWithBridge }) { source in
                     Button {
@@ -63,132 +62,77 @@ struct HomeView: View {
                 }
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
+                    Image(systemName: "play.tv.fill")
+                        .font(.system(size: 14))
                         .foregroundColor(.orange)
                     Text(ApiConfig.shared.homeSourceBean?.name ?? "TVBox")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 9, weight: .bold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(.white.opacity(0.5))
-                        .padding(.leading, 2)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Color.white.opacity(0.1))
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
             
             Spacer()
-            
-            // 日期时间
-            HomeClockView()
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 15)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
     }
     
     // MARK: - 分类标签栏
     
     private var categoryTabBar: some View {
         ScrollViewReader { proxy in
-            HStack(spacing: 8) {
-                categoryMoveButton(
-                    systemName: "chevron.left",
-                    enabled: canMoveCategory(by: -1)
-                ) {
-                    moveCategoryTabs(by: -3, proxy: proxy)
-                }
-                
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(viewModel.sorts) { sort in
-                            Button {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    viewModel.selectSort(sort)
-                                }
-                                categoryScrollAnchorId = sort.id
-                                scrollCategoryBar(to: sort.id, proxy: proxy)
-                            } label: {
-                                Text(sort.name)
-                                    .font(.system(size: 14, weight: viewModel.selectedSort?.id == sort.id ? .bold : .medium))
-                                    .foregroundColor(viewModel.selectedSort?.id == sort.id ? .orange : .white.opacity(0.8))
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 10)
-                                    .background(
-                                        ZStack {
-                                            if viewModel.selectedSort?.id == sort.id {
-                                                RoundedRectangle(cornerRadius: 12)
-                                                    .fill(Color.orange.opacity(0.15))
-                                                    .overlay(
-                                                        RoundedRectangle(cornerRadius: 12)
-                                                            .stroke(Color.orange.opacity(0.5), lineWidth: 1)
-                                                    )
-                                            } else {
-                                                RoundedRectangle(cornerRadius: 12)
-                                                    .fill(Color.white.opacity(0.05))
-                                            }
-                                        }
-                                    )
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(viewModel.sorts) { sort in
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                viewModel.selectSort(sort)
                             }
-                            .buttonStyle(.plain)
-                            .id(sort.id)
+                            categoryScrollAnchorId = sort.id
+                            scrollCategoryBar(to: sort.id, proxy: proxy)
+                        } label: {
+                            VStack(spacing: 6) {
+                                Text(sort.name)
+                                    .font(.system(size: 14, weight: viewModel.selectedSort?.id == sort.id ? .bold : .regular))
+                                    .foregroundColor(viewModel.selectedSort?.id == sort.id ? .white : .white.opacity(0.6))
+                                
+                                // 底部指示条
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(Color.orange)
+                                    .frame(width: 20, height: 3)
+                                    .opacity(viewModel.selectedSort?.id == sort.id ? 1 : 0)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
                         }
+                        .buttonStyle(.plain)
+                        .id(sort.id)
                     }
-                    .padding(.horizontal, 8)
                 }
-                .simultaneousGesture(categoryDragGesture(proxy: proxy))
-                .onAppear {
-                    syncCategoryScrollAnchorIfNeeded()
-                    scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
-                }
-                .onChange(of: viewModel.sorts.map(\.id)) { oldValue, newValue in
-                    syncCategoryScrollAnchorIfNeeded()
-                    scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
-                }
-                .onChange(of: viewModel.selectedSort?.id) { oldId, newId in
-                    guard let newId else { return }
-                    categoryScrollAnchorId = newId
-                    scrollCategoryBar(to: newId, proxy: proxy)
-                }
-                
-                categoryMoveButton(
-                    systemName: "chevron.right",
-                    enabled: canMoveCategory(by: 1)
-                ) {
-                    moveCategoryTabs(by: 3, proxy: proxy)
-                }
+                .padding(.horizontal, 12)
             }
-            .padding(.horizontal, 14)
+            .onAppear {
+                syncCategoryScrollAnchorIfNeeded()
+                scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
+            }
+            .onChange(of: viewModel.sorts.map(\.id)) { oldValue, newValue in
+                syncCategoryScrollAnchorIfNeeded()
+                scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
+            }
+            .onChange(of: viewModel.selectedSort?.id) { oldId, newId in
+                guard let newId else { return }
+                categoryScrollAnchorId = newId
+                scrollCategoryBar(to: newId, proxy: proxy)
+            }
         }
-        .padding(.vertical, 8)
-    }
-    
-    private func categoryMoveButton(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.white.opacity(enabled ? 0.9 : 0.35))
-                .frame(width: 26, height: 26)
-                .background(Color.white.opacity(0.08))
-                .clipShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-    }
-    
-    private func canMoveCategory(by direction: Int) -> Bool {
-        guard !viewModel.sorts.isEmpty else { return false }
-        let currentIndex = categoryIndex(for: categoryScrollAnchorId) ?? 0
-        if direction < 0 {
-            return currentIndex > 0
-        }
-        return currentIndex < viewModel.sorts.count - 1
+        .padding(.bottom, 4)
     }
     
     private func categoryIndex(for id: String?) -> Int? {
@@ -216,17 +160,6 @@ struct HomeView: View {
         categoryScrollAnchorId = viewModel.sorts.first?.id
     }
     
-    private func moveCategoryTabs(by delta: Int, proxy: ScrollViewProxy) {
-        guard !viewModel.sorts.isEmpty else { return }
-        let currentIndex = categoryIndex(for: categoryScrollAnchorId) ?? 0
-        let newIndex = min(max(0, currentIndex + delta), viewModel.sorts.count - 1)
-        guard newIndex != currentIndex else { return }
-        
-        let targetId = viewModel.sorts[newIndex].id
-        categoryScrollAnchorId = targetId
-        scrollCategoryBar(to: targetId, proxy: proxy)
-    }
-    
     private func scrollCategoryBar(to id: String?, proxy: ScrollViewProxy, animated: Bool = true) {
         guard let id else { return }
         
@@ -237,23 +170,6 @@ struct HomeView: View {
         } else {
             proxy.scrollTo(id, anchor: .center)
         }
-    }
-    
-    private func categoryDragGesture(proxy: ScrollViewProxy) -> some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                let delta = value.translation.width - categoryDragTranslation
-                if delta <= -28 {
-                    moveCategoryTabs(by: 1, proxy: proxy)
-                    categoryDragTranslation = value.translation.width
-                } else if delta >= 28 {
-                    moveCategoryTabs(by: -1, proxy: proxy)
-                    categoryDragTranslation = value.translation.width
-                }
-            }
-            .onEnded { _ in
-                categoryDragTranslation = 0
-            }
     }
     
     // MARK: - 内容区
@@ -312,13 +228,21 @@ struct HomeView: View {
                                 } label: {
                                     VodCardView(video: video)
                                 }
+                                #if os(iOS)
+                                .buttonStyle(VodCardPressStyle())
+                                #else
                                 .buttonStyle(.plain)
+                                #endif
                                 .disabled(viewModel.isPerformingAction)
                             } else {
                                 NavigationLink(value: video) {
                                     VodCardView(video: video)
                                 }
+                                #if os(iOS)
+                                .buttonStyle(VodCardPressStyle())
+                                #else
                                 .buttonStyle(.plain)
+                                #endif
                                 .onAppear {
                                     Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
                                 }
@@ -393,18 +317,5 @@ struct HomeView: View {
             get: { viewModel.actionMessage != nil },
             set: { if !$0 { viewModel.actionMessage = nil } }
         )
-    }
-}
-
-private struct HomeClockView: View {
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            Text(timeline.date.homeDateString)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .glassCard(cornerRadius: 12)
-        }
     }
 }

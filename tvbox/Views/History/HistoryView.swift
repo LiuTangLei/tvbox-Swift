@@ -22,61 +22,62 @@ struct HistoryView: View {
     #endif
     
     var body: some View {
-        NavigationStack {
-            Group {
-                if records.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            // 记录卡片支持跳转详情与右键删除。
-                            ForEach(records) { item in
-                                NavigationLink(value: movieVideo(from: item)) {
-                                    recordCard(item)
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        modelContext.delete(item)
-                                        do {
-                                            try modelContext.save()
-                                        } catch {
-                                            print("删除历史记录失败: \(error)")
-                                        }
-                                    } label: {
-                                        Label("删除记录", systemImage: "trash")
+        historyContent
+    }
+    
+    /// 历史记录内容视图（不含 NavigationStack 包裹）。
+    /// iOS 下由外层 ProfileView/SettingsView 的 NavigationStack 管理导航；
+    /// macOS 下由 ContentView 的 NavigationSplitView detail 区域使用独立 NavigationStack。
+    private var historyContent: some View {
+        Group {
+            if records.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        // 记录卡片支持跳转详情与右键删除。
+                        ForEach(records) { item in
+                            NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
+                                recordCard(item)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    modelContext.delete(item)
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("删除历史记录失败: \(error)")
                                     }
+                                } label: {
+                                    Label("删除记录", systemImage: "trash")
                                 }
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
                 }
             }
-            .background(Color(red: 0.08, green: 0.08, blue: 0.1))
-            .navigationTitle("历史记录")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                if !records.isEmpty {
-                    ToolbarItem(placement: .automatic) {
-                        // 清空历史使用统一缓存服务，确保行为与其他入口一致。
-                        Button {
-                            Task {
-                                CacheStore.shared.clearHistory(context: modelContext)
-                            }
-                        } label: {
-                            Text("清空")
-                                .foregroundColor(.orange)
+        }
+        .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        .navigationTitle("历史记录")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            if !records.isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    // 清空历史使用统一缓存服务，确保行为与其他入口一致。
+                    Button {
+                        Task {
+                            CacheStore.shared.clearHistory(context: modelContext)
                         }
+                    } label: {
+                        Text("清空")
+                            .foregroundColor(.orange)
                     }
                 }
-            }
-            // 与首页/搜索/收藏共用同一种详情路由模型。
-            .navigationDestination(for: Movie.Video.self) { video in
-                DetailView(video: video)
             }
         }
     }

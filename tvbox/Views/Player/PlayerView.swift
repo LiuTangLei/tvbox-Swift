@@ -27,7 +27,7 @@ private struct MacOSPlayerView: NSViewRepresentable {
     
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = .none // 禁用系统默认控制栏
+        view.controlsStyle = .none
         view.showsFullScreenToggleButton = false
         view.videoGravity = .resizeAspect
         view.player = player
@@ -62,10 +62,17 @@ final class SystemPlayerSessionController: ObservableObject {
     }
     
     func stop() {
+        let stoppingPlayer = player
         player?.pause()
-        player?.replaceCurrentItem(with: nil)
         player = nil
         mediaURLString = nil
+        // AVPlayer.replaceCurrentItem(with: nil) 在播放网络流时会同步阻塞主线程数秒。
+        // 将其移到后台执行，闭包持有 AVPlayer 强引用防止提前 dealloc。
+        if let stoppingPlayer {
+            DispatchQueue.global(qos: .utility).async {
+                stoppingPlayer.replaceCurrentItem(with: nil)
+            }
+        }
     }
 }
 
@@ -175,6 +182,7 @@ struct AVPlayerContentView: View {
     @State private var volume: Double = 1.0
     @State private var rate: Float = 1.0
     @State private var isPreparing = true
+    @State private var playbackError: String?
     @State private var showControls = true
     @State private var controlsTimer: Timer?
     @State private var osdIcon: String?
@@ -191,24 +199,48 @@ struct AVPlayerContentView: View {
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
     
+    @State private var videoZoomScale: CGFloat = 1.0
+
     var body: some View {
         ZStack {
             Group {
                 if let player = player {
                     PlatformVideoPlayer(player: player)
+                        #if os(iOS)
+                        .scaleEffect(videoZoomScale)
+                        #endif
                 } else {
                     Color.black
                 }
             }
+            #if !os(iOS)
             .onTapGesture(count: 2) {
                 onToggleFullScreen?()
             }
             .onTapGesture(count: 1) {
                 togglePlayPauseWithOSD()
             }
+            #endif
 
             if player == nil || isPreparing {
                 LoadingSpeedOverlay()
+            }
+            
+            if let error = playbackError {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 36))
+                        .foregroundColor(.yellow)
+                    Text("播放失败")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                }
+                .padding()
             }
 
             if let osdIcon = osdIcon {
@@ -222,6 +254,22 @@ struct AVPlayerContentView: View {
                     .allowsHitTesting(false)
             }
         }
+        #if os(iOS)
+        .overlay {
+            PlayerGestureLayer(
+                onSeek: { offset in seek(by: offset) },
+                onTogglePlayPause: { togglePlayPauseWithOSD() },
+                onToggleControls: { wakeUpControls() },
+                onZoomChanged: { scale in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        videoZoomScale = scale
+                    }
+                },
+                currentTime: currentTime,
+                duration: duration
+            )
+        }
+        #endif
         .overlay(alignment: .bottom) {
             GeometryReader { proxy in
                 if player != nil {
@@ -269,15 +317,35 @@ struct AVPlayerContentView: View {
     }
     
     private func setupPlayer() {
-        guard let url = URL(string: urlString) else { return }
+        guard let url = Self.sanitizedURL(from: urlString) else {
+            print("[AVPlayer] URL sanitization failed for: \(urlString)")
+            return
+        }
         let targetURLString = url.absoluteString
         let preferredRate = normalizedSavedPlaybackRate
         rate = preferredRate
+        playbackError = nil
         
         if let sharedController,
            sharedController.mediaURLString == targetURLString,
            let sharedPlayer = sharedController.player {
             cleanupPlayer(keepSharedPlayer: true)
+            // 强制重新关联 AVPlayerItem，修复从全屏退出后 VideoPlayer 黑屏问题。
+            // SwiftUI.VideoPlayer 在复用已有 AVPlayer 时可能无法正确连接视频渲染层，
+            // 通过 replaceCurrentItem 触发内部 layer 重新绑定。
+            #if os(iOS)
+            if let currentItem = sharedPlayer.currentItem {
+                let currentTime = sharedPlayer.currentTime()
+                let wasPlaying = sharedPlayer.rate != 0
+                sharedPlayer.replaceCurrentItem(with: nil)
+                sharedPlayer.replaceCurrentItem(with: currentItem)
+                sharedPlayer.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                    if wasPlaying {
+                        sharedPlayer.playImmediately(atRate: self.normalizedSavedPlaybackRate)
+                    }
+                }
+            }
+            #endif
             player = sharedPlayer
             applyPreferredPlaybackRate(to: sharedPlayer)
             bindPlayerObservers(for: sharedPlayer)
@@ -288,7 +356,11 @@ struct AVPlayerContentView: View {
         // 清理旧播放器
         cleanupPlayer()
         
-        let playerItem = AVPlayerItem(url: url)
+        // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
+        let asset = AVURLAsset(url: url)
+        asset.resourceLoader.setDelegate(nil, queue: nil)
+        let playerItem = AVPlayerItem(asset: asset)
+        playerItem.preferredForwardBufferDuration = 0
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.defaultRate = preferredRate
         if let sharedController {
@@ -298,6 +370,20 @@ struct AVPlayerContentView: View {
         player = newPlayer
         bindPlayerObservers(for: newPlayer)
         startPlayback(for: newPlayer)
+    }
+    
+    /// 将原始 URL 字符串转换为合法的 URL，处理未编码的特殊字符。
+    private static func sanitizedURL(from urlString: String) -> URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed) {
+            return url
+        }
+        // 尝试对整个字符串进行百分号编码（保留已编码部分）
+        if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: encoded) {
+            return url
+        }
+        return nil
     }
     
     private func bindPlayerObservers(for player: AVPlayer) {
@@ -326,15 +412,22 @@ struct AVPlayerContentView: View {
                 }
             }
         ]
+        // 监听 AVPlayerItem 状态，捕获加载失败的具体原因
         if let item = player.currentItem {
-            observations.append(
-                item.observe(\.status, options: [.initial, .new]) { item, _ in
-                    guard item.status == .readyToPlay else { return }
+            observations.append(item.observe(\.status, options: [.initial, .new]) { observedItem, _ in
+                if observedItem.status == .failed {
+                    let errorDesc = observedItem.error?.localizedDescription ?? "未知错误"
                     DispatchQueue.main.async {
+                        isPreparing = false
+                        playbackError = errorDesc
+                    }
+                } else if observedItem.status == .readyToPlay {
+                    DispatchQueue.main.async {
+                        playbackError = nil
                         refreshMediaTracks(for: player)
                     }
                 }
-            )
+            })
         }
         playerObservers = observations
         observePlaybackProgress(for: player)
@@ -373,12 +466,15 @@ struct AVPlayerContentView: View {
         }
         
         currentPlayer.pause()
-        currentPlayer.replaceCurrentItem(with: nil)
         if sharedController?.player === currentPlayer {
             sharedController?.player = nil
             sharedController?.mediaURLString = nil
         }
         player = nil
+        // replaceCurrentItem(with: nil) 在播放网络流时会阻塞主线程，移到后台
+        DispatchQueue.global(qos: .utility).async {
+            currentPlayer.replaceCurrentItem(with: nil)
+        }
     }
     
     private func startPlayback(for player: AVPlayer) {
@@ -624,8 +720,129 @@ struct AVPlayerContentView: View {
     }
 
     private func playbackControls(containerWidth: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            // 第一行：进度条和时间
+        #if os(iOS)
+        let controlWidth = containerWidth * 1.0
+        #else
+        let controlWidth = containerWidth * 0.7
+        #endif
+
+        return VStack(spacing: 0) {
+            #if os(iOS)
+            // iOS: 紧凑单行布局 — 进度条在上，按钮在下紧贴
+            // 进度条行
+            HStack(spacing: 8) {
+                Text(currentTime.durationString)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(1)
+                
+                Slider(
+                    value: Binding(
+                        get: { isDraggingProgress ? draggingSeconds : currentTime },
+                        set: { 
+                            draggingSeconds = $0
+                            wakeUpControls()
+                        }
+                    ),
+                    in: 0...progressUpperBound,
+                    onEditingChanged: { editing in
+                        isDraggingProgress = editing
+                        wakeUpControls()
+                        if !editing {
+                            seek(to: draggingSeconds)
+                        }
+                    }
+                )
+                .accentColor(.white)
+                .disabled(duration <= 0)
+                
+                Text(duration.durationString)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            
+            // 控制按钮行 — 紧凑排列
+            HStack(spacing: 0) {
+                // 左：倍速
+                playbackRateMenu
+                    .frame(minWidth: 36, alignment: .leading)
+                
+                Spacer()
+                
+                // 中间：主控按钮
+                HStack(spacing: 20) {
+                    Button {
+                        wakeUpControls()
+                        seek(by: -seekStep)
+                        showOSD(icon: "gobackward.\(Int(seekStep))")
+                    } label: {
+                        Image(systemName: "gobackward.\(Int(seekStep))")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        wakeUpControls()
+                        togglePlayPauseWithOSD()
+                    } label: {
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 20, weight: .bold))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        wakeUpControls()
+                        seek(by: seekStep)
+                        showOSD(icon: "goforward.\(Int(seekStep))")
+                    } label: {
+                        Image(systemName: "goforward.\(Int(seekStep))")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+
+                    if let onPlayNext {
+                        Button {
+                            guard canPlayNext else { return }
+                            wakeUpControls()
+                            onPlayNext()
+                            showOSD(icon: "forward.end.fill")
+                        } label: {
+                            Image(systemName: "forward.end.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(minWidth: 36, minHeight: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canPlayNext)
+                        .opacity(canPlayNext ? 1 : 0.4)
+                    }
+                }
+                
+                Spacer()
+                
+                // 右：全屏
+                if let onToggleFullScreen {
+                    Button {
+                        wakeUpControls()
+                        onToggleFullScreen()
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            #else
+            // macOS: 保持两行布局
             HStack(spacing: 12) {
                 Text(currentTime.durationString)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -661,7 +878,6 @@ struct AVPlayerContentView: View {
             }
             .padding(.horizontal, 4)
             
-            // 第二行：控制按钮
             HStack(spacing: 0) {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
@@ -677,7 +893,6 @@ struct AVPlayerContentView: View {
                 
                 Spacer()
                 
-                // 中间区：主控 (这里集成了您原本右下角的快进快退和下一集按钮)
                 HStack(spacing: 24) {
                     Button {
                         wakeUpControls()
@@ -732,7 +947,6 @@ struct AVPlayerContentView: View {
                 
                 Spacer()
                 
-                // 右侧区：音量和全屏
                 HStack(spacing: 14) {
                     HStack(spacing: 6) {
                         Button {
@@ -774,14 +988,30 @@ struct AVPlayerContentView: View {
                 }
                 .frame(width: 150, alignment: .trailing)
             }
+            .padding(.top, 8)
+            #endif
         }
+        #if os(iOS)
+        .padding(.vertical, 2)
+        .foregroundColor(.white)
+        .background(
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.6)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .padding(.bottom, 0)
+        .frame(width: controlWidth)
+        #else
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
         .foregroundColor(.white)
         .glassCard(cornerRadius: 18)
         .padding(.horizontal, 20)
         .padding(.bottom, 6)
-        .frame(width: containerWidth * 0.7)
+        .frame(width: controlWidth)
+        #endif
         .environment(\.colorScheme, .dark)
     }
 

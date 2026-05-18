@@ -37,7 +37,17 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }()
     private typealias LibVLCStopAsyncFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
     
-    let mediaPlayer = VLCMediaPlayer(options: VLCPlayerController.stablePlaybackOptions)
+    private var _mediaPlayer: VLCMediaPlayer?
+    var mediaPlayer: VLCMediaPlayer {
+        if let existing = _mediaPlayer {
+            return existing
+        }
+        let player = VLCMediaPlayer(options: VLCPlayerController.stablePlaybackOptions)
+        _mediaPlayer = player
+        player.delegate = self
+        player.drawable = persistentDrawableView
+        return player
+    }
     @Published var isPreparing = true
     @Published var isPlaying = false
     @Published var currentTimeSeconds: Double = 0
@@ -123,8 +133,18 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         #else
         persistentDrawableView.backgroundColor = .black
         #endif
-        mediaPlayer.delegate = self
-        mediaPlayer.drawable = persistentDrawableView
+    }
+    
+    deinit {
+        if let player = _mediaPlayer {
+            _mediaPlayer = nil
+            // VLCMediaPlayer 的 dealloc 会阻塞（libvlc_media_player_release 内部 dispatch_sync 到主线程）。
+            // 将引用移到后台线程，让 dealloc 在后台发生，避免阻塞主线程。
+            nonisolated(unsafe) let p = player
+            DispatchQueue.global(qos: .utility).async { [p] in
+                _ = p
+            }
+        }
     }
     
     func play(
@@ -197,7 +217,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "audio-time-stretch": 1,
             "sub-autodetect-file": 1,
             "sub-autodetect-fuzzy": 3,
-            "subsdec-encoding": "UTF-8"
+            "subsdec-encoding": "UTF-8",
+            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ]
         if !isLive {
             mediaOptions["avcodec-hurry-up"] = 0
@@ -252,6 +273,17 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaIsBridgeProxy = false
         currentMediaDecodeMode = .auto
         currentMediaBufferMode = .defaultMode
+        guard let player = _mediaPlayer else { return }
+        // 立即静音（audio.volume 是轻量属性设置，不会 dispatch_sync）
+        player.audio?.volume = 0
+        // 将 mediaPlayer 引用移到后台释放。
+        // 不调用 pause/stop/media=nil 等 VLC API — 它们会 dispatch_sync 回主线程导致卡顿。
+        // VLCMediaPlayer 的 dealloc 会在后台线程自然完成清理。
+        _mediaPlayer = nil
+        nonisolated(unsafe) let p = player
+        DispatchQueue.global(qos: .utility).async { [p] in
+            _ = p
+        }
     }
     
     func togglePlayback() {
@@ -406,9 +438,14 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     #endif
 
     private func refreshDrawableBinding() {
-        // 强制重绑视频输出，规避 macOS 切全屏后偶发“有声音无画面”
+        #if os(macOS)
+        // macOS: 强制重绑视频输出，规避切全屏后偶发“有声音无画面”
         mediaPlayer.drawable = nil
         mediaPlayer.drawable = persistentDrawableView
+        #else
+        // iOS: 直接赋值，不置空 drawable，避免触发 state change 导致 SwiftUI dismiss 动画中断
+        mediaPlayer.drawable = persistentDrawableView
+        #endif
         lastDrawableRebindAt = Date()
     }
 
@@ -419,7 +456,12 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             stopAsync(playerPointer)
             return
         }
-        mediaPlayer.stop()
+        // VLCKit 3.x 没有 async stop API，同步 stop 会阻塞主线程 2-3 秒。
+        // 将其放到后台队列执行，避免 UI 卡顿。
+        nonisolated(unsafe) let player = mediaPlayer
+        DispatchQueue.global(qos: .userInitiated).async {
+            player.stop()
+        }
     }
 
     private func playerInstancePointer() -> UnsafeMutableRawPointer? {
@@ -1047,12 +1089,14 @@ struct VLCVodPlayerView: View {
         ZStack {
             VLCDrawableView(controller: controller)
                 .background(Color.black)
+            #if !os(iOS)
                 .onTapGesture(count: 2) {
                     onToggleFullScreen?()
                 }
                 .onTapGesture(count: 1) {
                     togglePlaybackWithOSD()
                 }
+            #endif
             
             if controller.isPreparing {
                 LoadingSpeedOverlay()
@@ -1069,10 +1113,24 @@ struct VLCVodPlayerView: View {
                     .allowsHitTesting(false)
             }
         }
+        #if os(iOS)
+        .overlay {
+            PlayerGestureLayer(
+                onSeek: { offset in controller.seek(by: offset) },
+                onTogglePlayPause: { togglePlaybackWithOSD() },
+                onToggleControls: { wakeUpControls() },
+                onZoomChanged: { _ in },
+                currentTime: controller.currentTimeSeconds,
+                duration: controller.durationSeconds
+            )
+        }
+        #endif
         .overlay(alignment: .bottom) {
             GeometryReader { proxy in
                 playbackControls(containerWidth: proxy.size.width)
+                    #if os(macOS)
                     .padding(12)
+                    #endif
                     .opacity(showControls ? 1.0 : 0.0)
                     .animation(.easeInOut(duration: 0.3), value: showControls)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -1158,7 +1216,10 @@ struct VLCVodPlayerView: View {
     }
     
     private func startPlayback() {
-        guard let url = URL(string: urlString) else { return }
+        guard let url = Self.sanitizedURL(from: urlString) else {
+            print("[VLC] URL sanitization failed for: \(urlString)")
+            return
+        }
         let targetStartPosition = max(startPosition, 0)
         draggingSeconds = targetStartPosition
         startPlaybackTask?.cancel()
@@ -1175,6 +1236,19 @@ struct VLCVodPlayerView: View {
                 onPlaybackFailed: nil
             )
         }
+    }
+    
+    /// 将原始 URL 字符串转换为合法的 URL，处理未编码的特殊字符。
+    private static func sanitizedURL(from urlString: String) -> URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed) {
+            return url
+        }
+        if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: encoded) {
+            return url
+        }
+        return nil
     }
     
     private var seekStep: Double {
@@ -1197,8 +1271,128 @@ struct VLCVodPlayerView: View {
     }
     
     private func playbackControls(containerWidth: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            // 第一行：进度条和时间
+        #if os(iOS)
+        let controlWidth = containerWidth * 1.0
+        #else
+        let controlWidth = containerWidth * 0.7
+        #endif
+
+        return VStack(spacing: 0) {
+            #if os(iOS)
+            // iOS: 紧凑单行布局 — 进度条在上，按钮在下紧贴
+            HStack(spacing: 8) {
+                Text(currentDisplaySeconds.durationString)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(1)
+                
+                Slider(
+                    value: Binding(
+                        get: { isDraggingProgress ? draggingSeconds : controller.currentTimeSeconds },
+                        set: { 
+                            draggingSeconds = $0
+                            wakeUpControls()
+                        }
+                    ),
+                    in: 0...progressUpperBound,
+                    onEditingChanged: { editing in
+                        isDraggingProgress = editing
+                        wakeUpControls()
+                        if !editing {
+                            controller.seek(to: draggingSeconds)
+                        }
+                    }
+                )
+                .accentColor(.white)
+                .disabled(!controller.hasValidDuration)
+                
+                Text(totalDisplayText)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            
+            // 控制按钮行 — 紧凑排列
+            HStack(spacing: 0) {
+                // 左：倍速
+                playbackRateMenu
+                    .frame(minWidth: 36, alignment: .leading)
+                
+                Spacer()
+                
+                // 中间：主控按钮
+                HStack(spacing: 20) {
+                    Button {
+                        wakeUpControls()
+                        controller.seek(by: -seekStep)
+                        showOSD(icon: "gobackward.\(Int(seekStep))")
+                    } label: {
+                        Image(systemName: "gobackward.\(Int(seekStep))")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        wakeUpControls()
+                        togglePlaybackWithOSD()
+                    } label: {
+                        Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 20, weight: .bold))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button {
+                        wakeUpControls()
+                        controller.seek(by: seekStep)
+                        showOSD(icon: "goforward.\(Int(seekStep))")
+                    } label: {
+                        Image(systemName: "goforward.\(Int(seekStep))")
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+
+                    if let onPlayNext {
+                        Button {
+                            guard canPlayNext else { return }
+                            wakeUpControls()
+                            onPlayNext()
+                            showOSD(icon: "forward.end.fill")
+                        } label: {
+                            Image(systemName: "forward.end.fill")
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(minWidth: 36, minHeight: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canPlayNext)
+                        .opacity(canPlayNext ? 1 : 0.4)
+                    }
+                }
+                
+                Spacer()
+                
+                // 右：全屏
+                if let onToggleFullScreen {
+                    Button {
+                        wakeUpControls()
+                        onToggleFullScreen()
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            #else
+            // macOS: 保持两行布局
             HStack(spacing: 12) {
                 Text(currentDisplaySeconds.durationString)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -1234,7 +1428,6 @@ struct VLCVodPlayerView: View {
             }
             .padding(.horizontal, 4)
             
-            // 第二行：控制按钮
             HStack(spacing: 0) {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
@@ -1250,7 +1443,6 @@ struct VLCVodPlayerView: View {
                 
                 Spacer()
                 
-                // 中间区：主控
                 HStack(spacing: 24) {
                     Button {
                         wakeUpControls()
@@ -1305,7 +1497,6 @@ struct VLCVodPlayerView: View {
                 
                 Spacer()
                 
-                // 右侧区：音量和全屏
                 HStack(spacing: 14) {
                     HStack(spacing: 6) {
                         Button {
@@ -1347,14 +1538,30 @@ struct VLCVodPlayerView: View {
                 }
                 .frame(width: 150, alignment: .trailing)
             }
+            .padding(.top, 8)
+            #endif
         }
+        #if os(iOS)
+        .padding(.vertical, 2)
+        .foregroundColor(.white)
+        .background(
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.6)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+        .padding(.bottom, 0)
+        .frame(width: controlWidth)
+        #else
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
         .foregroundColor(.white)
         .glassCard(cornerRadius: 18)
         .padding(.horizontal, 20)
         .padding(.bottom, 6)
-        .frame(width: containerWidth * 0.7)
+        .frame(width: controlWidth)
+        #endif
         .environment(\.colorScheme, .dark)
     }
     
@@ -1503,17 +1710,21 @@ struct VLCLivePlayerView: View {
     @State private var osdIcon: String?
     @State private var osdOpacity: Double = 0
     @State private var osdTimer: Timer?
+    @State private var showControls = true
+    @State private var controlsTimer: Timer?
     
     var body: some View {
         ZStack {
             VLCDrawableView(controller: controller)
                 .background(Color.black)
+            #if !os(iOS)
                 .onTapGesture(count: 2) {
                     onToggleFullScreen?()
                 }
                 .onTapGesture(count: 1) {
                     togglePlaybackWithOSD()
                 }
+            #endif
             
             if controller.isPreparing {
                 LoadingSpeedOverlay()
@@ -1530,6 +1741,23 @@ struct VLCLivePlayerView: View {
                     .allowsHitTesting(false)
             }
         }
+        #if os(iOS)
+        .overlay {
+            LivePlayerGestureLayer(
+                onTogglePlayPause: { togglePlaybackWithOSD() },
+                onToggleControls: { wakeUpControls() },
+                onVolumeChanged: { delta in
+                    let newVol = max(0, min(200, controller.volume + Int(delta * 200)))
+                    controller.setVolume(newVol)
+                }
+            )
+        }
+        .overlay(alignment: .bottom) {
+            liveControlsOverlay
+                .opacity(showControls ? 1.0 : 0.0)
+                .animation(.easeInOut(duration: 0.3), value: showControls)
+        }
+        #endif
         .overlay {
             KeyboardShortcutCaptureView(
                 onLeft: { },
@@ -1571,13 +1799,58 @@ struct VLCLivePlayerView: View {
         }
         .onAppear {
             startPlayback()
+            wakeUpControls()
         }
         .onChange(of: urlString) { _, _ in
             startPlayback()
+            wakeUpControls()
+        }
+        .onChange(of: activityToken) { _, _ in
+            wakeUpControls()
         }
         .onDisappear {
             controller.stop()
             osdTimer?.invalidate()
+            controlsTimer?.invalidate()
+        }
+    }
+    
+    // MARK: - iOS Live Controls Overlay
+    
+    #if os(iOS)
+    private var liveControlsOverlay: some View {
+        HStack(spacing: 20) {
+            // Play/Pause button
+            Button {
+                wakeUpControls()
+                togglePlaybackWithOSD()
+            } label: {
+                Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Color.white.opacity(0.15))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .glassCard(cornerRadius: 14)
+        .padding(.bottom, 20)
+        .padding(.horizontal, 16)
+    }
+    #endif
+    
+    // MARK: - Controls Timer
+    
+    private func wakeUpControls() {
+        withAnimation { showControls = true }
+        controlsTimer?.invalidate()
+        controlsTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { _ in
+            withAnimation(.easeOut(duration: 0.5)) {
+                showControls = false
+            }
         }
     }
     
@@ -1598,7 +1871,8 @@ struct VLCLivePlayerView: View {
     }
     
     private func startPlayback() {
-        guard let url = URL(string: urlString) else {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed) ?? trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap({ URL(string: $0) }) else {
             onPlaybackFailed?()
             return
         }

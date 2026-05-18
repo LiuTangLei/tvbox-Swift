@@ -127,7 +127,11 @@ struct SearchView: View {
                     NavigationLink(value: video) {
                         VodCardView(video: video)
                     }
+                    #if os(iOS)
+                    .buttonStyle(VodCardPressStyle())
+                    #else
                     .buttonStyle(.plain)
+                    #endif
                 }
             }
             .padding(.horizontal, 20)

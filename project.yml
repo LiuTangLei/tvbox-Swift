@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: WP3M36TK8M
     CODE_SIGN_STYLE: Automatic
 
 packages:
@@ -30,7 +30,7 @@ targets:
           - Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.tvbox.app
+        PRODUCT_BUNDLE_IDENTIFIER: xyz.appinstall.nov.carbon.lam
         INFOPLIST_FILE: tvbox/Info.plist
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
@@ -46,6 +46,47 @@ targets:
         SWIFT_EMIT_LOC_STRINGS: YES
         SUPPORTS_MACCATALYST: YES
         DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  tvbox-Tests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: tvbox-Tests
+      - path: tvboxTests
+    dependencies:
+      - target: tvbox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tvbox.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TVBox.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TVBox"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  tvboxTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    dependencies:
+      - target: tvbox
+    sources:
+      - path: tvboxTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tvbox.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TVBox.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TVBox"
+        BUNDLE_LOADER: "$(TEST_HOST)"
       configs:
         Debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
@@ -75,7 +116,27 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_EMIT_LOC_STRINGS: YES
         CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_ENTITLEMENTS: ""
+        CODE_SIGN_ENTITLEMENTS: tvbox/tvbox-macOS.entitlements
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  tvboxTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    dependencies:
+      - target: tvbox
+    sources:
+      - path: tvboxTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tvbox.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TVBox.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TVBox"
+        BUNDLE_LOADER: "$(TEST_HOST)"
       configs:
         Debug:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"

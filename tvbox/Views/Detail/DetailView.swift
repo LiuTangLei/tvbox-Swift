@@ -17,6 +17,8 @@ struct DetailView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.modelContext) private var modelContext
     @State private var showFullScreen = false
+    /// VLC 全屏退出动画期间为 true，防止内联播放器与全屏播放器同时争抢 drawable
+    @State private var isFullScreenDismissing = false
     #if os(macOS)
     @State private var pendingMacWindowFullScreen = false
     #endif
@@ -27,7 +29,7 @@ struct DetailView: View {
         ScrollView {
             VStack(spacing: 0) {
                 // 播放器区域
-                if !showFullScreen, viewModel.isPlaying, let url = viewModel.playUrl {
+                if !showFullScreen, !isFullScreenDismissing, viewModel.isPlaying, let url = viewModel.playUrl {
                     PlayerView(
                         urlString: url,
                         startPosition: viewModel.currentPlaybackSeconds(),
@@ -146,7 +148,9 @@ struct DetailView: View {
         }
         #endif
         #if os(iOS)
-        .fullScreenCover(isPresented: $showFullScreen) {
+        .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
+            isFullScreenDismissing = false
+        }) {
             if let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
@@ -156,7 +160,11 @@ struct DetailView: View {
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
                     systemController: sharedSystemController,
-                    vlcController: sharedVLCController
+                    vlcController: sharedVLCController,
+                    onCloseRequested: {
+                        isFullScreenDismissing = true
+                        showFullScreen = false
+                    }
                 )
             }
         }
@@ -193,6 +201,35 @@ struct DetailView: View {
     
     // MARK: - 视频信息
     
+    #if os(iOS)
+    @ViewBuilder
+    private var videoInfoSection: some View {
+        VStack(spacing: 16) {
+            // Poster centered, height capped to 30% of screen
+            let posterHeight = UIScreen.main.bounds.height * 0.30
+            CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+                image.resizable().aspectRatio(2/3, contentMode: .fit)
+            } placeholder: {
+                Color.white.opacity(0.05)
+                    .aspectRatio(2/3, contentMode: .fit)
+            }
+            .frame(maxHeight: posterHeight)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
+
+            // Info below poster
+            videoDetails
+
+            // Action buttons with 48pt height
+            HStack(spacing: 12) {
+                playButton
+                collectButton
+            }
+            .frame(minHeight: 48)
+        }
+        .padding(15)
+        .glassCard(cornerRadius: AppTheme.glassRadius)
+    }
+    #else
     @ViewBuilder
     private var videoInfoSection: some View {
         HStack(alignment: .top, spacing: 20) {
@@ -205,6 +242,7 @@ struct DetailView: View {
         .padding(15)
         .glassCard(cornerRadius: AppTheme.glassRadius)
     }
+    #endif
 
     @ViewBuilder
     private var videoPoster: some View {
@@ -239,12 +277,14 @@ struct DetailView: View {
                 }
             }
             
+            #if os(macOS)
             Spacer(minLength: 10)
             
             HStack(spacing: 10) {
                 playButton
                 collectButton
             }
+            #endif
         }
     }
 

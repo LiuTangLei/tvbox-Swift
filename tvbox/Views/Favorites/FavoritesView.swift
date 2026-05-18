@@ -22,48 +22,49 @@ struct FavoritesView: View {
     #endif
     
     var body: some View {
-        NavigationStack {
-            Group {
-                if favorites.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            // 每个收藏项都可直接跳转详情，并支持右键取消收藏。
-                            ForEach(favorites) { item in
-                                NavigationLink(value: movieVideo(from: item)) {
-                                    favoriteCard(item)
-                                }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        modelContext.delete(item)
-                                        do {
-                                            try modelContext.save()
-                                        } catch {
-                                            print("删除收藏失败: \(error)")
-                                        }
-                                    } label: {
-                                        Label("取消收藏", systemImage: "heart.slash")
+        favoritesContent
+    }
+    
+    /// 收藏内容视图（不含 NavigationStack 包裹）。
+    /// iOS 下由外层 ProfileView/SettingsView 的 NavigationStack 管理导航；
+    /// macOS 下由 ContentView 的 NavigationSplitView detail 区域使用独立 NavigationStack。
+    private var favoritesContent: some View {
+        Group {
+            if favorites.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        // 每个收藏项都可直接跳转详情，并支持右键取消收藏。
+                        ForEach(favorites) { item in
+                            NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
+                                favoriteCard(item)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    modelContext.delete(item)
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("删除收藏失败: \(error)")
                                     }
+                                } label: {
+                                    Label("取消收藏", systemImage: "heart.slash")
                                 }
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
                 }
             }
-            .background(Color(red: 0.08, green: 0.08, blue: 0.1))
-            .navigationTitle("收藏")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            // 通过 Movie.Video 作为路由载体，保持与首页/搜索页一致的详情入口。
-            .navigationDestination(for: Movie.Video.self) { video in
-                DetailView(video: video)
-            }
         }
+        .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        .navigationTitle("收藏")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
     
     /// 空列表占位。

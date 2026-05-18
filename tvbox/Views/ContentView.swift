@@ -85,7 +85,9 @@ struct ContentView: View {
                 }
                 .tag(0)
             
-            LiveView()
+            LiveView(onExit: {
+                selectedTab = 0
+            })
                 .tabItem {
                     Label("直播", systemImage: "tv.fill")
                 }
@@ -97,19 +99,16 @@ struct ContentView: View {
                 }
                 .tag(2)
             
-            FavoritesView()
+            ProfileView()
                 .tabItem {
-                    Label("收藏", systemImage: "heart.fill")
+                    Label("个人中心", systemImage: "person.fill")
                 }
                 .tag(3)
-            
-            SettingsView()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape.fill")
-                }
-                .tag(4)
         }
         .tint(.orange)
+        .onChange(of: selectedTab) { _, _ in
+            HapticManager.shared.selection()
+        }
         #else
         NavigationSplitView(columnVisibility: $appState.splitViewVisibility) {
             List(selection: $selectedTab) {
@@ -133,9 +132,15 @@ struct ContentView: View {
             case 0: HomeView()
             case 1: LiveView()
             case 2: SearchView()
-            case 3: FavoritesView()
+            case 3:
+                NavigationStack {
+                    FavoritesView()
+                }
             case 4: SettingsView()
-            case 5: HistoryView()
+            case 5:
+                NavigationStack {
+                    HistoryView()
+                }
             default: HomeView()
             }
         }

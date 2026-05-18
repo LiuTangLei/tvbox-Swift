@@ -1,5 +1,18 @@
 import SwiftUI
 
+// MARK: - VodCard Press Style (iOS only)
+
+#if os(iOS)
+/// 按压缩放动画样式 - 为 VodCard 提供触觉反馈式的按压效果
+struct VodCardPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+    }
+}
+#endif
+
 /// 视频卡片组件
 struct VodCardView: View {
     /// 卡片对应的视频数据。
@@ -68,6 +81,10 @@ struct VodCardView: View {
             }
             .padding(.horizontal, 4)
         }
+        #if os(iOS)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        #endif
     }
     
     /// 海报占位图，避免图片加载失败导致卡片高度塌陷。

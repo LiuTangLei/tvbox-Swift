@@ -12,3 +12,6 @@ TVBox-*.dmg
 /IOS-key
 /TVBox.ipa
 /ExportOptions.plist
+.kiro
+package_ios.sh
+image_cache
