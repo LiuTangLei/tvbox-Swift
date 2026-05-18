@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import CoreMedia
 import Darwin
 
 #if os(macOS)
@@ -7,6 +8,74 @@ import AppKit
 #else
 import UIKit
 #endif
+
+struct SubtitleAppearance: Equatable {
+    static let defaultTextScale = 100
+    static let defaultVerticalOffset = 0
+    static let textScaleStep = 10
+    static let verticalOffsetStep = 12
+    static let minTextScale = 70
+    static let maxTextScale = 180
+    static let minVerticalOffset = -40
+    static let maxVerticalOffset = 240
+
+    var textScale: Int
+    var verticalOffset: Int
+
+    static func load() -> SubtitleAppearance {
+        let defaults = UserDefaults.standard
+        let scale = defaults.object(forKey: HawkConfig.SUBTITLE_TEXT_SIZE) as? Int ?? defaultTextScale
+        let offset = defaults.object(forKey: HawkConfig.SUBTITLE_POSITION) as? Int ?? defaultVerticalOffset
+        return SubtitleAppearance(textScale: clamp(scale, minTextScale, maxTextScale), verticalOffset: clamp(offset, minVerticalOffset, maxVerticalOffset))
+    }
+
+    func save() {
+        UserDefaults.standard.set(textScale, forKey: HawkConfig.SUBTITLE_TEXT_SIZE)
+        UserDefaults.standard.set(verticalOffset, forKey: HawkConfig.SUBTITLE_POSITION)
+    }
+
+    func resized(by delta: Int) -> SubtitleAppearance {
+        SubtitleAppearance(textScale: Self.clamp(textScale + delta, Self.minTextScale, Self.maxTextScale), verticalOffset: verticalOffset)
+    }
+
+    func moved(by delta: Int) -> SubtitleAppearance {
+        SubtitleAppearance(textScale: textScale, verticalOffset: Self.clamp(verticalOffset + delta, Self.minVerticalOffset, Self.maxVerticalOffset))
+    }
+
+    static var defaults: SubtitleAppearance {
+        SubtitleAppearance(textScale: defaultTextScale, verticalOffset: defaultVerticalOffset)
+    }
+
+    var vlcFontSize: Int {
+        Self.clamp(Int((32.0 * Double(textScale) / 100.0).rounded()), 18, 72)
+    }
+
+    var vlcSubtitleMargin: Int {
+        max(0, verticalOffset)
+    }
+
+    var avLinePosition: Double {
+        min(95, max(15, 90 - Double(verticalOffset) / 4.0))
+    }
+
+    var avTextStyleRules: [AVTextStyleRule] {
+        let attributes: [String: Any] = [
+            kCMTextMarkupAttribute_RelativeFontSize as String: NSNumber(value: textScale),
+            kCMTextMarkupAttribute_OrthogonalLinePositionPercentageRelativeToWritingDirection as String: NSNumber(value: avLinePosition)
+        ]
+        guard let rule = AVTextStyleRule(textMarkupAttributes: attributes) else { return [] }
+        return [rule]
+    }
+
+    var positionLabel: String {
+        if verticalOffset == 0 { return "默认" }
+        return verticalOffset > 0 ? "上移 \(verticalOffset)" : "下移 \(abs(verticalOffset))"
+    }
+
+    private static func clamp(_ value: Int, _ lower: Int, _ upper: Int) -> Int {
+        min(upper, max(lower, value))
+    }
+}
 
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
@@ -195,6 +264,7 @@ struct AVPlayerContentView: View {
     @State private var subtitleTracks: [MediaTrackOption] = []
     @State private var selectedAudioTrackID: String?
     @State private var selectedSubtitleTrackID: String?
+    @State private var subtitleAppearance = SubtitleAppearance.load()
     @State private var audioSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
@@ -348,6 +418,7 @@ struct AVPlayerContentView: View {
             #endif
             player = sharedPlayer
             applyPreferredPlaybackRate(to: sharedPlayer)
+            applySubtitleAppearance(to: sharedPlayer.currentItem)
             bindPlayerObservers(for: sharedPlayer)
             reportProgress(for: sharedPlayer)
             return
@@ -361,6 +432,7 @@ struct AVPlayerContentView: View {
         asset.resourceLoader.setDelegate(nil, queue: nil)
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = 0
+        applySubtitleAppearance(to: playerItem)
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.defaultRate = preferredRate
         if let sharedController {
@@ -882,14 +954,11 @@ struct AVPlayerContentView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
-                    if shouldShowAudioTrackMenu {
-                        audioTrackMenu
-                    }
-                    if shouldShowSubtitleTrackMenu {
-                        subtitleTrackMenu
-                    }
+                    audioTrackMenu
+                    subtitleTrackMenu
+                    subtitleStyleMenu
                 }
-                .frame(width: 260, alignment: .leading)
+                .frame(width: 356, alignment: .leading)
                 
                 Spacer()
                 
@@ -961,7 +1030,7 @@ struct AVPlayerContentView: View {
                         }
                         .buttonStyle(.plain)
 
-                        Slider(
+                        PlayerVolumeSlider(
                             value: Binding(
                                 get: { volume },
                                 set: {
@@ -969,9 +1038,8 @@ struct AVPlayerContentView: View {
                                     wakeUpControls()
                                 }
                             ),
-                            in: 0...1.0
+                            range: 0...1.0
                         )
-                        .accentColor(.white.opacity(0.8))
                         .frame(width: 80)
                     }
                     
@@ -1056,15 +1124,27 @@ struct AVPlayerContentView: View {
         subtitleTracks.filter { !$0.isDisabled }.isEmpty == false
     }
 
+    private var hasSelectableAudioTracks: Bool {
+        shouldShowAudioTrackMenu
+    }
+
+    private var hasSelectableSubtitleTracks: Bool {
+        shouldShowSubtitleTrackMenu
+    }
+
     private var audioTrackMenu: some View {
         Menu {
-            ForEach(audioTracks) { track in
-                Button {
-                    wakeUpControls()
-                    selectAudioTrack(track)
-                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
-                } label: {
-                    trackMenuItem(track: track, selectedID: selectedAudioTrackID)
+            if audioTracks.isEmpty {
+                Text("暂无可选音轨")
+            } else {
+                ForEach(audioTracks) { track in
+                    Button {
+                        wakeUpControls()
+                        selectAudioTrack(track)
+                        showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                    } label: {
+                        trackMenuItem(track: track, selectedID: selectedAudioTrackID)
+                    }
                 }
             }
         } label: {
@@ -1074,17 +1154,23 @@ struct AVPlayerContentView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!hasSelectableAudioTracks)
+        .opacity(hasSelectableAudioTracks ? 1 : 0.55)
     }
 
     private var subtitleTrackMenu: some View {
         Menu {
-            ForEach(subtitleTracks) { track in
-                Button {
-                    wakeUpControls()
-                    selectSubtitleTrack(track)
-                    showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
-                } label: {
-                    trackMenuItem(track: track, selectedID: selectedSubtitleTrackID)
+            if subtitleTracks.isEmpty {
+                Text("暂无可选字幕")
+            } else {
+                ForEach(subtitleTracks) { track in
+                    Button {
+                        wakeUpControls()
+                        selectSubtitleTrack(track)
+                        showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                    } label: {
+                        trackMenuItem(track: track, selectedID: selectedSubtitleTrackID)
+                    }
                 }
             }
         } label: {
@@ -1092,6 +1178,45 @@ struct AVPlayerContentView: View {
                 icon: "captions.bubble.fill",
                 title: selectedTrackTitle(in: subtitleTracks, selectedID: selectedSubtitleTrackID, fallback: "字幕")
             )
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasSelectableSubtitleTracks)
+        .opacity(hasSelectableSubtitleTracks ? 1 : 0.55)
+    }
+
+    private var subtitleStyleMenu: some View {
+        Menu {
+            Text("大小 \(subtitleAppearance.textScale)%")
+            Button {
+                changeSubtitleAppearance(subtitleAppearance.resized(by: SubtitleAppearance.textScaleStep), icon: "textformat.size.larger")
+            } label: {
+                Label("增大字幕", systemImage: "textformat.size.larger")
+            }
+            Button {
+                changeSubtitleAppearance(subtitleAppearance.resized(by: -SubtitleAppearance.textScaleStep), icon: "textformat.size.smaller")
+            } label: {
+                Label("减小字幕", systemImage: "textformat.size.smaller")
+            }
+            Divider()
+            Text("位置 \(subtitleAppearance.positionLabel)")
+            Button {
+                changeSubtitleAppearance(subtitleAppearance.moved(by: SubtitleAppearance.verticalOffsetStep), icon: "arrow.up")
+            } label: {
+                Label("字幕上移", systemImage: "arrow.up")
+            }
+            Button {
+                changeSubtitleAppearance(subtitleAppearance.moved(by: -SubtitleAppearance.verticalOffsetStep), icon: "arrow.down")
+            } label: {
+                Label("字幕下移", systemImage: "arrow.down")
+            }
+            Divider()
+            Button {
+                changeSubtitleAppearance(.defaults, icon: "arrow.counterclockwise")
+            } label: {
+                Label("重置字幕", systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            trackMenuLabel(icon: "textformat.size", title: "样式")
         }
         .buttonStyle(.plain)
     }
@@ -1166,6 +1291,18 @@ struct AVPlayerContentView: View {
         }
     }
 
+    private func changeSubtitleAppearance(_ appearance: SubtitleAppearance, icon: String) {
+        subtitleAppearance = appearance
+        appearance.save()
+        applySubtitleAppearance(to: player?.currentItem)
+        wakeUpControls()
+        showOSD(icon: icon)
+    }
+
+    private func applySubtitleAppearance(to item: AVPlayerItem?) {
+        item?.textStyleRules = subtitleAppearance.avTextStyleRules
+    }
+
     private func playAtPreferredRate(_ player: AVPlayer) {
         let normalized = normalizedSavedPlaybackRate
         rate = normalized
@@ -1229,6 +1366,57 @@ struct LoadingSpeedOverlay: View {
     }
 }
 
+struct PlayerVolumeSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+
+    private let trackHeight: CGFloat = 4
+    private let knobSize: CGFloat = 10
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let progress = CGFloat(fraction)
+            let knobRadius = knobSize / 2
+            let knobX = min(max(width * progress, knobRadius), max(knobRadius, width - knobRadius))
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.24))
+                    .frame(height: trackHeight)
+                Capsule()
+                    .fill(Color.white.opacity(0.82))
+                    .frame(width: max(0, width * progress), height: trackHeight)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: knobSize, height: knobSize)
+                    .position(x: knobX, y: proxy.size.height / 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        updateValue(locationX: gesture.location.x, width: width)
+                    }
+            )
+        }
+        .frame(height: 18)
+    }
+
+    private var fraction: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(max((value - range.lowerBound) / span, 0), 1)
+    }
+
+    private func updateValue(locationX: CGFloat, width: CGFloat) {
+        guard width > 0 else { return }
+        let progress = min(max(locationX / width, 0), 1)
+        value = range.lowerBound + (range.upperBound - range.lowerBound) * Double(progress)
+    }
+}
+
 @MainActor
 final class NetworkTrafficMonitor: ObservableObject {
     @Published private(set) var speedText = "0 KB/s"
@@ -1284,7 +1472,8 @@ final class NetworkTrafficMonitor: ObservableObject {
         guard getifaddrs(&addresses) == 0 else { return 0 }
         defer { freeifaddrs(addresses) }
 
-        var total: UInt64 = 0
+        var preferredTotal: UInt64 = 0
+        var fallbackTotal: UInt64 = 0
         var cursor = addresses
         while let pointer = cursor {
             let interface = pointer.pointee
@@ -1297,10 +1486,25 @@ final class NetworkTrafficMonitor: ObservableObject {
             guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0 else { continue }
             guard let dataPointer = interface.ifa_data else { continue }
 
+            let name = String(cString: interface.ifa_name)
             let data = dataPointer.assumingMemoryBound(to: if_data.self).pointee
-            total &+= UInt64(data.ifi_ibytes)
+            let bytes = UInt64(data.ifi_ibytes)
+            if Self.isPreferredTrafficInterface(name) {
+                preferredTotal &+= bytes
+            } else if Self.isFallbackTrafficInterface(name) {
+                fallbackTotal &+= bytes
+            }
         }
-        return total
+        return preferredTotal > 0 ? preferredTotal : fallbackTotal
+    }
+
+    private static func isPreferredTrafficInterface(_ name: String) -> Bool {
+        name.hasPrefix("en") || name.hasPrefix("pdp_ip")
+    }
+
+    private static func isFallbackTrafficInterface(_ name: String) -> Bool {
+        let ignoredPrefixes = ["lo", "utun", "ipsec", "gif", "stf", "awdl", "llw", "bridge", "p2p", "anpi"]
+        return ignoredPrefixes.contains { name.hasPrefix($0) } == false
     }
 
     private static func format(bytesPerSecond: Double) -> String {

@@ -955,10 +955,17 @@ private struct BridgeAndroidQrLoginSheet: View {
 
                 if let selectedInput {
                     HStack(spacing: 8) {
-                        TextField(selectedInput.text?.isEmpty == false ? selectedInput.text! : "输入内容", text: $inputText)
+                        TextField(selectedInput.hint?.isEmpty == false ? selectedInput.hint! : "输入内容", text: $inputText)
                             .textFieldStyle(.roundedBorder)
-                        Button(isSendingAction ? "发送中" : "发送") {
+                            .onSubmit {
+                                Task { await send(.input(element: selectedInput, text: inputText)) }
+                            }
+                        Button(isSendingAction ? "发送中" : "输入") {
                             Task { await send(.input(element: selectedInput, text: inputText)) }
+                        }
+                        .disabled(isSendingAction)
+                        Button("确认") {
+                            Task { await send(.submit(element: selectedInput)) }
                         }
                         .disabled(isSendingAction)
                     }
@@ -1108,7 +1115,7 @@ private struct BridgeAndroidQrLoginSheet: View {
         do {
             let response = try await onAction(action)
             apply(response)
-            if action.action == "input" { selectedInput = nil }
+            if action.action == "submit" { selectedInput = nil }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1207,17 +1214,30 @@ private struct BridgeAndroidQrLoginSheet: View {
                     Button {
                         if element.role == "input" {
                             selectedInput = element
-                            inputText = ""
+                            inputText = element.value ?? ""
+                            Task { await send(.click(element: element)) }
                         } else {
                             Task { await send(.click(element: element)) }
                         }
                     } label: {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(element.role == "input" ? Color.accentColor.opacity(0.14) : Color.accentColor.opacity(0.07))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(Color.accentColor.opacity(element.role == "input" ? 0.65 : 0.35), lineWidth: 1)
-                            )
+                        ZStack(alignment: .topLeading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(element.role == "input" ? Color.accentColor.opacity(0.14) : Color.accentColor.opacity(0.07))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(element.focused == true ? Color.yellow.opacity(0.8) : Color.accentColor.opacity(element.role == "input" ? 0.65 : 0.35), lineWidth: element.focused == true ? 2 : 1)
+                                )
+                            if element.role == "input" || element.focused == true {
+                                Text(element.displayText)
+                                    .font(.caption2.weight(.semibold))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.black.opacity(0.55), in: Capsule())
+                                    .padding(3)
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
                     .frame(width: CGFloat(element.width) * layout.scale, height: CGFloat(element.height) * layout.scale)
@@ -1225,7 +1245,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                         x: layout.offsetX + CGFloat(element.x + element.width / 2) * layout.scale,
                         y: layout.offsetY + CGFloat(element.y + element.height / 2) * layout.scale
                     )
-                    .accessibilityLabel(element.text?.isEmpty == false ? element.text! : element.role)
+                    .accessibilityLabel(element.displayText)
                 }
             }
         }

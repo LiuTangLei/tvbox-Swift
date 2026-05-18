@@ -35,7 +35,15 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             return unsafeBitCast(symbol, to: LibVLCStopAsyncFunction.self)
         }
     }()
+    private static let libVLCSetTextRendererInt: LibVLCSetTextRendererIntFunction? = {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+        return "libvlc_video_set_textrenderer_int".withCString { symbolName in
+            guard let symbol = dlsym(defaultHandle, symbolName) else { return nil }
+            return unsafeBitCast(symbol, to: LibVLCSetTextRendererIntFunction.self)
+        }
+    }()
     private typealias LibVLCStopAsyncFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    private typealias LibVLCSetTextRendererIntFunction = @convention(c) (UnsafeMutableRawPointer?, UInt32, Int32) -> Void
     
     private var _mediaPlayer: VLCMediaPlayer?
     var mediaPlayer: VLCMediaPlayer {
@@ -58,6 +66,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var subtitleTracks: [MediaTrackOption] = []
     @Published var selectedAudioTrackID: String?
     @Published var selectedSubtitleTrackID: String?
+    @Published var subtitleAppearance = SubtitleAppearance.load()
     #if os(macOS)
     private let persistentDrawableView = NSView(frame: .zero)
     private weak var lastAttachedContainer: NSView?
@@ -182,6 +191,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             self.isLive = isLive
             applyPlaybackRate()
             applyVolume()
+            applySubtitleAppearance()
             refreshTrackOptions()
             refreshPlaybackFlags()
             emitProgress()
@@ -204,7 +214,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.stop()
         let media = VLCMedia(url: url)
         
-        let cacheConfig = Self.cacheConfig(isLive: isLive, bufferMode: bufferMode)
+        let cacheConfig = Self.cacheConfig(isLive: isLive, isBridgeProxy: targetIsBridgeProxy, bufferMode: bufferMode)
         let enableFrameDrop = isLive ? bufferMode.enableFrameDrop : false
         let enableSkipFrames = isLive && bufferMode.enableFrameDrop
         var mediaOptions: [String: Any] = [
@@ -212,14 +222,18 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "live-caching": cacheConfig.live,
             "file-caching": cacheConfig.file,
             "http-reconnect": 1,
-            "http-continuous": 1,
             "http-forward-cookies": 1,
             "audio-time-stretch": 1,
             "sub-autodetect-file": 1,
             "sub-autodetect-fuzzy": 3,
             "subsdec-encoding": "UTF-8",
-            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "freetype-fontsize": subtitleAppearance.vlcFontSize,
+            "sub-margin": subtitleAppearance.vlcSubtitleMargin
         ]
+        if isLive || !targetIsBridgeProxy {
+            mediaOptions["http-continuous"] = 1
+        }
         if !isLive {
             mediaOptions["avcodec-hurry-up"] = 0
             mediaOptions["clock-synchro"] = 0
@@ -244,6 +258,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.play()
         applyPlaybackRate()
         applyVolume()
+        applySubtitleAppearance()
         refreshTrackOptions()
         scheduleTrackRefreshes()
         startProgressTimer()
@@ -333,6 +348,16 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         } else {
             setVolume(0)
         }
+    }
+
+    func setSubtitleAppearance(_ appearance: SubtitleAppearance) {
+        subtitleAppearance = appearance
+        appearance.save()
+        mediaPlayer.media?.addOptions([
+            "freetype-fontsize": appearance.vlcFontSize,
+            "sub-margin": appearance.vlcSubtitleMargin
+        ])
+        applySubtitleAppearance()
     }
 
     func selectAudioTrack(_ track: MediaTrackOption) {
@@ -768,6 +793,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         guard mediaPlayer.audio?.volume != target else { return }
         mediaPlayer.audio?.volume = target
     }
+
+    private func applySubtitleAppearance() {
+        guard let playerPointer = playerInstancePointer(), let setTextRendererInt = Self.libVLCSetTextRendererInt else { return }
+        setTextRendererInt(playerPointer, 1, Int32(subtitleAppearance.vlcFontSize))
+    }
     
     private func syncDecodeModeFromSettings() {
         if let decodeModeOverride {
@@ -794,8 +824,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         min(max(raw, 0), maxVolume)
     }
     
-    private static func cacheConfig(isLive: Bool, bufferMode: VLCBufferMode) -> (network: Int, live: Int, file: Int) {
-        bufferMode.cacheConfig(isLive: isLive)
+    private static func cacheConfig(isLive: Bool, isBridgeProxy: Bool, bufferMode: VLCBufferMode) -> (network: Int, live: Int, file: Int) {
+        if !isLive && isBridgeProxy {
+            return (network: 1800, live: 1600, file: 2400)
+        }
+        return bufferMode.cacheConfig(isLive: isLive)
     }
 
     private func scheduleBufferingFallbackIfNeeded() {
@@ -1432,14 +1465,11 @@ struct VLCVodPlayerView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
-                    if shouldShowAudioTrackMenu {
-                        audioTrackMenu
-                    }
-                    if shouldShowSubtitleTrackMenu {
-                        subtitleTrackMenu
-                    }
+                    audioTrackMenu
+                    subtitleTrackMenu
+                    subtitleStyleMenu
                 }
-                .frame(width: 260, alignment: .leading)
+                .frame(width: 356, alignment: .leading)
                 
                 Spacer()
                 
@@ -1510,7 +1540,7 @@ struct VLCVodPlayerView: View {
                         }
                         .buttonStyle(.plain)
 
-                        Slider(
+                        PlayerVolumeSlider(
                             value: Binding(
                                 get: { Double(controller.volume) },
                                 set: {
@@ -1518,10 +1548,8 @@ struct VLCVodPlayerView: View {
                                     wakeUpControls()
                                 }
                             ),
-                            in: 0...200,
-                            step: 1
+                            range: 0...200
                         )
-                        .accentColor(.white.opacity(0.8))
                         .frame(width: 80)
                     }
                     
@@ -1606,15 +1634,27 @@ struct VLCVodPlayerView: View {
         controller.subtitleTracks.filter { !$0.isDisabled }.isEmpty == false
     }
 
+    private var hasSelectableAudioTracks: Bool {
+        shouldShowAudioTrackMenu
+    }
+
+    private var hasSelectableSubtitleTracks: Bool {
+        shouldShowSubtitleTrackMenu
+    }
+
     private var audioTrackMenu: some View {
         Menu {
-            ForEach(controller.audioTracks) { track in
-                Button {
-                    wakeUpControls()
-                    controller.selectAudioTrack(track)
-                    showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
-                } label: {
-                    trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
+            if controller.audioTracks.isEmpty {
+                Text("暂无可选音轨")
+            } else {
+                ForEach(controller.audioTracks) { track in
+                    Button {
+                        wakeUpControls()
+                        controller.selectAudioTrack(track)
+                        showOSD(icon: track.isDisabled ? "speaker.slash.fill" : "waveform")
+                    } label: {
+                        trackMenuItem(track: track, selectedID: controller.selectedAudioTrackID)
+                    }
                 }
             }
         } label: {
@@ -1624,17 +1664,23 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!hasSelectableAudioTracks)
+        .opacity(hasSelectableAudioTracks ? 1 : 0.55)
     }
 
     private var subtitleTrackMenu: some View {
         Menu {
-            ForEach(controller.subtitleTracks) { track in
-                Button {
-                    wakeUpControls()
-                    controller.selectSubtitleTrack(track)
-                    showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
-                } label: {
-                    trackMenuItem(track: track, selectedID: controller.selectedSubtitleTrackID)
+            if controller.subtitleTracks.isEmpty {
+                Text("暂无可选字幕")
+            } else {
+                ForEach(controller.subtitleTracks) { track in
+                    Button {
+                        wakeUpControls()
+                        controller.selectSubtitleTrack(track)
+                        showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                    } label: {
+                        trackMenuItem(track: track, selectedID: controller.selectedSubtitleTrackID)
+                    }
                 }
             }
         } label: {
@@ -1644,6 +1690,51 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!hasSelectableSubtitleTracks)
+        .opacity(hasSelectableSubtitleTracks ? 1 : 0.55)
+    }
+
+    private var subtitleStyleMenu: some View {
+        Menu {
+            Text("大小 \(controller.subtitleAppearance.textScale)%")
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.resized(by: SubtitleAppearance.textScaleStep), icon: "textformat.size.larger")
+            } label: {
+                Label("增大字幕", systemImage: "textformat.size.larger")
+            }
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.resized(by: -SubtitleAppearance.textScaleStep), icon: "textformat.size.smaller")
+            } label: {
+                Label("减小字幕", systemImage: "textformat.size.smaller")
+            }
+            Divider()
+            Text("位置 \(controller.subtitleAppearance.positionLabel)")
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.moved(by: SubtitleAppearance.verticalOffsetStep), icon: "arrow.up")
+            } label: {
+                Label("字幕上移", systemImage: "arrow.up")
+            }
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.moved(by: -SubtitleAppearance.verticalOffsetStep), icon: "arrow.down")
+            } label: {
+                Label("字幕下移", systemImage: "arrow.down")
+            }
+            Divider()
+            Button {
+                changeSubtitleAppearance(.defaults, icon: "arrow.counterclockwise")
+            } label: {
+                Label("重置字幕", systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            trackMenuLabel(icon: "textformat.size", title: "样式")
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func changeSubtitleAppearance(_ appearance: SubtitleAppearance, icon: String) {
+        wakeUpControls()
+        controller.setSubtitleAppearance(appearance)
+        showOSD(icon: icon)
     }
 
     private func trackMenuItem(track: MediaTrackOption, selectedID: String?) -> some View {
@@ -1787,6 +1878,7 @@ struct VLCLivePlayerView: View {
                     }
                     if shouldShowSubtitleTrackMenu {
                         subtitleTrackMenu
+                        subtitleStyleMenu
                     }
                 }
                 .padding(.horizontal, 12)
@@ -1930,6 +2022,48 @@ struct VLCLivePlayerView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+    private var subtitleStyleMenu: some View {
+        Menu {
+            Text("大小 \(controller.subtitleAppearance.textScale)%")
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.resized(by: SubtitleAppearance.textScaleStep), icon: "textformat.size.larger")
+            } label: {
+                Label("增大字幕", systemImage: "textformat.size.larger")
+            }
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.resized(by: -SubtitleAppearance.textScaleStep), icon: "textformat.size.smaller")
+            } label: {
+                Label("减小字幕", systemImage: "textformat.size.smaller")
+            }
+            Divider()
+            Text("位置 \(controller.subtitleAppearance.positionLabel)")
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.moved(by: SubtitleAppearance.verticalOffsetStep), icon: "arrow.up")
+            } label: {
+                Label("字幕上移", systemImage: "arrow.up")
+            }
+            Button {
+                changeSubtitleAppearance(controller.subtitleAppearance.moved(by: -SubtitleAppearance.verticalOffsetStep), icon: "arrow.down")
+            } label: {
+                Label("字幕下移", systemImage: "arrow.down")
+            }
+            Divider()
+            Button {
+                changeSubtitleAppearance(.defaults, icon: "arrow.counterclockwise")
+            } label: {
+                Label("重置字幕", systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            trackMenuLabel(icon: "textformat.size", title: "样式")
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func changeSubtitleAppearance(_ appearance: SubtitleAppearance, icon: String) {
+        controller.setSubtitleAppearance(appearance)
+        showOSD(icon: icon)
     }
 
     private func trackMenuItem(track: MediaTrackOption, selectedID: String?) -> some View {

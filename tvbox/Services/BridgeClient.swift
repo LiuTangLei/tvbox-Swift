@@ -72,14 +72,28 @@ struct BridgeUiElement: Decodable, Identifiable, Hashable {
     let id: String
     let role: String
     let text: String?
+    let value: String?
+    let hint: String?
+    let className: String?
     let x: Double
     let y: Double
     let width: Double
     let height: Double
     let enabled: Bool?
+    let focused: Bool?
+    let selected: Bool?
+    let clickable: Bool?
+    let focusable: Bool?
 
     var isInteractive: Bool {
         role == "button" || role == "input"
+    }
+
+    var displayText: String {
+        [text, value, hint, role].compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }.first ?? role
     }
 }
 
@@ -100,6 +114,10 @@ struct BridgeQrUiAction: Encodable, Hashable {
 
     static func input(element: BridgeUiElement, text: String) -> BridgeQrUiAction {
         BridgeQrUiAction(action: "input", elementId: element.id, text: text, x: nil, y: nil)
+    }
+
+    static func submit(element: BridgeUiElement? = nil) -> BridgeQrUiAction {
+        BridgeQrUiAction(action: "submit", elementId: element?.id, text: nil, x: nil, y: nil)
     }
 
     static func named(_ action: String) -> BridgeQrUiAction {
@@ -285,7 +303,7 @@ final class BridgeClient {
     }
 
     func qrStatus(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrStatusResponse {
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrStatus", method: "POST", body: QrStatusRequest(provider: prompt.provider, includeUi: false))
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrStatus", method: "POST", body: QrStatusRequest(provider: prompt.provider, includeUi: true))
         let response = try decoder.decode(BridgeQrStatusResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录状态检测失败") }
         try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge QR 登录状态")

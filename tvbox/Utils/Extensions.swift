@@ -22,6 +22,8 @@ struct HawkConfig {
     static let PLAY_SCALE = "play_scale"
     static let PLAY_SPEED = "play_speed"
     static let PLAY_VOLUME = "play_volume"
+    static let SUBTITLE_TEXT_SIZE = "subtitle_text_size"
+    static let SUBTITLE_POSITION = "subtitle_position"
     static let PLAY_DECODE_MODE = "play_decode_mode"
     static let PLAY_VLC_BUFFER_MODE = "play_vlc_buffer_mode"
     static let PLAY_TIME_STEP = "play_time_step"
