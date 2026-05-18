@@ -76,15 +76,15 @@ Python 路线需要单独澄清：`.py` 源不是通过 `jar` 字段加载，也
 
 ### 3.2 x86 / x86_64 APK 打包判断
 
-源码和依赖静态检查后的判断：**完整 Android App 直接打 x86/x86_64 不方便；裁剪的 Bridge-only APK 打 x86_64 可行，工作量中等。**
+源码和依赖静态检查及本次落地后的判断：**完整 Android App 可以新增 x86_64 flavor 作为无头 Bridge Server APK，但必须在 x86_64 上隔离 ARM-only 原生解析器；不要承诺完整 Android 播放端能力在 x86_64 上等价。**
 
-- 完整 `:app` 当前只有 `arm64_v8a`、`armeabi_v7a` 两个 ABI flavor；`app/libs` 里的 `forcetech-release.aar` 只有 `armeabi-v7a`，`jianpian-release.aar` 和 `thunder-release.aar` 只有 ARM/ARM64。直接新增 `x86_64` flavor 会遇到播放端 native AAR 缺 ABI 的问题，除非移除这些能力或拿到对应 x86_64 native 库。
-- Bridge-only APK 不需要打进 `forcetech`、`thunder`、`jianpian`、`tvbus`、`zlive` 这些播放/协议 native 模块。只依赖 `catvod`、`quickjs`、必要的 `chaquo`，更适合做 x86_64 emulator 常驻服务。
+- `app/libs` 里的 `forcetech-release.aar` 只有 `armeabi-v7a`，`jianpian-release.aar` 和 `thunder-release.aar` 只有 ARM/ARM64。x86_64 包不能加载这些 native so，因此服务端运行时会禁用 ForceTech、JianPian、Thunder 解析器，并从 x86_64 APK 中移除这些 AAR 带入的 ARM native 中间产物和 `assets/libmitv.so`。
+- x86_64 无头 Bridge Server 仍复用完整 app 的 `Server` / `Bridge` / `SiteApi` / `JarLoader` / `BaseLoader`，所以 Jar Spider、QuickJS、Chaquopy、普通 HTTP 播放代理路径可以保留。TVBus 依赖配置下发的动态 so，只有拿到对应 x86_64 so 时才应视为可用。
 - `catvod` 模块本身未锁 ABI；`quickjs` 使用的 `wang.harlon.quickjs:wrapper-android:3.2.3` AAR 静态检查包含 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 四套 `libquickjs-android-wrapper.so`。
-- `chaquo` 官方 17.0 文档支持 `arm64-v8a`、`x86_64`，当前项目使用 Python 3.10，理论上也支持 32-bit `x86`；但本仓库 `chaquo/build.gradle` 目前只声明了 ARM 两个 flavor，需要新增 `x86_64` flavor/`abiFilters`，并实际验证 `requirements.txt` 中 `lxml`、`ujson`、`pycryptodome` 等包在目标 ABI 下能构建和启动。
+- `chaquo` 官方 17.0 文档支持 `arm64-v8a`、`x86_64`，当前项目使用 Python 3.10。本次已经为 `app` 与 `chaquo` 增加 `x86_64` flavor/`abiFilters`，并验证 `requirements.txt` 中 `lxml`、`ujson`、`pycryptodome` 等包可下载 x86_64 Android wheel 并打入 APK。
 - 推荐只承诺 `x86_64`，不优先做 32-bit `x86`。Android Emulator 当前主流是 x86_64，32-bit x86 价值低，还会增加 Chaquopy/依赖包验证面。
 
-因此，x86_64 Bridge APK 的合理落地方式是：新建或拆出 `type3-bridge-server` Android application，只依赖 `:catvod`、`:quickjs`、`:chaquo` 和 NanoHTTPD；给 app 与 `chaquo` 增加 `x86_64` flavor；删除完整播放器、DLNA、TVBus/Thunder/JianPian/ForceTech 等 native 依赖；用 Linux/KVM x86_64 emulator 跑一次 `/health`、Jar Spider、QuickJS、Python 初始化验收。本文后续 Docker 部署、Phase 0 和验收标准中的 x86_64 要求，均指这个裁剪 Bridge APK，不是完整 Android App。
+因此，x86_64 Bridge APK 的合理落地方式是：在 `TV/app` 保持完整 Bridge 能力，新增 `x86_64` ABI flavor 和前台无头 `HeadlessServerService`；运行时通过 `/health` 上报 ABI 与被禁用的 native 解析器；用 Linux/KVM x86_64 emulator 跑一次 `/health`、Jar Spider、QuickJS、Python 初始化验收。本文后续 Docker 部署、Phase 0 和验收标准中的 x86_64 要求，均指这个无头 Bridge Server 用法，不代表 x86_64 上具备 ARM 盒子完整播放协议能力。
 
 第一版不建议的形态：
 
@@ -599,7 +599,7 @@ docker start type3-android-emulator
 - 如果需要公网暴露、多人共享、零信任鉴权、动态发现，**走方案 B**，但后端只做反代/治理，不做协议层。
 - 不论 A/B，**不能跳过 Bridge APK 直接用宿主后端跑 type=3**：DEX jar、Chaquopy、QuickJS 必须在 Android Runtime 里运行（§3、§3.1 已论证）。
 
-未实测项（诚实声明）：本机当前缺 Java Runtime，未实际跑 Waydroid 启动 + APK 安装 + iOS 直连测试，以上结论基于 Waydroid 文档、`waydroid-net.sh` 源码、Arch Wiki Waydroid 章节和 LXC NAT 模型。落地时需先在一台符合上述硬约束的 x86_64 Linux 上做一次 `/health` + Jar Spider + QuickJS + Python 端到端验证。
+未实测项（诚实声明）：本机已完成 x86_64 APK 构建和 APK 内容校验，但还未在真实 Linux/KVM x86_64 VPS 上启动 Android Runtime、安装 APK 并执行 iOS 直连测试。落地时需先在一台符合上述硬约束的 x86_64 Linux 上做一次 `/health` + Jar Spider + QuickJS + Python 端到端验证。
 
 ## 12. 安全与合规
 
@@ -620,7 +620,7 @@ docker start type3-android-emulator
 - 新建 `type3-bridge-server` Android 工程（application 或 library 形态），或在 `TV/app` 现有 `server` 包旁新增 Bridge `Process`。
 - 复用 NanoHTTPD 的 `Process` 分发模型，新增 `/api/v1/...` JSON API；保留现有 `/proxy` 行为。
 - 复用 `:catvod`、`:quickjs`、`:chaquo` 模块依赖，准备好可注入 `Application` Context。
-- 为服务端 Bridge 建立裁剪 APK：不要依赖 `tvbus`、`forcetech`、`thunder`、`jianpian`、`zlive` 等播放端 native 模块；新增并验证 `x86_64` 构建，确认 QuickJS/chaquopy 在目标 emulator ABI 上可启动。
+- 为服务端 Bridge 建立 x86_64 APK：`TV/app` 和 `chaquo` 增加 `x86_64` flavor；x86_64 运行时禁用 `forcetech`、`thunder`、`jianpian` 等 ARM-only native 解析器；确认 APK 内只包含 x86_64 native 库，并在目标 emulator ABI 上验证 QuickJS/chaquopy 可启动。
 - 准备 Linux/KVM 无头 Android Docker 启动脚本：持久化 AVD userdata，等待 boot completed，启动 Bridge Service，建立端口转发，检查 `/health`。
 - 实现 `/health`、配置注册、基础 DTO、错误码。
 - iOS 增加 Bridge Server 设置和连通性检测。

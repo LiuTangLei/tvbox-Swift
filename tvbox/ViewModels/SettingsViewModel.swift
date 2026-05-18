@@ -296,11 +296,22 @@ class SettingsViewModel: ObservableObject {
         defer { isTestingBridge = false }
         do {
             let health = try await BridgeClient.shared.health()
-            let portText = health.port.map { ":\($0)" } ?? ""
-            bridgeStatusText = "可用\(portText)"
+            bridgeStatusText = bridgeStatusDescription(for: health)
         } catch {
             bridgeStatusText = error.localizedDescription
         }
+    }
+
+    private func bridgeStatusDescription(for health: BridgeHealth) -> String {
+        let portText = health.port.map { ":\($0)" } ?? ""
+        var parts = ["可用\(portText)"]
+        if let primary = health.abi?.primary, !primary.isEmpty {
+            parts.append(primary)
+        }
+        if health.abi?.armNativeExtractors == false {
+            parts.append("P2P受限")
+        }
+        return parts.joined(separator: " ")
     }
     
     /// 设置点播播放器内核

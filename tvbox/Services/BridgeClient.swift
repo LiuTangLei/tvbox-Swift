@@ -8,7 +8,16 @@ struct BridgeHealth: Decodable {
     let version: String?
     let address: String?
     let port: Int?
+    let abi: BridgeAbiInfo?
     let runtimes: [String: String]?
+}
+
+struct BridgeAbiInfo: Decodable {
+    let primary: String?
+    let supported: [String]?
+    let x86_64: Bool?
+    let armNativeExtractors: Bool?
+    let disabledExtractors: [String]?
 }
 
 struct BridgeTransientOverlay: Decodable, Hashable {
