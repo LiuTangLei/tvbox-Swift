@@ -1,5 +1,11 @@
 import Foundation
 
+struct VideoPage {
+    let videos: [Movie.Video]
+    let page: Int
+    let pageCount: Int?
+}
+
 /// 视频源数据服务 - 对应 Android 版 SourceViewModel.java
 /// 负责从各视频源获取分类、列表、详情和搜索数据
 class SourceService {
@@ -169,11 +175,16 @@ class SourceService {
     
     /// 获取分类下的视频列表
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
+        try await getListPage(sourceBean: sourceBean, sortData: sortData, page: page, filters: filters).videos
+    }
+
+    /// 获取分类下的视频列表和分页信息
+    func getListPage(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> VideoPage {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         if sourceBean.requiresBridge {
             let jsonStr = try await bridge.category(source: sourceBean, sortData: sortData, page: page, filters: filters)
-            return try parseVideoList(jsonStr, sourceBean: sourceBean)
+            return try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: page)
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
@@ -236,22 +247,30 @@ class SourceService {
         }
         
         let jsonStr = try await network.getString(from: url)
-        return try parseVideoList(jsonStr, sourceBean: sourceBean)
+        return try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: page)
     }
     
     private func parseVideoList(_ jsonStr: String, sourceBean: SourceBean) throws -> [Movie.Video] {
+        try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: 1).videos
+    }
+
+    private func parseVideoPage(_ jsonStr: String, sourceBean: SourceBean, requestedPage: Int) throws -> VideoPage {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
         
         var videos: [Movie.Video] = []
+        var responsePage = requestedPage
+        var pageCount: Int?
         
         if sourceBean.type == 0 {
             videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceBean.key)
         } else {
             // JSON 格式 (type=1, type=4)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let list = json["list"] as? [[String: Any]] {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                responsePage = intValue(json["page"]) ?? responsePage
+                pageCount = intValue(json["pagecount"]) ?? intValue(json["pageCount"])
+                let list = json["list"] as? [[String: Any]] ?? []
                 let decoder = JSONDecoder()
                 for item in list {
                     if let itemData = try? JSONSerialization.data(withJSONObject: item),
@@ -264,7 +283,14 @@ class SourceService {
             }
         }
         
-        return videos
+        return VideoPage(videos: videos, page: responsePage, pageCount: pageCount)
+    }
+
+    private func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? Double { return Int(value) }
+        if let value = value as? String { return Int(value) }
+        return nil
     }
 
     private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceBean: SourceBean) {

@@ -116,7 +116,8 @@ class HomeViewModel: ObservableObject {
         defer { isLoading = false }
         
         do {
-            let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
+            let videoPage = try await sourceService.getListPage(sourceBean: source, sortData: sort, page: page)
+            let videos = videoPage.videos
             
             // 分类切换过程中，丢弃旧请求结果
             guard selectedSort?.id == sort.id else { return }
@@ -126,9 +127,13 @@ class HomeViewModel: ObservableObject {
             } else {
                 categoryVideos.append(contentsOf: videos)
             }
-            // 以"返回非空"作为是否继续分页的轻量判断。
             currentPage = page
-            hasMore = !videos.isEmpty
+            if let pageCount = videoPage.pageCount {
+                hasMore = videoPage.page < pageCount
+            } else {
+                // 旧 XML 接口没有分页总数，只能退回到非空列表判断。
+                hasMore = !videos.isEmpty
+            }
         } catch {
             guard selectedSort?.id == sort.id else { return }
             errorMessage = error.localizedDescription
