@@ -179,17 +179,17 @@ struct DetailView: View {
                     isSubmitting: viewModel.isSubmittingBridgeToken,
                     errorMessage: viewModel.bridgeTokenErrorMessage,
                     onCancel: viewModel.cancelBridgeTokenPrompt,
-                    onStartAndroidQrLogin: { prompt in
-                        try await viewModel.startBridgeQrLogin(prompt: prompt)
+                    onOpenAndroidJarUi: { prompt in
+                        try await viewModel.openBridgeJarUi(prompt: prompt)
                     },
-                    onPollAndroidQrLogin: {
-                        try await viewModel.pollBridgeQrLogin()
+                    onPollAndroidJarUi: {
+                        try await viewModel.pollBridgeJarUi()
                     },
-                    onActionAndroidQrLogin: { action in
-                        try await viewModel.sendBridgeQrAction(action)
+                    onActionAndroidJarUi: { action in
+                        try await viewModel.sendBridgeJarUiAction(action)
                     },
-                    onCompleteAndroidQrLogin: {
-                        await viewModel.completeBridgeQrLogin()
+                    onCompleteAndroidJarUi: {
+                        await viewModel.closeBridgeJarUi()
                     },
                     onSubmit: { values in
                         Task { await viewModel.submitBridgeToken(values: values) }
@@ -538,7 +538,7 @@ struct DetailView: View {
                 }
             } else if let prompt = viewModel.bridgeTokenPrompt {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: prompt.login == nil ? "key.fill" : "qrcode.viewfinder")
+                    Image(systemName: prompt.login?.type.hasPrefix("androidJar") == true ? "rectangle.on.rectangle" : (prompt.login == nil ? "key.fill" : "qrcode.viewfinder"))
                         .font(.title3)
                         .foregroundColor(.white.opacity(0.9))
                         .frame(width: 28)
@@ -558,7 +558,7 @@ struct DetailView: View {
                     Button {
                         viewModel.presentBridgeTokenPrompt()
                     } label: {
-                        Text(prompt.login == nil ? "输入 Token" : "扫码登录")
+                        Text(prompt.login?.type.hasPrefix("androidJar") == true ? "打开 Jar" : (prompt.login == nil ? "输入 Token" : "扫码登录"))
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 14)
@@ -725,14 +725,14 @@ struct BridgeTokenPromptSheet: View {
     let errorMessage: String?
     let submitTitle: String
     let onCancel: () -> Void
-    let onStartAndroidQrLogin: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)?
-    let onPollAndroidQrLogin: (() async throws -> BridgeQrStatusResponse)?
-    let onActionAndroidQrLogin: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)?
-    let onCompleteAndroidQrLogin: (() async -> Void)?
+    let onOpenAndroidJarUi: ((BridgeTokenPrompt) async throws -> BridgeJarUiResponse)?
+    let onPollAndroidJarUi: (() async throws -> BridgeJarUiStatusResponse)?
+    let onActionAndroidJarUi: ((BridgeJarUiAction) async throws -> BridgeJarUiResponse)?
+    let onCompleteAndroidJarUi: (() async -> Void)?
     let onSubmit: ([String: String]) -> Void
     @State private var values: [String: String]
     @State private var showWebLogin = false
-    @State private var showAndroidQrLogin = false
+    @State private var showAndroidJarUi = false
 
     init(
         prompt: BridgeTokenPrompt,
@@ -740,10 +740,10 @@ struct BridgeTokenPromptSheet: View {
         errorMessage: String?,
         submitTitle: String = "保存并重试",
         onCancel: @escaping () -> Void,
-        onStartAndroidQrLogin: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)? = nil,
-        onPollAndroidQrLogin: (() async throws -> BridgeQrStatusResponse)? = nil,
-        onActionAndroidQrLogin: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)? = nil,
-        onCompleteAndroidQrLogin: (() async -> Void)? = nil,
+        onOpenAndroidJarUi: ((BridgeTokenPrompt) async throws -> BridgeJarUiResponse)? = nil,
+        onPollAndroidJarUi: (() async throws -> BridgeJarUiStatusResponse)? = nil,
+        onActionAndroidJarUi: ((BridgeJarUiAction) async throws -> BridgeJarUiResponse)? = nil,
+        onCompleteAndroidJarUi: (() async -> Void)? = nil,
         onSubmit: @escaping ([String: String]) -> Void
     ) {
         self.prompt = prompt
@@ -751,10 +751,10 @@ struct BridgeTokenPromptSheet: View {
         self.errorMessage = errorMessage
         self.submitTitle = submitTitle
         self.onCancel = onCancel
-        self.onStartAndroidQrLogin = onStartAndroidQrLogin
-        self.onPollAndroidQrLogin = onPollAndroidQrLogin
-        self.onActionAndroidQrLogin = onActionAndroidQrLogin
-        self.onCompleteAndroidQrLogin = onCompleteAndroidQrLogin
+        self.onOpenAndroidJarUi = onOpenAndroidJarUi
+        self.onPollAndroidJarUi = onPollAndroidJarUi
+        self.onActionAndroidJarUi = onActionAndroidJarUi
+        self.onCompleteAndroidJarUi = onCompleteAndroidJarUi
         self.onSubmit = onSubmit
         _values = State(initialValue: BridgeCredentialStore.shared.values(provider: prompt.provider, fields: prompt.fields))
     }
@@ -771,13 +771,13 @@ struct BridgeTokenPromptSheet: View {
                 if prompt.login?.type.hasPrefix("androidJar") == true {
                     Section {
                         Button {
-                            showAndroidQrLogin = true
+                            showAndroidJarUi = true
                         } label: {
                             Label("打开 Jar 登录窗口", systemImage: "rectangle.on.rectangle")
                         }
                         .disabled(isSubmitting)
                     }
-                } else if prompt.login?.type != "androidJarQr", prompt.login != nil {
+                } else if prompt.login != nil {
                     Section {
                         Button {
                             showWebLogin = true
@@ -831,17 +831,17 @@ struct BridgeTokenPromptSheet: View {
                 }
             }
         }
-        .sheet(isPresented: $showAndroidQrLogin) {
-            BridgeAndroidQrLoginSheet(
+        .sheet(isPresented: $showAndroidJarUi) {
+            BridgeJarUiSheet(
                 prompt: prompt,
-                onStart: onStartAndroidQrLogin,
-                onPoll: onPollAndroidQrLogin,
-                onAction: onActionAndroidQrLogin,
-                onCancel: { showAndroidQrLogin = false },
+                onStart: onOpenAndroidJarUi,
+                onPoll: onPollAndroidJarUi,
+                onAction: onActionAndroidJarUi,
+                onCancel: { showAndroidJarUi = false },
                 onComplete: {
-                    showAndroidQrLogin = false
-                    if let onCompleteAndroidQrLogin {
-                        await onCompleteAndroidQrLogin()
+                    showAndroidJarUi = false
+                    if let onCompleteAndroidJarUi {
+                        await onCompleteAndroidJarUi()
                     }
                 }
             )
@@ -885,11 +885,12 @@ struct BridgeTokenPromptSheet: View {
     }
 }
 
-private struct BridgeAndroidQrLoginSheet: View {
-    let prompt: BridgeTokenPrompt
-    let onStart: ((BridgeTokenPrompt) async throws -> BridgeQrLoginResponse)?
-    let onPoll: (() async throws -> BridgeQrStatusResponse)?
-    let onAction: ((BridgeQrUiAction) async throws -> BridgeQrLoginResponse)?
+struct BridgeJarUiSheet: View {
+    let title: String
+    let initialResponse: BridgeJarUiResponse?
+    let onStart: (() async throws -> BridgeJarUiResponse)?
+    let onPoll: (() async throws -> BridgeJarUiStatusResponse)?
+    let onAction: ((BridgeJarUiAction) async throws -> BridgeJarUiResponse)?
     let onCancel: () -> Void
     let onComplete: () async -> Void
     @State private var imageData: Data?
@@ -910,7 +911,40 @@ private struct BridgeAndroidQrLoginSheet: View {
     @State private var pollTask: Task<Void, Never>?
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
-    @State private var qrImageData: Data?
+
+    init(
+        prompt: BridgeTokenPrompt,
+        onStart: ((BridgeTokenPrompt) async throws -> BridgeJarUiResponse)?,
+        onPoll: (() async throws -> BridgeJarUiStatusResponse)?,
+        onAction: ((BridgeJarUiAction) async throws -> BridgeJarUiResponse)?,
+        onCancel: @escaping () -> Void,
+        onComplete: @escaping () async -> Void
+    ) {
+        self.title = prompt.login?.title ?? prompt.title
+        self.initialResponse = nil
+        self.onStart = onStart.map { start in { try await start(prompt) } }
+        self.onPoll = onPoll
+        self.onAction = onAction
+        self.onCancel = onCancel
+        self.onComplete = onComplete
+    }
+
+    init(
+        title: String,
+        initialResponse: BridgeJarUiResponse?,
+        onPoll: (() async throws -> BridgeJarUiStatusResponse)?,
+        onAction: ((BridgeJarUiAction) async throws -> BridgeJarUiResponse)?,
+        onCancel: @escaping () -> Void,
+        onComplete: @escaping () async -> Void
+    ) {
+        self.title = title
+        self.initialResponse = initialResponse
+        self.onStart = nil
+        self.onPoll = onPoll
+        self.onAction = onAction
+        self.onCancel = onCancel
+        self.onComplete = onComplete
+    }
 
     var body: some View {
         NavigationStack {
@@ -918,16 +952,6 @@ private struct BridgeAndroidQrLoginSheet: View {
                 if isLoading {
                     ProgressView()
                         .controlSize(.large)
-                }
-
-                if let qrImageData {
-                    platformImage(data: qrImageData)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 280, maxHeight: 280)
-                        .padding(12)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                 }
 
                 if let imageData {
@@ -1022,7 +1046,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                 }
             }
             .padding(20)
-            .navigationTitle(prompt.login?.title ?? prompt.title)
+            .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -1033,7 +1057,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                 }
             }
         }
-        .task { await loadQr() }
+        .task { await loadJarUi() }
         .onDisappear {
             pollTask?.cancel()
             pollTask = nil
@@ -1048,7 +1072,12 @@ private struct BridgeAndroidQrLoginSheet: View {
     }
 
     @MainActor
-    private func loadQr() async {
+    private func loadJarUi() async {
+        if let initialResponse {
+            apply(initialResponse)
+            startPolling()
+            return
+        }
         guard let onStart else {
             errorMessage = "当前页面没有连接 Android Jar 弹窗接口"
             return
@@ -1057,7 +1086,7 @@ private struct BridgeAndroidQrLoginSheet: View {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let response = try await onStart(prompt)
+            let response = try await onStart()
             apply(response)
             startPolling()
         } catch {
@@ -1099,7 +1128,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                     return
                 }
                 if response.status == "failed" || response.status == "cancelled" {
-                    errorMessage = response.message ?? "Android Jar 二维码登录未完成"
+                    errorMessage = response.message ?? "Android Jar 操作未完成"
                     return
                 }
                 if errorMessage?.hasPrefix("状态检测失败") == true {
@@ -1115,7 +1144,7 @@ private struct BridgeAndroidQrLoginSheet: View {
     }
 
     @MainActor
-    private func send(_ action: BridgeQrUiAction) async {
+    private func send(_ action: BridgeJarUiAction) async {
         guard let onAction else {
             errorMessage = "当前页面没有连接 Android Jar 弹窗操作接口"
             return
@@ -1160,23 +1189,22 @@ private struct BridgeAndroidQrLoginSheet: View {
     }
 
     @MainActor
-    private func apply(_ response: BridgeQrLoginResponse) {
+    private func apply(_ response: BridgeJarUiResponse) {
         if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
-        applySnapshot(image: response.image, qr: response.qr, width: response.width, height: response.height, elements: response.elements)
+        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
         applyToast(response.toast)
     }
 
     @MainActor
-    private func apply(_ response: BridgeQrStatusResponse) {
+    private func apply(_ response: BridgeJarUiStatusResponse) {
         if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
-        applySnapshot(image: response.image, qr: response.qr, width: response.width, height: response.height, elements: response.elements)
+        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
         applyToast(response.toast)
     }
 
     @MainActor
-    private func applySnapshot(image: String?, qr: BridgeQrPayload?, width: Double?, height: Double?, elements: [BridgeUiElement]?) {
+    private func applySnapshot(image: String?, width: Double?, height: Double?, elements: [BridgeUiElement]?) {
         if let data = Self.decodeDataURL(image) { imageData = data }
-        if let data = Self.decodeDataURL(qr?.image) { qrImageData = data }
         if let width, width > 0 { canvasWidth = width }
         if let height, height > 0 { canvasHeight = height }
         if let elements { self.elements = elements }
@@ -1261,7 +1289,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                 }
             }
         }
-        .frame(height: qrImageData == nil ? 430 : 240)
+        .frame(height: 430)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -1291,12 +1319,12 @@ private struct BridgeAndroidQrLoginSheet: View {
         if let image = NSImage(data: data) {
             return Image(nsImage: image)
         }
-        return Image(systemName: "qrcode")
+        return Image(systemName: "rectangle.on.rectangle")
         #else
         if let image = UIImage(data: data) {
             return Image(uiImage: image)
         }
-        return Image(systemName: "qrcode")
+        return Image(systemName: "rectangle.on.rectangle")
         #endif
     }
 }

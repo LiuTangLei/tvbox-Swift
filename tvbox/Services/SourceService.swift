@@ -269,25 +269,17 @@ class SourceService {
 
     private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceBean: SourceBean) {
         guard video.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let sourceLooksConfig = looksLikeBridgeConfigSource(sourceBean)
-        guard sourceLooksConfig || isKnownBridgeConfigActionID(video.id) else { return }
-        guard sourceBean.key.localizedCaseInsensitiveContains("wexconfig")
-            || isKnownBridgeConfigActionID(video.id)
-            || looksLikeBridgeConfigItem(video) else { return }
+        guard looksLikeBridgeConfigSource(sourceBean) else { return }
+        guard looksLikeConfigCenter(sourceBean) || looksLikeBridgeConfigItem(video) else { return }
         video.action = video.id
     }
 
-    private func isKnownBridgeConfigActionID(_ id: String) -> Bool {
-        let value = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return [
-            "baidupanlogin", "baidupanclear",
-            "quarkcookie", "quarkclearcookie",
-            "ucpancookie", "uctvpancookie", "ucpanallclearcookie",
-            "aliyuntoken", "aliyuncleartoken",
-            "115pancookie", "115panclearcookie",
-            "pan123login",
-            "0000", "6666", "3333", "2222", "bddd", "1111"
-        ].contains(value)
+    private func looksLikeConfigCenter(_ sourceBean: SourceBean) -> Bool {
+        let text = [sourceBean.key, sourceBean.name, sourceBean.api].joined(separator: " ").lowercased()
+        return text.contains("wexconfig")
+            || text.contains("wexokconfig")
+            || text.contains("配置中心")
+            || text.contains("config")
     }
 
     private func looksLikeBridgeConfigSource(_ sourceBean: SourceBean) -> Bool {
@@ -309,7 +301,6 @@ class SourceService {
         let text = [video.id, video.name, video.note].joined(separator: " ").lowercased()
         return text.contains("cookie")
             || text.contains("token")
-            || text.contains("扫码")
             || text.contains("登录")
             || text.contains("授权")
             || text.contains("网盘")

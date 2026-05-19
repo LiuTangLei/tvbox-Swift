@@ -29,11 +29,15 @@ class HomeViewModel: ObservableObject {
     @Published var isBridgeTokenPromptPresented = false
     @Published var isSubmittingBridgeToken = false
     @Published var bridgeTokenErrorMessage: String?
+    @Published var bridgeJarUiResponse: BridgeJarUiResponse?
+    @Published var bridgeJarUiTitle = "Android Jar 界面"
+    @Published var isBridgeJarUiPresented = false
     
     /// 源数据访问服务。
     private let sourceService = SourceService.shared
     private let bridge = BridgeClient.shared
     private var bridgeTokenSource: SourceBean?
+    private var bridgeJarUiSource: SourceBean?
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
@@ -206,20 +210,20 @@ class HomeViewModel: ObservableObject {
         }
     }
 
-    func startBridgeQrLogin(prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+    func openBridgeJarUi(prompt: BridgeTokenPrompt) async throws -> BridgeJarUiResponse {
         guard let source = bridgeTokenSource else { throw BridgeError.notConfigured }
-        return try await bridge.qrLogin(source: source, prompt: prompt)
+        return try await bridge.openJarUi(source: source, prompt: prompt)
     }
 
-    func pollBridgeQrLogin() async throws -> BridgeQrStatusResponse {
+    func pollBridgeJarUi() async throws -> BridgeJarUiStatusResponse {
         guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
-        return try await bridge.qrStatus(source: source, prompt: prompt)
+        return try await bridge.jarUiStatus(source: source, prompt: prompt)
     }
 
-    func completeBridgeQrLogin() async {
+    func closeBridgeJarUi() async {
         guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { return }
         do {
-            try await bridge.qrConfirm(source: source, prompt: prompt)
+            try await bridge.closeJarUi(source: source, prompt: prompt)
             cancelBridgeTokenPrompt()
             actionMessage = "授权已发送到 Android Bridge"
         } catch {
@@ -227,9 +231,43 @@ class HomeViewModel: ObservableObject {
         }
     }
 
-    func sendBridgeQrAction(_ action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
+    func sendBridgeJarUiAction(_ action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
         guard let source = bridgeTokenSource, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
-        return try await bridge.qrAction(source: source, prompt: prompt, action: action)
+        return try await bridge.jarUiAction(source: source, prompt: prompt, action: action)
+    }
+
+    func pollActionBridgeJarUi() async throws -> BridgeJarUiStatusResponse {
+        guard let source = bridgeJarUiSource else { throw BridgeError.notConfigured }
+        return try await bridge.jarUiStatus(source: source)
+    }
+
+    func sendActionBridgeJarUiAction(_ action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
+        guard let source = bridgeJarUiSource else { throw BridgeError.notConfigured }
+        return try await bridge.jarUiAction(source: source, action: action)
+    }
+
+    func cancelActionBridgeJarUi() {
+        Task { await closeActionBridgeJarUi(showMessage: false) }
+    }
+
+    func dismissActionBridgeJarUiPresentation() {
+        bridgeJarUiResponse = nil
+        bridgeJarUiSource = nil
+        isBridgeJarUiPresented = false
+    }
+
+    func closeActionBridgeJarUi(showMessage: Bool = true) async {
+        let source = bridgeJarUiSource
+        bridgeJarUiResponse = nil
+        bridgeJarUiSource = nil
+        isBridgeJarUiPresented = false
+        guard let source else { return }
+        do {
+            try await bridge.closeJarUi(source: source)
+            if showMessage { actionMessage = "Android Jar 界面已关闭" }
+        } catch {
+            if showMessage { actionMessage = error.localizedDescription }
+        }
     }
     
     /// 刷新
@@ -255,6 +293,11 @@ class HomeViewModel: ObservableObject {
 
     private func handleBridgeActionResponse(_ response: BridgeActionResponse, source: SourceBean) {
         switch response.mode {
+        case "androidJarUi":
+            bridgeJarUiSource = source
+            bridgeJarUiTitle = response.message?.isEmpty == false ? response.message! : "Android Jar 界面"
+            bridgeJarUiResponse = BridgeJarUiResponse(actionResponse: response)
+            isBridgeJarUiPresented = true
         case "cloudLogin":
             bridgeTokenSource = source
             bridgeActionPrompts = response.prompts ?? response.prompt.map { [$0] } ?? []

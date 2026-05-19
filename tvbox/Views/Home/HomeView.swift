@@ -287,20 +287,41 @@ struct HomeView: View {
                     errorMessage: viewModel.bridgeTokenErrorMessage,
                     submitTitle: "保存到 Android",
                     onCancel: viewModel.cancelBridgeTokenPrompt,
-                    onStartAndroidQrLogin: { prompt in
-                        try await viewModel.startBridgeQrLogin(prompt: prompt)
+                    onOpenAndroidJarUi: { prompt in
+                        try await viewModel.openBridgeJarUi(prompt: prompt)
                     },
-                    onPollAndroidQrLogin: {
-                        try await viewModel.pollBridgeQrLogin()
+                    onPollAndroidJarUi: {
+                        try await viewModel.pollBridgeJarUi()
                     },
-                    onActionAndroidQrLogin: { action in
-                        try await viewModel.sendBridgeQrAction(action)
+                    onActionAndroidJarUi: { action in
+                        try await viewModel.sendBridgeJarUiAction(action)
                     },
-                    onCompleteAndroidQrLogin: {
-                        await viewModel.completeBridgeQrLogin()
+                    onCompleteAndroidJarUi: {
+                        await viewModel.closeBridgeJarUi()
                     },
                     onSubmit: { values in
                         Task { await viewModel.submitBridgeToken(values: values) }
+                    }
+                )
+            }
+        }
+        .sheet(
+            isPresented: $viewModel.isBridgeJarUiPresented,
+            onDismiss: { viewModel.dismissActionBridgeJarUiPresentation() }
+        ) {
+            if let response = viewModel.bridgeJarUiResponse {
+                BridgeJarUiSheet(
+                    title: viewModel.bridgeJarUiTitle,
+                    initialResponse: response,
+                    onPoll: {
+                        try await viewModel.pollActionBridgeJarUi()
+                    },
+                    onAction: { action in
+                        try await viewModel.sendActionBridgeJarUiAction(action)
+                    },
+                    onCancel: viewModel.cancelActionBridgeJarUi,
+                    onComplete: {
+                        await viewModel.closeActionBridgeJarUi()
                     }
                 )
             }

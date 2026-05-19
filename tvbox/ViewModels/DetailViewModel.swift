@@ -380,20 +380,20 @@ class DetailViewModel: ObservableObject {
         }
     }
 
-    func startBridgeQrLogin(prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+    func openBridgeJarUi(prompt: BridgeTokenPrompt) async throws -> BridgeJarUiResponse {
         guard let pending = pendingBridgePlayback else { throw BridgeError.notConfigured }
-        return try await BridgeClient.shared.qrLogin(source: pending.source, prompt: prompt)
+        return try await BridgeClient.shared.openJarUi(source: pending.source, prompt: prompt)
     }
 
-    func pollBridgeQrLogin() async throws -> BridgeQrStatusResponse {
+    func pollBridgeJarUi() async throws -> BridgeJarUiStatusResponse {
         guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
-        return try await BridgeClient.shared.qrStatus(source: pending.source, prompt: prompt)
+        return try await BridgeClient.shared.jarUiStatus(source: pending.source, prompt: prompt)
     }
 
-    func completeBridgeQrLogin() async {
+    func closeBridgeJarUi() async {
         guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { return }
         do {
-            try await BridgeClient.shared.qrConfirm(source: pending.source, prompt: prompt)
+            try await BridgeClient.shared.closeJarUi(source: pending.source, prompt: prompt)
         } catch {
             bridgeTokenErrorMessage = error.localizedDescription
             return
@@ -405,9 +405,9 @@ class DetailViewModel: ObservableObject {
         startPlayback(episodeURL: pending.episodeURL, flag: pending.flag)
     }
 
-    func sendBridgeQrAction(_ action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
+    func sendBridgeJarUiAction(_ action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
         guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
-        return try await BridgeClient.shared.qrAction(source: pending.source, prompt: prompt, action: action)
+        return try await BridgeClient.shared.jarUiAction(source: pending.source, prompt: prompt, action: action)
     }
     
     /// 重置清晰度解析与选择状态。

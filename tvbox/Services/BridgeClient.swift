@@ -39,19 +39,24 @@ struct BridgeActionResponse: Decodable {
     let ok: Bool?
     let mode: String?
     let action: String?
+    let status: String?
+    let done: Bool?
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
     let prompts: [BridgeTokenPrompt]?
+    let image: String?
+    let width: Double?
+    let height: Double?
+    let elements: [BridgeUiElement]?
+    let toast: BridgeTransientOverlay?
 }
 
-struct BridgeQrLoginResponse: Decodable {
+struct BridgeJarUiResponse: Decodable {
     let ok: Bool?
     let mode: String?
-    let provider: String?
     let message: String?
     let image: String?
-    let qr: BridgeQrPayload?
     let width: Double?
     let height: Double?
     let elements: [BridgeUiElement]?
@@ -59,15 +64,13 @@ struct BridgeQrLoginResponse: Decodable {
     let code: String?
 }
 
-struct BridgeQrStatusResponse: Decodable {
+struct BridgeJarUiStatusResponse: Decodable {
     let ok: Bool?
     let mode: String?
-    let provider: String?
     let status: String?
     let done: Bool?
     let message: String?
     let image: String?
-    let qr: BridgeQrPayload?
     let width: Double?
     let height: Double?
     let elements: [BridgeUiElement]?
@@ -79,14 +82,18 @@ struct BridgeQrStatusResponse: Decodable {
     }
 }
 
-struct BridgeQrPayload: Decodable, Hashable {
-    let image: String?
-    let width: Double?
-    let height: Double?
-    let x: Double?
-    let y: Double?
-    let decoded: Bool?
-    let content: String?
+extension BridgeJarUiResponse {
+    init(actionResponse: BridgeActionResponse) {
+        self.ok = actionResponse.ok
+        self.mode = actionResponse.mode
+        self.message = actionResponse.message
+        self.image = actionResponse.image
+        self.width = actionResponse.width
+        self.height = actionResponse.height
+        self.elements = actionResponse.elements
+        self.toast = actionResponse.toast
+        self.code = actionResponse.code
+    }
 }
 
 struct BridgeUiElement: Decodable, Identifiable, Hashable {
@@ -118,31 +125,31 @@ struct BridgeUiElement: Decodable, Identifiable, Hashable {
     }
 }
 
-struct BridgeQrUiAction: Encodable, Hashable {
+struct BridgeJarUiAction: Encodable, Hashable {
     let action: String
     let elementId: String?
     let text: String?
     let x: Double?
     let y: Double?
 
-    static func click(element: BridgeUiElement) -> BridgeQrUiAction {
-        BridgeQrUiAction(action: "click", elementId: element.id, text: nil, x: nil, y: nil)
+    static func click(element: BridgeUiElement) -> BridgeJarUiAction {
+        BridgeJarUiAction(action: "click", elementId: element.id, text: nil, x: nil, y: nil)
     }
 
-    static func click(x: Double, y: Double) -> BridgeQrUiAction {
-        BridgeQrUiAction(action: "click", elementId: nil, text: nil, x: x, y: y)
+    static func click(x: Double, y: Double) -> BridgeJarUiAction {
+        BridgeJarUiAction(action: "click", elementId: nil, text: nil, x: x, y: y)
     }
 
-    static func input(element: BridgeUiElement, text: String) -> BridgeQrUiAction {
-        BridgeQrUiAction(action: "input", elementId: element.id, text: text, x: nil, y: nil)
+    static func input(element: BridgeUiElement, text: String) -> BridgeJarUiAction {
+        BridgeJarUiAction(action: "input", elementId: element.id, text: text, x: nil, y: nil)
     }
 
-    static func submit(element: BridgeUiElement? = nil) -> BridgeQrUiAction {
-        BridgeQrUiAction(action: "submit", elementId: element?.id, text: nil, x: nil, y: nil)
+    static func submit(element: BridgeUiElement? = nil) -> BridgeJarUiAction {
+        BridgeJarUiAction(action: "submit", elementId: element?.id, text: nil, x: nil, y: nil)
     }
 
-    static func named(_ action: String) -> BridgeQrUiAction {
-        BridgeQrUiAction(action: action, elementId: nil, text: nil, x: nil, y: nil)
+    static func named(_ action: String) -> BridgeJarUiAction {
+        BridgeJarUiAction(action: action, elementId: nil, text: nil, x: nil, y: nil)
     }
 }
 
@@ -333,47 +340,53 @@ final class BridgeClient {
         }
     }
 
-    func qrLogin(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
+    func openJarUi(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeJarUiResponse {
         try await registerSourceForRequest(source)
-        let payload = QrLoginRequest(provider: prompt.provider, action: prompt.action ?? prompt.retry?.action, flag: prompt.retry?.flag, id: prompt.retry?.id)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrLogin", method: "POST", body: payload)
-        let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
-        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录失败") }
-        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge QR 登录")
-        bridgeClientLogger.info("qr login source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public) ok=\(response.ok == true, privacy: .public)")
+        let payload = JarUiOpenRequest(action: prompt.action ?? prompt.retry?.action, flag: prompt.retry?.flag, id: prompt.retry?.id)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiOpen", method: "POST", body: payload)
+        let response = try decoder.decode(BridgeJarUiResponse.self, from: data)
+        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 打开失败") }
+        bridgeClientLogger.info("jar ui open source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public) ok=\(response.ok == true, privacy: .public)")
         return response
     }
 
-    func qrStatus(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrStatusResponse {
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrStatus", method: "POST", body: QrStatusRequest(provider: prompt.provider, includeUi: true))
-        let response = try decoder.decode(BridgeQrStatusResponse.self, from: data)
-        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录状态检测失败") }
-        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge QR 登录状态")
-        bridgeClientLogger.info("qr status source=\(source.key, privacy: .public) status=\(response.status ?? "", privacy: .public) done=\(response.done == true, privacy: .public)")
+    func jarUiStatus(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeJarUiStatusResponse {
+        try await jarUiStatus(source: source)
+    }
+
+    func jarUiStatus(source: SourceBean) async throws -> BridgeJarUiStatusResponse {
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiStatus", method: "POST", body: JarUiStatusRequest(includeUi: true))
+        let response = try decoder.decode(BridgeJarUiStatusResponse.self, from: data)
+        guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 状态检测失败") }
+        bridgeClientLogger.info("jar ui status source=\(source.key, privacy: .public) status=\(response.status ?? "", privacy: .public) done=\(response.done == true, privacy: .public)")
         return response
     }
 
-    func qrConfirm(source: SourceBean, prompt: BridgeTokenPrompt) async throws {
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrConfirm", method: "POST", body: QrProviderRequest(provider: prompt.provider))
+    func closeJarUi(source: SourceBean, prompt: BridgeTokenPrompt) async throws {
+        try await closeJarUi(source: source)
+    }
+
+    func closeJarUi(source: SourceBean) async throws {
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiClose", method: "POST", body: EmptyBody())
         try validateBridgeOK(data)
-        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            try validateProvider(object["provider"] as? String, expected: prompt.provider, operation: "Bridge QR 确认")
-        }
     }
 
-    func qrAction(source: SourceBean, prompt: BridgeTokenPrompt, action: BridgeQrUiAction) async throws -> BridgeQrLoginResponse {
-        let payload = QrActionRequest(provider: prompt.provider, action: action.action, elementId: action.elementId, text: action.text, x: action.x, y: action.y)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrAction", method: "POST", body: payload)
-        let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
+    func jarUiAction(source: SourceBean, prompt: BridgeTokenPrompt, action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
+        try await jarUiAction(source: source, action: action)
+    }
+
+    func jarUiAction(source: SourceBean, action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
+        let payload = JarUiActionRequest(action: action.action, elementId: action.elementId, text: action.text, x: action.x, y: action.y)
+        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiAction", method: "POST", body: payload)
+        let response = try decoder.decode(BridgeJarUiResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 操作失败") }
-        try validateProvider(response.provider, expected: prompt.provider, operation: "Bridge Jar UI 操作")
         return response
     }
 
     func action(source: SourceBean, video: Movie.Video) async throws -> BridgeActionResponse {
         try await registerSourceForRequest(source)
         let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
-        let payload = ActionRequest(action: action, name: video.name, note: video.note)
+        let payload = ActionRequest(action: action, id: video.id, name: video.name, note: video.note)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
         let response = try decoder.decode(BridgeActionResponse.self, from: data)
         bridgeClientLogger.info("action response source=\(source.key, privacy: .public) action=\(action, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
@@ -599,8 +612,7 @@ private struct TokenSubmitRequest: Encodable {
     }
 }
 
-private struct QrLoginRequest: Encodable {
-    let provider: String
+private struct JarUiOpenRequest: Encodable {
     let action: String?
     let flag: String?
     let id: String?
@@ -609,8 +621,7 @@ private struct QrLoginRequest: Encodable {
     let flagBase64: String?
     let idBase64: String?
 
-    init(provider: String, action: String?, flag: String?, id: String?) {
-        self.provider = provider
+    init(action: String?, flag: String?, id: String?) {
         self.action = action
         self.flag = flag
         self.id = id
@@ -620,17 +631,11 @@ private struct QrLoginRequest: Encodable {
     }
 }
 
-private struct QrProviderRequest: Encodable {
-    let provider: String
-}
-
-private struct QrStatusRequest: Encodable {
-    let provider: String
+private struct JarUiStatusRequest: Encodable {
     let includeUi: Bool
 }
 
-private struct QrActionRequest: Encodable {
-    let provider: String
+private struct JarUiActionRequest: Encodable {
     let action: String
     let elementId: String?
     let text: String?
@@ -638,8 +643,7 @@ private struct QrActionRequest: Encodable {
     let x: Double?
     let y: Double?
 
-    init(provider: String, action: String, elementId: String?, text: String?, x: Double?, y: Double?) {
-        self.provider = provider
+    init(action: String, elementId: String?, text: String?, x: Double?, y: Double?) {
         self.action = action
         self.elementId = elementId
         self.text = text
@@ -652,14 +656,18 @@ private struct QrActionRequest: Encodable {
 private struct ActionRequest: Encodable {
     let action: String
     let actionBase64: String
+    let id: String
+    let idBase64: String
     let name: String
     let nameBase64: String
     let note: String
     let noteBase64: String
 
-    init(action: String, name: String, note: String) {
+    init(action: String, id: String, name: String, note: String) {
         self.action = action
         self.actionBase64 = action.bridgeBase64
+        self.id = id
+        self.idBase64 = id.bridgeBase64
         self.name = name
         self.nameBase64 = name.bridgeBase64
         self.note = note
