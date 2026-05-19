@@ -163,7 +163,7 @@ class HomeViewModel: ObservableObject {
         defer { isPerformingAction = false }
 
         do {
-            let response = try await bridge.action(source: source, action: action)
+            let response = try await bridge.action(source: source, video: video)
             handleBridgeActionResponse(response, source: source)
         } catch BridgeError.tokenRequired(let prompt) {
             presentBridgeTokenPrompt(prompt, source: source)

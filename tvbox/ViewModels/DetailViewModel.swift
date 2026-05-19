@@ -75,6 +75,7 @@ class DetailViewModel: ObservableObject {
     private var currentSource: SourceBean?
     private var playbackResolveToken = UUID()
     private var pendingBridgePlayback: PendingBridgePlayback?
+    private var bridgeCredentialAutoSubmitted: Set<String> = []
     
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
@@ -96,6 +97,7 @@ class DetailViewModel: ObservableObject {
                 self.bridgePlaybackMessage = nil
                 self.bridgeTokenPrompt = nil
                 self.isBridgeTokenPromptPresented = false
+                self.bridgeCredentialAutoSubmitted.removeAll()
                 if source.requiresBridge {
                     resetQualityState()
                 } else if let episode = info.currentEpisode {
@@ -311,6 +313,15 @@ class DetailViewModel: ObservableObject {
                 isResolvingBridgePlayback = false
                 if case BridgeError.tokenRequired(let prompt) = error {
                     detailPlaybackLogger.info("bridge token required source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public)")
+                    let credentialKey = "\(source.key)|\(prompt.provider)|\(flag)|\(episodeURL)"
+                    if !bridgeCredentialAutoSubmitted.contains(credentialKey) {
+                        bridgeCredentialAutoSubmitted.insert(credentialKey)
+                        if await BridgeClient.shared.submitSavedTokenIfAvailable(source: source, prompt: prompt) {
+                            bridgePlaybackMessage = "已同步本地保存的授权到 Android Bridge，正在重试..."
+                            startPlayback(episodeURL: episodeURL, flag: flag)
+                            return
+                        }
+                    }
                     pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
                     isPlaying = false
                     playUrl = nil

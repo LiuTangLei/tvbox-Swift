@@ -51,6 +51,7 @@ struct BridgeQrLoginResponse: Decodable {
     let provider: String?
     let message: String?
     let image: String?
+    let qr: BridgeQrPayload?
     let width: Double?
     let height: Double?
     let elements: [BridgeUiElement]?
@@ -66,6 +67,7 @@ struct BridgeQrStatusResponse: Decodable {
     let done: Bool?
     let message: String?
     let image: String?
+    let qr: BridgeQrPayload?
     let width: Double?
     let height: Double?
     let elements: [BridgeUiElement]?
@@ -75,6 +77,16 @@ struct BridgeQrStatusResponse: Decodable {
     var isCompleted: Bool {
         done == true || status == "completed" || status == "success"
     }
+}
+
+struct BridgeQrPayload: Decodable, Hashable {
+    let image: String?
+    let width: Double?
+    let height: Double?
+    let x: Double?
+    let y: Double?
+    let decoded: Bool?
+    let content: String?
 }
 
 struct BridgeUiElement: Decodable, Identifiable, Hashable {
@@ -138,6 +150,7 @@ struct BridgeTokenPrompt: Decodable, Identifiable, Hashable {
     let provider: String
     let title: String
     let message: String
+    let action: String?
     let login: BridgePromptLogin?
     let fields: [BridgePromptField]
     let retry: BridgePromptRetry?
@@ -168,6 +181,7 @@ struct BridgePromptLogin: Decodable, Hashable {
 struct BridgePromptRetry: Decodable, Hashable {
     let flag: String?
     let id: String?
+    let action: String?
 }
 
 enum BridgeError: LocalizedError {
@@ -304,12 +318,24 @@ final class BridgeClient {
         let payload = TokenSubmitRequest(provider: prompt.provider, token: token, values: values)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/token", method: "POST", body: payload)
         try validateBridgeOK(data)
+        BridgeCredentialStore.shared.save(provider: prompt.provider, values: values)
         bridgeClientLogger.info("token submitted source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public)")
+    }
+
+    func submitSavedTokenIfAvailable(source: SourceBean, prompt: BridgeTokenPrompt) async -> Bool {
+        let values = BridgeCredentialStore.shared.values(provider: prompt.provider, fields: prompt.fields)
+        guard values.values.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return false }
+        do {
+            try await submitToken(source: source, prompt: prompt, values: values)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func qrLogin(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeQrLoginResponse {
         try await registerSourceForRequest(source)
-        let payload = QrLoginRequest(provider: prompt.provider, flag: prompt.retry?.flag, id: prompt.retry?.id)
+        let payload = QrLoginRequest(provider: prompt.provider, action: prompt.action ?? prompt.retry?.action, flag: prompt.retry?.flag, id: prompt.retry?.id)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/qrLogin", method: "POST", body: payload)
         let response = try decoder.decode(BridgeQrLoginResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge QR 登录失败") }
@@ -344,9 +370,10 @@ final class BridgeClient {
         return response
     }
 
-    func action(source: SourceBean, action: String) async throws -> BridgeActionResponse {
+    func action(source: SourceBean, video: Movie.Video) async throws -> BridgeActionResponse {
         try await registerSourceForRequest(source)
-        let payload = ActionRequest(action: action)
+        let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = ActionRequest(action: action, name: video.name, note: video.note)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
         let response = try decoder.decode(BridgeActionResponse.self, from: data)
         bridgeClientLogger.info("action response source=\(source.key, privacy: .public) action=\(action, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
@@ -574,16 +601,20 @@ private struct TokenSubmitRequest: Encodable {
 
 private struct QrLoginRequest: Encodable {
     let provider: String
+    let action: String?
     let flag: String?
     let id: String?
 
+    let actionBase64: String?
     let flagBase64: String?
     let idBase64: String?
 
-    init(provider: String, flag: String?, id: String?) {
+    init(provider: String, action: String?, flag: String?, id: String?) {
         self.provider = provider
+        self.action = action
         self.flag = flag
         self.id = id
+        self.actionBase64 = action?.bridgeBase64
         self.flagBase64 = flag?.bridgeBase64
         self.idBase64 = id?.bridgeBase64
     }
@@ -621,11 +652,74 @@ private struct QrActionRequest: Encodable {
 private struct ActionRequest: Encodable {
     let action: String
     let actionBase64: String
+    let name: String
+    let nameBase64: String
+    let note: String
+    let noteBase64: String
 
-    init(action: String) {
+    init(action: String, name: String, note: String) {
         self.action = action
         self.actionBase64 = action.bridgeBase64
+        self.name = name
+        self.nameBase64 = name.bridgeBase64
+        self.note = note
+        self.noteBase64 = note.bridgeBase64
     }
+}
+
+final class BridgeCredentialStore {
+    static let shared = BridgeCredentialStore()
+
+    private let defaults = UserDefaults.standard
+    private let key = "bridge.savedCredentials.v1"
+    private let maxAge: TimeInterval = 60 * 60 * 24 * 30
+
+    private init() {}
+
+    func save(provider: String, values: [String: String]) {
+        let cleaned = values.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.value.isEmpty }
+        guard !cleaned.isEmpty else { return }
+        var records = loadRecords()
+        records[normalized(provider)] = BridgeCredentialRecord(savedAt: Date().timeIntervalSince1970, values: cleaned)
+        saveRecords(records)
+    }
+
+    func values(provider: String, fields: [BridgePromptField]) -> [String: String] {
+        guard let record = loadRecords()[normalized(provider)] else { return Dictionary(uniqueKeysWithValues: fields.map { ($0.key, "") }) }
+        guard Date().timeIntervalSince1970 - record.savedAt < maxAge else { return Dictionary(uniqueKeysWithValues: fields.map { ($0.key, "") }) }
+        var result = Dictionary(uniqueKeysWithValues: fields.map { ($0.key, "") })
+        for field in fields {
+            if let value = record.values[field.key], !value.isEmpty {
+                result[field.key] = value
+            } else if field.key == "token", let value = record.values["cookie"] ?? record.values["value"], !value.isEmpty {
+                result[field.key] = value
+            }
+        }
+        return result
+    }
+
+    private func normalized(_ provider: String) -> String {
+        provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func loadRecords() -> [String: BridgeCredentialRecord] {
+        guard let data = defaults.data(forKey: key),
+              let records = try? JSONDecoder().decode([String: BridgeCredentialRecord].self, from: data) else {
+            return [:]
+        }
+        return records
+    }
+
+    private func saveRecords(_ records: [String: BridgeCredentialRecord]) {
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        defaults.set(data, forKey: key)
+    }
+}
+
+private struct BridgeCredentialRecord: Codable {
+    let savedAt: TimeInterval
+    let values: [String: String]
 }
 
 private extension String {

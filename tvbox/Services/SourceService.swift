@@ -91,7 +91,7 @@ class SourceService {
                 )
             }
             if let listStr = try? await network.getString(from: listUrl) {
-                let fallback = (try? parseVideoList(listStr, sourceKey: sourceBean.key, type: sourceBean.type)) ?? []
+                let fallback = (try? parseVideoList(listStr, sourceBean: sourceBean)) ?? []
                 if !fallback.isEmpty {
                     homeVideos = fallback
                 }
@@ -136,7 +136,7 @@ class SourceService {
                         if let itemData = try? JSONSerialization.data(withJSONObject: item),
                            var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                             video.sourceKey = sourceBean.key
-                            applyBridgeConfigActionIfNeeded(to: &video, sourceKey: sourceBean.key)
+                            applyBridgeConfigActionIfNeeded(to: &video, sourceBean: sourceBean)
                             homeVideos.append(video)
                         }
                     }
@@ -173,7 +173,7 @@ class SourceService {
         guard !api.isEmpty else { throw SourceError.emptyApi }
         if sourceBean.requiresBridge {
             let jsonStr = try await bridge.category(source: sourceBean, sortData: sortData, page: page, filters: filters)
-            return try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+            return try parseVideoList(jsonStr, sourceBean: sourceBean)
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
@@ -236,18 +236,18 @@ class SourceService {
         }
         
         let jsonStr = try await network.getString(from: url)
-        return try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+        return try parseVideoList(jsonStr, sourceBean: sourceBean)
     }
     
-    private func parseVideoList(_ jsonStr: String, sourceKey: String, type: Int) throws -> [Movie.Video] {
+    private func parseVideoList(_ jsonStr: String, sourceBean: SourceBean) throws -> [Movie.Video] {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
         
         var videos: [Movie.Video] = []
         
-        if type == 0 {
-            videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceKey)
+        if sourceBean.type == 0 {
+            videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceBean.key)
         } else {
             // JSON 格式 (type=1, type=4)
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -256,8 +256,8 @@ class SourceService {
                 for item in list {
                     if let itemData = try? JSONSerialization.data(withJSONObject: item),
                        var video = try? decoder.decode(Movie.Video.self, from: itemData) {
-                        video.sourceKey = sourceKey
-                        applyBridgeConfigActionIfNeeded(to: &video, sourceKey: sourceKey)
+                        video.sourceKey = sourceBean.key
+                        applyBridgeConfigActionIfNeeded(to: &video, sourceBean: sourceBean)
                         videos.append(video)
                     }
                 }
@@ -267,10 +267,13 @@ class SourceService {
         return videos
     }
 
-    private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceKey: String) {
+    private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceBean: SourceBean) {
         guard video.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard sourceKey.localizedCaseInsensitiveContains("wexconfig") || isKnownBridgeConfigActionID(video.id) else { return }
-        guard sourceKey.localizedCaseInsensitiveContains("wexconfig") || looksLikeBridgeConfigItem(video) else { return }
+        let sourceLooksConfig = looksLikeBridgeConfigSource(sourceBean)
+        guard sourceLooksConfig || isKnownBridgeConfigActionID(video.id) else { return }
+        guard sourceBean.key.localizedCaseInsensitiveContains("wexconfig")
+            || isKnownBridgeConfigActionID(video.id)
+            || looksLikeBridgeConfigItem(video) else { return }
         video.action = video.id
     }
 
@@ -282,21 +285,43 @@ class SourceService {
             "ucpancookie", "uctvpancookie", "ucpanallclearcookie",
             "aliyuntoken", "aliyuncleartoken",
             "115pancookie", "115panclearcookie",
-            "pan123login"
+            "pan123login",
+            "0000", "6666", "3333", "2222", "bddd", "1111"
         ].contains(value)
+    }
+
+    private func looksLikeBridgeConfigSource(_ sourceBean: SourceBean) -> Bool {
+        let text = [sourceBean.key, sourceBean.name, sourceBean.api].joined(separator: " ").lowercased()
+        return text.contains("wexconfig")
+            || text.contains("wexokconfig")
+            || text.contains("mdrive")
+            || text.contains("mydrive")
+            || text.contains("我的云盘")
+            || text.contains("云盘")
+            || text.contains("网盘")
+            || text.contains("配置")
+            || text.contains("config")
+            || text.contains("drive")
+            || text.contains("pan")
     }
 
     private func looksLikeBridgeConfigItem(_ video: Movie.Video) -> Bool {
         let text = [video.id, video.name, video.note].joined(separator: " ").lowercased()
         return text.contains("cookie")
             || text.contains("token")
+            || text.contains("扫码")
+            || text.contains("登录")
+            || text.contains("授权")
             || text.contains("网盘")
             || text.contains("云盘")
             || text.contains("配置")
             || text.contains("设置")
             || text.contains("清除")
+            || text.contains("退出")
+            || text.contains("重置")
             || text.contains("login")
             || text.contains("clear")
+            || text.contains("clean")
     }
     
     private func parseXMLVideoList(from xml: String, sourceKey: String) -> [Movie.Video] {
@@ -406,7 +431,7 @@ class SourceService {
         guard !api.isEmpty else { throw SourceError.emptyApi }
         if sourceBean.requiresBridge {
             let jsonStr = try await bridge.search(source: sourceBean, keyword: keyword)
-            let videos = try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+            let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
             return filterSearchResults(videos, keyword: keyword)
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
@@ -444,7 +469,7 @@ class SourceService {
         }
         
         let jsonStr = try await network.getString(from: url)
-        let videos = try parseVideoList(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
+        let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
         return filterSearchResults(videos, keyword: keyword)
     }
     

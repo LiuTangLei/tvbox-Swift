@@ -756,7 +756,7 @@ struct BridgeTokenPromptSheet: View {
         self.onActionAndroidQrLogin = onActionAndroidQrLogin
         self.onCompleteAndroidQrLogin = onCompleteAndroidQrLogin
         self.onSubmit = onSubmit
-        _values = State(initialValue: Dictionary(uniqueKeysWithValues: prompt.fields.map { ($0.key, "") }))
+        _values = State(initialValue: BridgeCredentialStore.shared.values(provider: prompt.provider, fields: prompt.fields))
     }
 
     var body: some View {
@@ -910,6 +910,7 @@ private struct BridgeAndroidQrLoginSheet: View {
     @State private var pollTask: Task<Void, Never>?
     @State private var toastMessage: String?
     @State private var toastTask: Task<Void, Never>?
+    @State private var qrImageData: Data?
 
     var body: some View {
         NavigationStack {
@@ -917,6 +918,16 @@ private struct BridgeAndroidQrLoginSheet: View {
                 if isLoading {
                     ProgressView()
                         .controlSize(.large)
+                }
+
+                if let qrImageData {
+                    platformImage(data: qrImageData)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 280, maxHeight: 280)
+                        .padding(12)
+                        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
                 }
 
                 if let imageData {
@@ -1151,20 +1162,21 @@ private struct BridgeAndroidQrLoginSheet: View {
     @MainActor
     private func apply(_ response: BridgeQrLoginResponse) {
         if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
-        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
+        applySnapshot(image: response.image, qr: response.qr, width: response.width, height: response.height, elements: response.elements)
         applyToast(response.toast)
     }
 
     @MainActor
     private func apply(_ response: BridgeQrStatusResponse) {
         if let responseMessage = response.message, !responseMessage.isEmpty { message = responseMessage }
-        applySnapshot(image: response.image, width: response.width, height: response.height, elements: response.elements)
+        applySnapshot(image: response.image, qr: response.qr, width: response.width, height: response.height, elements: response.elements)
         applyToast(response.toast)
     }
 
     @MainActor
-    private func applySnapshot(image: String?, width: Double?, height: Double?, elements: [BridgeUiElement]?) {
+    private func applySnapshot(image: String?, qr: BridgeQrPayload?, width: Double?, height: Double?, elements: [BridgeUiElement]?) {
         if let data = Self.decodeDataURL(image) { imageData = data }
+        if let data = Self.decodeDataURL(qr?.image) { qrImageData = data }
         if let width, width > 0 { canvasWidth = width }
         if let height, height > 0 { canvasHeight = height }
         if let elements { self.elements = elements }
@@ -1249,7 +1261,7 @@ private struct BridgeAndroidQrLoginSheet: View {
                 }
             }
         }
-        .frame(height: 430)
+        .frame(height: qrImageData == nil ? 430 : 240)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
