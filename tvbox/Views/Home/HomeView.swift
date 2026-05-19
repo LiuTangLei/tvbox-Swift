@@ -335,7 +335,11 @@ struct HomeView: View {
 
     private var actionMessageBinding: Binding<Bool> {
         Binding(
-            get: { viewModel.actionMessage != nil },
+            get: {
+                viewModel.actionMessage != nil
+                    && !viewModel.isBridgeJarUiPresented
+                    && viewModel.bridgeJarUiResponse == nil
+            },
             set: { if !$0 { viewModel.actionMessage = nil } }
         )
     }

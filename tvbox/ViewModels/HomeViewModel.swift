@@ -163,6 +163,7 @@ class HomeViewModel: ObservableObject {
         guard !isPerformingAction else { return }
 
         isPerformingAction = true
+        actionMessage = nil
         bridgeTokenErrorMessage = nil
         defer { isPerformingAction = false }
 
@@ -292,12 +293,12 @@ class HomeViewModel: ObservableObject {
     }
 
     private func handleBridgeActionResponse(_ response: BridgeActionResponse, source: SourceBean) {
+        if response.containsJarUiSnapshot {
+            presentBridgeJarUi(response, source: source)
+            return
+        }
+
         switch response.mode {
-        case "androidJarUi":
-            bridgeJarUiSource = source
-            bridgeJarUiTitle = response.message?.isEmpty == false ? response.message! : "Android Jar 界面"
-            bridgeJarUiResponse = BridgeJarUiResponse(actionResponse: response)
-            isBridgeJarUiPresented = true
         case "cloudLogin":
             bridgeTokenSource = source
             bridgeActionPrompts = response.prompts ?? response.prompt.map { [$0] } ?? []
@@ -310,6 +311,23 @@ class HomeViewModel: ObservableObject {
             }
         default:
             actionMessage = response.message?.isEmpty == false ? response.message : "操作已发送到 Android Bridge"
+        }
+    }
+
+    private func presentBridgeJarUi(_ response: BridgeActionResponse, source: SourceBean) {
+        actionMessage = nil
+        bridgeTokenPrompt = nil
+        bridgeTokenErrorMessage = nil
+        isBridgeActionPromptPresented = false
+        isBridgeTokenPromptPresented = false
+        isBridgeJarUiPresented = false
+        bridgeJarUiSource = source
+        bridgeJarUiTitle = "Android Jar 弹窗"
+        bridgeJarUiResponse = BridgeJarUiResponse(actionResponse: response)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard self.bridgeJarUiResponse != nil else { return }
+            self.isBridgeJarUiPresented = true
         }
     }
 

@@ -50,6 +50,10 @@ struct BridgeActionResponse: Decodable {
     let height: Double?
     let elements: [BridgeUiElement]?
     let toast: BridgeTransientOverlay?
+
+    var containsJarUiSnapshot: Bool {
+        mode == "androidJarUi" || image?.isEmpty == false || elements?.isEmpty == false
+    }
 }
 
 struct BridgeJarUiResponse: Decodable {
