@@ -6,18 +6,25 @@ struct VideoPage {
     let pageCount: Int?
 }
 
+struct SearchResultGroup: Identifiable {
+    let source: SourceBean
+    let videos: [Movie.Video]
+
+    var id: String { source.key }
+}
+
 /// 视频源数据服务 - 对应 Android 版 SourceViewModel.java
 /// 负责从各视频源获取分类、列表、详情和搜索数据
 class SourceService {
     static let shared = SourceService()
-    
+
     private let network = NetworkManager.shared
     private let bridge = BridgeClient.shared
-    
+
     private init() {}
-    
+
     // MARK: - 获取分类列表
-    
+
     /// 获取指定源的分类列表和首页推荐
     func getSort(sourceBean: SourceBean) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         let api = sourceBean.api
@@ -28,16 +35,16 @@ class SourceService {
             let jsonStr = try await bridge.home(source: sourceBean)
             return try parseSort(jsonStr, sourceBean: sourceBean)
         }
-        
+
         guard sourceBean.isSupportedInSwift else {
             throw SourceError.unsupportedType(sourceBean.typeDescription)
         }
-        
+
         // 确保 api 是有效的 HTTP URL
         guard sourceBean.isHttpApi else {
             throw SourceError.invalidApiUrl(api)
         }
-        
+
         let jsonStr: String
         if sourceBean.type == 0 {
             // XML 接口
@@ -64,14 +71,14 @@ class SourceService {
             )
             jsonStr = try await network.getString(from: url)
         }
-        
+
         var (sorts, homeVideos) = try parseSort(jsonStr, sourceBean: sourceBean)
-        
+
         // 当大多数推荐视频的 vod_pic 为空时（ac=class 接口常见情况），
         // 额外请求列表接口获取带完整海报的推荐视频
         let picMissingCount = homeVideos.filter { $0.pic.trimmingCharacters(in: .whitespaces).isEmpty }.count
         let needsFallback = homeVideos.isEmpty || picMissingCount > homeVideos.count / 2
-        
+
         if needsFallback && (sourceBean.type == 1 || sourceBean.type == 4) {
             let listUrl: String
             if sourceBean.type == 4 {
@@ -103,38 +110,38 @@ class SourceService {
                 }
             }
         }
-        
+
         return (sorts, homeVideos)
     }
-    
+
     private func parseSort(_ jsonStr: String, sourceBean: SourceBean) throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]) {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         var sorts: [MovieSort.SortData] = []
         var homeVideos: [Movie.Video] = []
-        
+
         if sourceBean.type == 0 {
             // XML 格式
             sorts = parseXMLCategories(from: jsonStr)
         } else {
             // JSON 格式 (type=1, type=4)
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let rootFilters = parseRootFilters(json["filters"])
+
                 // 解析分类
                 if let classList = json["class"] as? [[String: Any]] {
                     for cls in classList {
-                        let id: String
-                        if let intId = cls["type_id"] as? Int {
-                            id = String(intId)
-                        } else {
-                            id = cls["type_id"] as? String ?? ""
-                        }
-                        let name = cls["type_name"] as? String ?? ""
-                        sorts.append(MovieSort.SortData(id: id, name: name))
+                        let id = stringValue(cls["type_id"]) ?? ""
+                        let name = stringValue(cls["type_name"]) ?? ""
+                        let flag = stringValue(cls["type_flag"]) ?? ""
+                        let inlineFilters = parseFilters(cls["filters"])
+                        let filters = inlineFilters.isEmpty ? (rootFilters[id] ?? []) : inlineFilters
+                        sorts.append(MovieSort.SortData(id: id, name: name, flag: flag, filters: filters))
                     }
                 }
-                
+
                 // 解析首页推荐视频
                 if let list = json["list"] as? [[String: Any]] {
                     for item in list {
@@ -142,17 +149,16 @@ class SourceService {
                         if let itemData = try? JSONSerialization.data(withJSONObject: item),
                            var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                             video.sourceKey = sourceBean.key
-                            applyBridgeConfigActionIfNeeded(to: &video, sourceBean: sourceBean)
                             homeVideos.append(video)
                         }
                     }
                 }
             }
         }
-        
+
         return (sorts, homeVideos)
     }
-    
+
     private func parseXMLCategories(from xml: String) -> [MovieSort.SortData] {
         // 简化的 XML 分类解析
         var sorts: [MovieSort.SortData] = []
@@ -170,9 +176,9 @@ class SourceService {
         }
         return sorts
     }
-    
+
     // MARK: - 获取分类视频列表
-    
+
     /// 获取分类下的视频列表
     func getList(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> [Movie.Video] {
         try await getListPage(sourceBean: sourceBean, sortData: sortData, page: page, filters: filters).videos
@@ -188,7 +194,7 @@ class SourceService {
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-        
+
         let url: String
         if sourceBean.type == 0 {
             // XML 接口
@@ -208,7 +214,7 @@ class SourceService {
                 URLQueryItem(name: "t", value: sortData.id),
                 URLQueryItem(name: "pg", value: String(page))
             ]
-            
+
             // 附加筛选参数（base64 编码）
             if let filters = filters, !filters.isEmpty {
                 if let filterData = try? JSONSerialization.data(withJSONObject: filters),
@@ -220,7 +226,7 @@ class SourceService {
                 let ext = Data("{}".utf8).base64EncodedString()
                 queryItems.append(URLQueryItem(name: "ext", value: ext))
             }
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext)
@@ -236,20 +242,21 @@ class SourceService {
                 URLQueryItem(name: "t", value: sortData.id),
                 URLQueryItem(name: "pg", value: String(page))
             ]
-            
+
             // 附加筛选参数
-            if let filters = filters {
-                for (key, value) in filters {
-                    queryItems.append(URLQueryItem(name: key, value: value))
+            if let filters = filters, !filters.isEmpty {
+                if let filterData = try? JSONSerialization.data(withJSONObject: filters),
+                   let filterStr = String(data: filterData, encoding: .utf8) {
+                    queryItems.append(URLQueryItem(name: "f", value: filterStr))
                 }
             }
             url = try buildURL(base: api, queryItems: queryItems)
         }
-        
+
         let jsonStr = try await network.getString(from: url)
         return try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: page)
     }
-    
+
     private func parseVideoList(_ jsonStr: String, sourceBean: SourceBean) throws -> [Movie.Video] {
         try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: 1).videos
     }
@@ -258,11 +265,11 @@ class SourceService {
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         var videos: [Movie.Video] = []
         var responsePage = requestedPage
         var pageCount: Int?
-        
+
         if sourceBean.type == 0 {
             videos = parseXMLVideoList(from: jsonStr, sourceKey: sourceBean.key)
         } else {
@@ -276,13 +283,12 @@ class SourceService {
                     if let itemData = try? JSONSerialization.data(withJSONObject: item),
                        var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                         video.sourceKey = sourceBean.key
-                        applyBridgeConfigActionIfNeeded(to: &video, sourceBean: sourceBean)
                         videos.append(video)
                     }
                 }
             }
         }
-        
+
         return VideoPage(videos: videos, page: responsePage, pageCount: pageCount)
     }
 
@@ -293,54 +299,71 @@ class SourceService {
         return nil
     }
 
-    private func applyBridgeConfigActionIfNeeded(to video: inout Movie.Video, sourceBean: SourceBean) {
-        guard video.action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard looksLikeBridgeConfigSource(sourceBean) else { return }
-        guard looksLikeConfigCenter(sourceBean) || looksLikeBridgeConfigItem(video) else { return }
-        video.action = video.id
+    private func stringValue(_ value: Any?) -> String? {
+        if let value = value as? String { return value }
+        if let value = value as? Int { return String(value) }
+        if let value = value as? Double {
+            return value.rounded() == value ? String(Int(value)) : String(value)
+        }
+        if let value = value as? Bool { return value ? "1" : "0" }
+        return nil
     }
 
-    private func looksLikeConfigCenter(_ sourceBean: SourceBean) -> Bool {
-        let text = [sourceBean.key, sourceBean.name, sourceBean.api].joined(separator: " ").lowercased()
-        return text.contains("wexconfig")
-            || text.contains("wexokconfig")
-            || text.contains("配置中心")
-            || text.contains("config")
+    private func parseRootFilters(_ value: Any?) -> [String: [MovieSort.SortFilter]] {
+        guard let object = value as? [String: Any] else { return [:] }
+        var result: [String: [MovieSort.SortFilter]] = [:]
+        for (key, rawValue) in object {
+            let filters = parseFilters(rawValue)
+            if !filters.isEmpty { result[key] = filters }
+        }
+        return result
     }
 
-    private func looksLikeBridgeConfigSource(_ sourceBean: SourceBean) -> Bool {
-        let text = [sourceBean.key, sourceBean.name, sourceBean.api].joined(separator: " ").lowercased()
-        return text.contains("wexconfig")
-            || text.contains("wexokconfig")
-            || text.contains("mdrive")
-            || text.contains("mydrive")
-            || text.contains("我的云盘")
-            || text.contains("云盘")
-            || text.contains("网盘")
-            || text.contains("配置")
-            || text.contains("config")
-            || text.contains("drive")
-            || text.contains("pan")
+    private func parseFilters(_ value: Any?) -> [MovieSort.SortFilter] {
+        if let array = value as? [[String: Any]] {
+            return array.compactMap(parseFilter)
+        }
+        if let array = value as? [Any] {
+            return array.compactMap { parseFilter($0 as? [String: Any]) }
+        }
+        if let object = value as? [String: Any], object["key"] != nil || object["value"] != nil || object["values"] != nil {
+            return parseFilter(object).map { [$0] } ?? []
+        }
+        return []
     }
 
-    private func looksLikeBridgeConfigItem(_ video: Movie.Video) -> Bool {
-        let text = [video.id, video.name, video.note].joined(separator: " ").lowercased()
-        return text.contains("cookie")
-            || text.contains("token")
-            || text.contains("登录")
-            || text.contains("授权")
-            || text.contains("网盘")
-            || text.contains("云盘")
-            || text.contains("配置")
-            || text.contains("设置")
-            || text.contains("清除")
-            || text.contains("退出")
-            || text.contains("重置")
-            || text.contains("login")
-            || text.contains("clear")
-            || text.contains("clean")
+    private func parseFilter(_ object: [String: Any]?) -> MovieSort.SortFilter? {
+        guard let object else { return nil }
+        let key = stringValue(object["key"]) ?? ""
+        guard !key.isEmpty else { return nil }
+        let rawValues = object["value"] ?? object["values"]
+        let values = parseFilterValues(rawValues)
+        guard !values.isEmpty else { return nil }
+        return MovieSort.SortFilter(
+            key: key,
+            name: stringValue(object["name"]) ?? key,
+            initialValue: stringValue(object["init"]),
+            values: values
+        )
     }
-    
+
+    private func parseFilterValues(_ value: Any?) -> [MovieSort.SortFilter.SortFilterValue] {
+        let rawItems: [[String: Any]]
+        if let items = value as? [[String: Any]] {
+            rawItems = items
+        } else if let items = value as? [Any] {
+            rawItems = items.compactMap { $0 as? [String: Any] }
+        } else {
+            rawItems = []
+        }
+        return rawItems.compactMap { item in
+            let display = stringValue(item["n"]) ?? stringValue(item["name"]) ?? ""
+            let rawValue = stringValue(item["v"]) ?? stringValue(item["value"]) ?? display
+            guard !display.isEmpty || !rawValue.isEmpty else { return nil }
+            return MovieSort.SortFilter.SortFilterValue(n: display.isEmpty ? rawValue : display, v: rawValue)
+        }
+    }
+
     private func parseXMLVideoList(from xml: String, sourceKey: String) -> [Movie.Video] {
         // 简化 XML 视频列表解析
         var videos: [Movie.Video] = []
@@ -359,9 +382,9 @@ class SourceService {
         }
         return videos
     }
-    
+
     // MARK: - 获取详情
-    
+
     /// 获取视频详情
     func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
         let api = sourceBean.api
@@ -372,7 +395,7 @@ class SourceService {
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-        
+
         let url: String
         if sourceBean.type == 0 {
             url = try buildURL(
@@ -388,7 +411,7 @@ class SourceService {
                 URLQueryItem(name: "ac", value: "detail"),
                 URLQueryItem(name: "ids", value: vodId)
             ]
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext)
@@ -407,41 +430,66 @@ class SourceService {
                 ]
             )
         }
-        
+
         let jsonStr = try await network.getString(from: url)
         return try parseDetail(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
     }
-    
+
     private func parseDetail(_ jsonStr: String, sourceKey: String, type: Int) throws -> VodInfo? {
         if type == 0 {
             return parseXMLDetail(jsonStr, sourceKey: sourceKey)
         }
-        
+
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }
-        
+
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let list = json["list"] as? [[String: Any]],
            let first = list.first {
-            
+
             let decoder = JSONDecoder()
             if let itemData = try? JSONSerialization.data(withJSONObject: first),
                var video = try? decoder.decode(Movie.Video.self, from: itemData) {
                 video.sourceKey = sourceKey
-                
+
                 let playFrom = first["vod_play_from"] as? String ?? ""
                 let playUrl = first["vod_play_url"] as? String ?? ""
-                
-                return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
+
+                return VodInfo.from(
+                    video: video,
+                    playFrom: playFrom,
+                    playUrl: playUrl,
+                    flagGroups: parseStructuredFlagGroups(first["vodFlags"])
+                )
             }
         }
-        
+
         return nil
     }
-    
+
+    private func parseStructuredFlagGroups(_ value: Any?) -> [VodInfo.FlagGroup] {
+        guard let flags = value as? [[String: Any]] else { return [] }
+
+        return flags.compactMap { flag in
+            let name = stringValue(flag["flag"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else { return nil }
+
+            let episodes = (flag["episodes"] as? [[String: Any]] ?? []).enumerated().compactMap {
+                index, episode -> VodInfo.Episode? in
+                let url = stringValue(episode["url"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !url.isEmpty else { return nil }
+                let itemName = stringValue(episode["name"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return VodInfo.Episode(name: itemName.isEmpty ? String(index + 1) : itemName, url: url)
+            }
+
+            guard !episodes.isEmpty else { return nil }
+            return VodInfo.FlagGroup(name: name, episodes: episodes)
+        }
+    }
+
     // MARK: - 搜索
-    
+
     /// 在指定源中搜索
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
         let api = sourceBean.api
@@ -453,7 +501,7 @@ class SourceService {
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
-        
+
         let url: String
         if sourceBean.type == 0 {
             url = try buildURL(
@@ -468,7 +516,7 @@ class SourceService {
                 URLQueryItem(name: "ac", value: "detail"),
                 URLQueryItem(name: "quick", value: quickValue)
             ]
-            
+
             // 加载 extend
             if let ext = sourceBean.ext, !ext.isEmpty {
                 let extend = await resolveExtend(ext)
@@ -484,47 +532,52 @@ class SourceService {
                 queryItems: [URLQueryItem(name: "wd", value: keyword)]
             )
         }
-        
+
         let jsonStr = try await network.getString(from: url)
         let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
         return filterSearchResults(videos, keyword: keyword)
     }
-    
+
     /// 多源并发搜索
     func searchAll(keyword: String) async -> [Movie.Video] {
+        await searchGroups(keyword: keyword).flatMap(\.videos)
+    }
+
+    /// 多源并发搜索并保留来源分组，搜索页可和 Android 一样按站点切换。
+    func searchGroups(keyword: String) async -> [SearchResultGroup] {
         let sources = await ApiConfig.shared.getSearchableSources()
-        
-        return await withTaskGroup(of: [Movie.Video].self) { group in
-            for source in sources {
-                // 跳过不支持的源类型
-                guard source.isPlayableWithBridge && (source.requiresBridge || source.isHttpApi) else { continue }
-                
+        let candidates = sources.enumerated().filter { _, source in
+            source.isAvailableForPlayback && (source.requiresBridge || source.isHttpApi)
+        }
+
+        return await withTaskGroup(of: (Int, SourceBean, [Movie.Video]).self) { group in
+            for (index, source) in candidates {
                 group.addTask { [self] in
                     do {
-                        return try await self.search(sourceBean: source, keyword: keyword)
+                        return (index, source, try await self.search(sourceBean: source, keyword: keyword))
                     } catch {
-                        return []
+                        return (index, source, [])
                     }
                 }
             }
-            
-            var allResults: [Movie.Video] = []
-            for await results in group {
-                allResults.append(contentsOf: results)
+
+            var groups: [(Int, SearchResultGroup)] = []
+            for await (index, source, videos) in group where !videos.isEmpty {
+                groups.append((index, SearchResultGroup(source: source, videos: videos)))
             }
-            return allResults
+            return groups.sorted { $0.0 < $1.0 }.map(\.1)
         }
     }
-    
+
     /// 对源返回结果做本地关键词过滤，规避部分接口返回推荐/无关内容。
     private func filterSearchResults(_ videos: [Movie.Video], keyword: String) -> [Movie.Video] {
         let tokens = keyword
             .split(whereSeparator: \.isWhitespace)
             .map { normalizeSearchText(String($0)) }
             .filter { !$0.isEmpty }
-        
+
         guard !tokens.isEmpty else { return videos }
-        
+
         return videos.filter { video in
             let searchableText = normalizeSearchText([
                 video.name,
@@ -539,7 +592,7 @@ class SourceService {
             return tokens.allSatisfy { searchableText.contains($0) }
         }
     }
-    
+
     private func normalizeSearchText(_ text: String) -> String {
         let folded = text.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
@@ -552,20 +605,20 @@ class SourceService {
         }
         return String(String.UnicodeScalarView(scalars)).lowercased()
     }
-    
+
     // MARK: - Extend 解析
-    
+
     /// 解析 extend 参数（对应 Android 端 getFixUrl）
     /// 如果 extend 是 HTTP URL，则下载其内容作为 extend 值
     /// 如果 extend 是普通字符串，则直接返回
     private func resolveExtend(_ extend: String) async -> String {
         guard !extend.isEmpty else { return "" }
-        
+
         // 非 HTTP URL 直接返回
         guard extend.hasPrefix("http://") || extend.hasPrefix("https://") else {
             return extend
         }
-        
+
         // 从 HTTP URL 加载 extend 内容
         do {
             let content = try await network.getString(from: extend)
@@ -585,10 +638,10 @@ class SourceService {
         ) else {
             return nil
         }
-        
+
         let vodId = extractXMLTag("id", in: videoBlock)
         guard !vodId.isEmpty else { return nil }
-        
+
         var video = Movie.Video(id: vodId)
         video.name = extractXMLTag("name", in: videoBlock)
         video.pic = extractXMLTag("pic", in: videoBlock)
@@ -600,11 +653,11 @@ class SourceService {
         video.actor = extractXMLTag("actor", in: videoBlock)
         video.des = extractXMLTag("des", in: videoBlock)
         video.sourceKey = sourceKey
-        
+
         let ddNodes = extractXMLDDNodes(from: videoBlock)
         let playFrom: String
         let playUrl: String
-        
+
         if ddNodes.isEmpty {
             playFrom = "默认"
             playUrl = ""
@@ -612,10 +665,10 @@ class SourceService {
             playFrom = ddNodes.map { $0.flag }.joined(separator: "$$$")
             playUrl = ddNodes.map { $0.url }.joined(separator: "$$$")
         }
-        
+
         return VodInfo.from(video: video, playFrom: playFrom, playUrl: playUrl)
     }
-    
+
     private func extractXMLDDNodes(from block: String) -> [(flag: String, url: String)] {
         guard let regex = try? NSRegularExpression(
             pattern: #"<dd([^>]*)>([\s\S]*?)</dd>"#,
@@ -623,22 +676,22 @@ class SourceService {
         ) else {
             return []
         }
-        
+
         let nsRange = NSRange(block.startIndex..<block.endIndex, in: block)
         let matches = regex.matches(in: block, range: nsRange)
         var result: [(flag: String, url: String)] = []
-        
+
         for (index, match) in matches.enumerated() {
             guard match.numberOfRanges >= 3 else { continue }
             guard let attrRange = Range(match.range(at: 1), in: block),
                   let valueRange = Range(match.range(at: 2), in: block) else {
                 continue
             }
-            
+
             let attrs = String(block[attrRange])
             let rawUrl = decodeXMLText(String(block[valueRange]))
             guard !rawUrl.isEmpty else { continue }
-            
+
             let flag = firstMatch(
                 pattern: #"flag\s*=\s*["']([^"']+)["']"#,
                 in: attrs,
@@ -646,17 +699,17 @@ class SourceService {
             ) ?? "线路\(index + 1)"
             result.append((flag: decodeXMLText(flag), url: rawUrl))
         }
-        
+
         return result
     }
-    
+
     private func extractXMLTag(_ tag: String, in content: String) -> String {
         let escapedTag = NSRegularExpression.escapedPattern(for: tag)
         let pattern = "<\(escapedTag)>\\s*([\\s\\S]*?)\\s*</\(escapedTag)>"
         let value = firstMatch(pattern: pattern, in: content, captureGroup: 1) ?? ""
         return decodeXMLText(value)
     }
-    
+
     private func firstMatch(pattern: String, in content: String, captureGroup: Int = 0) -> String? {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return nil
@@ -669,7 +722,7 @@ class SourceService {
         }
         return String(content[subRange])
     }
-    
+
     private func decodeXMLText(_ raw: String) -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.hasPrefix("<![CDATA["), value.hasSuffix("]]>"), value.count >= 12 {
@@ -683,17 +736,17 @@ class SourceService {
         value = value.replacingOccurrences(of: "&#39;", with: "'")
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     private func buildURL(base: String, queryItems: [URLQueryItem]) throws -> String {
         let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmedBase) else {
             throw SourceError.invalidApiUrl(base)
         }
-        
+
         var mergedQueryItems = components.queryItems ?? []
         mergedQueryItems.append(contentsOf: queryItems)
         components.queryItems = mergedQueryItems
-        
+
         guard let url = components.url else {
             throw SourceError.invalidApiUrl(base)
         }
@@ -706,7 +759,7 @@ enum SourceError: LocalizedError {
     case parseError(String)
     case unsupportedType(String)
     case invalidApiUrl(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .emptyApi: return "接口地址为空"

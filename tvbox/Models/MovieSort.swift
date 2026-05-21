@@ -4,7 +4,7 @@ import Foundation
 struct MovieSort: Codable {
     /// 分类列表（包含首页推荐、影视分类等）。
     var sortList: [SortData] = []
-    
+
     /// 单个分类数据
     struct SortData: Codable, Identifiable, Hashable {
         /// 分类唯一标识（接口字段通常为 type_id）。
@@ -15,29 +15,40 @@ struct MovieSort: Codable {
         var flag: String = ""
         /// 分类下可选筛选项（年份、地区、类型等）。
         var filters: [SortFilter] = []
-        
-        init(id: String = "", name: String = "", flag: String = "") {
+
+        init(id: String = "", name: String = "", flag: String = "", filters: [SortFilter] = []) {
             self.id = id
             self.name = name
             self.flag = flag
+            self.filters = filters
         }
-        
+
+        var isFolder: Bool { flag == "1" }
+
         /// 生成首页推荐占位分类。
         /// 该分类不走常规分类接口，直接渲染首页推荐列表。
         static func home() -> SortData {
             SortData(id: "home", name: "推荐", flag: "1")
         }
     }
-    
+
     /// 筛选条件
     struct SortFilter: Codable, Hashable {
         /// 接口参数键，例如 `year`、`area`。
         var key: String = ""
         /// UI 展示名称。
         var name: String = ""
+        /// Android Filter.init 默认值。
+        var initialValue: String?
         /// 可选值集合。
         var values: [SortFilterValue] = []
-        
+
+        enum CodingKeys: String, CodingKey {
+            case key, name
+            case initialValue = "init"
+            case values
+        }
+
         struct SortFilterValue: Codable, Hashable {
             /// 展示名。
             var n: String = ""

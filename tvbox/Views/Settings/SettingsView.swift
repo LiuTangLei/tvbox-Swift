@@ -6,7 +6,7 @@ struct SettingsView: View {
         case vod
         case live
         case bridge
-        
+
         var title: String {
             switch self {
             case .vod: return "点播接口地址"
@@ -14,7 +14,7 @@ struct SettingsView: View {
             case .bridge: return "Bridge Server 地址"
             }
         }
-        
+
         var placeholder: String {
             switch self {
             case .vod: return "请输入点播接口地址"
@@ -23,7 +23,7 @@ struct SettingsView: View {
             }
         }
     }
-    
+
     @StateObject private var viewModel = SettingsViewModel()
     @StateObject private var apiConfig = ApiConfig.shared
     @EnvironmentObject var appState: AppState
@@ -32,7 +32,7 @@ struct SettingsView: View {
     @State private var showAbout = false
     @State private var sourceSearchText = ""
     @State private var showingPicker: PickerType = .none
-    
+
     enum PickerType {
         case none
         case vodPlayer
@@ -41,7 +41,7 @@ struct SettingsView: View {
         case vlcBuffer
         case playTimeStep
     }
-    
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -101,7 +101,7 @@ struct SettingsView: View {
                             showApiInput = true
                         }
                     }
-                    
+
                     // 播放设置
                     SectionCard(title: "播放设置") {
                         SettingsRow(icon: "play.rectangle", title: "点播播放器", value: viewModel.vodPlayerEngine.title) {
@@ -130,7 +130,7 @@ struct SettingsView: View {
                             showingPicker = .playTimeStep
                         }
                     }
-                    
+
                     // 功能
                     SectionCard(title: "功能") {
                         NavigationLink {
@@ -145,14 +145,14 @@ struct SettingsView: View {
                             SettingsRow(icon: "heart", title: "我的收藏", value: "", action: nil)
                         }
                     }
-                    
+
                     // 缓存
                     SectionCard(title: "缓存") {
                         SettingsRow(icon: "trash", title: "清除缓存", value: viewModel.cacheSizeString) {
                             viewModel.clearCache()
                         }
                     }
-                    
+
                     // 关于
                     SectionCard(title: "关于") {
                         SettingsRow(icon: "info.circle", title: "版本", value: "1.0.0", action: nil)
@@ -180,9 +180,9 @@ struct SettingsView: View {
         }
         .overlay(pickerOverlay)
     }
-    
+
     // MARK: - 选择器 Overlay
-    
+
     @ViewBuilder
     private var pickerOverlay: some View {
         switch showingPicker {
@@ -255,9 +255,9 @@ struct SettingsView: View {
             EmptyView()
         }
     }
-    
+
     // MARK: - API 输入弹窗
-    
+
     private var apiInputSheet: some View {
         NavigationStack {
             VStack(spacing: 16) {
@@ -274,7 +274,7 @@ struct SettingsView: View {
                 .padding()
                 .background(Color.secondary.opacity(0.1))
                 .cornerRadius(10)
-                
+
                 // 粘贴按钮
                 HStack {
                     Button {
@@ -285,17 +285,17 @@ struct SettingsView: View {
                         Label("粘贴", systemImage: "doc.on.clipboard")
                             .font(.subheadline)
                     }
-                    
+
                     Spacer()
                 }
-                
+
                 // 历史记录
                 if !viewModel.apiHistory.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("历史记录")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
+
                         ForEach(viewModel.apiHistory, id: \.self) { url in
                             HStack {
                                 Button {
@@ -310,9 +310,9 @@ struct SettingsView: View {
                                     }
                                     .foregroundColor(.secondary)
                                 }
-                                
+
                                 Spacer()
-                                
+
                                 Button {
                                     viewModel.removeApiHistory(url)
                                 } label: {
@@ -324,13 +324,13 @@ struct SettingsView: View {
                         }
                     }
                 }
-                
+
                 if let error = viewModel.configError {
                     Text(error)
                         .font(.caption)
                         .foregroundColor(.red)
                 }
-                
+
                 Spacer()
             }
             .padding()
@@ -376,7 +376,7 @@ struct SettingsView: View {
         .presentationDetents([.medium, .large])
         #endif
     }
-    
+
     @ViewBuilder
     private var multiRepoSelectionOverlay: some View {
         if let pending = viewModel.pendingMultiRepoSelection {
@@ -401,7 +401,7 @@ struct SettingsView: View {
             )
         }
     }
-    
+
     private var currentApiBinding: Binding<String> {
         switch editingApiType {
         case .vod:
@@ -412,7 +412,7 @@ struct SettingsView: View {
             return $viewModel.bridgeServerUrl
         }
     }
-    
+
     private func readPasteboardText() -> String? {
         #if os(iOS)
         UIPasteboard.general.string
@@ -420,9 +420,9 @@ struct SettingsView: View {
         NSPasteboard.general.string(forType: .string)
         #endif
     }
-    
+
     // MARK: - 源选择
-    
+
     private var filteredSources: [SourceBean] {
         let sources = apiConfig.sourceBeanList
         if sourceSearchText.isEmpty {
@@ -452,11 +452,12 @@ struct SettingsView: View {
             .glassCard(cornerRadius: 12)
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
-            
+
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(filteredSources) { source in
                         Button {
+                            guard source.isAvailableForPlayback else { return }
                             apiConfig.setHomeSource(source)
                             appState.currentSourceKey = source.key
                         } label: {
@@ -465,20 +466,20 @@ struct SettingsView: View {
                                     HStack(spacing: 8) {
                                         Text(source.name)
                                             .font(.system(size: 16, weight: .semibold))
-                                            .foregroundColor(source.isPlayableWithBridge ? .white : .white.opacity(0.5))
-                                        
+                                            .foregroundColor(source.isAvailableForPlayback ? .white : .white.opacity(0.5))
+
                                         // 类型标签
                                         Text(source.typeDescription)
                                             .font(.system(size: 10, weight: .bold))
-                                            .foregroundColor(source.isPlayableWithBridge ? .orange : .gray)
+                                            .foregroundColor(source.isAvailableForPlayback ? .orange : .gray)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 3)
                                             .background(
                                                 Capsule().fill(
-                                                    source.isPlayableWithBridge ? Color.orange.opacity(0.2) : Color.gray.opacity(0.2)
+                                                    source.isAvailableForPlayback ? Color.orange.opacity(0.2) : Color.gray.opacity(0.2)
                                                 )
                                             )
-                                        
+
                                         if source.requiresBridge && BridgeClient.shared.isEnabled {
                                             Text("Bridge")
                                                 .font(.system(size: 10, weight: .medium))
@@ -486,7 +487,7 @@ struct SettingsView: View {
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 3)
                                                 .background(Capsule().fill(Color.green.opacity(0.15)))
-                                        } else if !source.isPlayableWithBridge {
+                                        } else if !source.isAvailableForPlayback {
                                             Text(source.requiresBridge ? "需 Bridge" : "暂不支持")
                                                 .font(.system(size: 10, weight: .medium))
                                                 .foregroundColor(.red.opacity(0.8))
@@ -495,22 +496,22 @@ struct SettingsView: View {
                                                 .background(Capsule().fill(Color.red.opacity(0.15)))
                                         }
                                     }
-                                    
+
                                     Text(source.api)
                                         .font(.system(size: 12))
                                         .foregroundColor(.white.opacity(0.5))
                                         .lineLimit(1)
                                 }
-                                
+
                                 Spacer()
-                                
+
                                 HStack(spacing: 12) {
                                     if source.isSearchable {
                                         Image(systemName: "magnifyingglass")
                                             .font(.system(size: 14, weight: .medium))
                                             .foregroundColor(.green.opacity(0.8))
                                     }
-                                    
+
                                     if source.key == apiConfig.homeSourceBean?.key {
                                         Image(systemName: "checkmark.circle.fill")
                                             .font(.system(size: 20))
@@ -524,6 +525,7 @@ struct SettingsView: View {
                             }
                             .padding(16)
                             .glassCard(cornerRadius: 16)
+                            .opacity(source.isAvailableForPlayback ? 1 : 0.58)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 16)
                                     .stroke(
@@ -533,6 +535,7 @@ struct SettingsView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .disabled(!source.isAvailableForPlayback)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -552,7 +555,7 @@ struct SettingsView: View {
 struct SectionCard<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title)
@@ -560,7 +563,7 @@ struct SectionCard<Content: View>: View {
                 .fontWeight(.bold)
                 .foregroundColor(.white.opacity(0.6))
                 .padding(.leading, 8)
-            
+
             VStack(spacing: 0) {
                 content()
             }
@@ -574,7 +577,7 @@ struct SettingsRow: View {
     let title: String
     let value: String
     let action: (() -> Void)?
-    
+
     var body: some View {
         Group {
             if let action = action {
@@ -587,25 +590,25 @@ struct SettingsRow: View {
             }
         }
     }
-    
+
     private var rowContent: some View {
         HStack(spacing: 16) {
             Image(systemName: icon)
                 .font(.system(size: 16))
                 .foregroundColor(.orange)
                 .frame(width: 24)
-            
+
             Text(title)
                 .font(.body)
                 .foregroundColor(.white.opacity(0.9))
-            
+
             Spacer()
-            
+
             Text(value)
                 .font(.subheadline)
                 .foregroundColor(.white.opacity(0.5))
                 .lineLimit(1)
-            
+
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.white.opacity(0.3))

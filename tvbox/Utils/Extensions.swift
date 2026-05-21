@@ -34,6 +34,10 @@ struct HawkConfig {
     static let BRIDGE_SERVER_URL = "bridge_server_url"
 }
 
+extension Notification.Name {
+    static let tvboxBridgeAvailabilityDidChange = Notification.Name("tvboxBridgeAvailabilityDidChange")
+}
+
 /// 通用 Swift 扩展
 extension String {
     /// 移除 HTML 标签
@@ -41,7 +45,7 @@ extension String {
         replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
     /// 是否为有效 URL
     var isValidURL: Bool {
         guard let url = URL(string: self) else { return false }
@@ -57,13 +61,13 @@ extension Date {
         formatter.locale = Locale(identifier: "zh_CN")
         return formatter.string(from: self)
     }
-    
+
     var timeString: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: self)
     }
-    
+
     /// 首页日期显示
     var homeDateString: String {
         let formatter = DateFormatter()
@@ -105,13 +109,13 @@ struct AppTheme {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
-    
+
     static let accentGradient = LinearGradient(
         colors: [.orange, .red],
         startPoint: .leading,
         endPoint: .trailing
     )
-    
+
     static let glassBackgroud = Color.white.opacity(0.1)
     static let cardRadius: CGFloat = 16
     static let glassRadius: CGFloat = 20
@@ -146,7 +150,7 @@ extension Color {
 // 玻璃拟态基础组件
 struct GlassBackground: ViewModifier {
     var cornerRadius: CGFloat = AppTheme.glassRadius
-    
+
     func body(content: Content) -> some View {
         content
             #if os(iOS)
@@ -189,24 +193,24 @@ extension URL {
     static func posterURL(from raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        
+
         var absolute = trimmed
         if absolute.hasPrefix("//") {
             absolute = "https:\(absolute)"
         }
-        
+
         guard let originalURL = URL(string: absolute),
               let host = originalURL.host?.lowercased() else {
             return nil
         }
-        
+
         // 部分源图片域名有防盗链，直接访问会 403，走代理兜底
         if host == "img.picbf.com" {
             var components = URLComponents(string: "https://images.weserv.nl/")
             components?.queryItems = [URLQueryItem(name: "url", value: absolute)]
             return components?.url
         }
-        
+
         return originalURL
     }
 }
@@ -220,12 +224,12 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     let url: URL?
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder
-    
+
     @State private var loadedImage: PlatformImage?
     @State private var loadFailed = false
-    
+
     private static var delayedRetryDelay: TimeInterval { 3.0 }
-    
+
     init(
         url: URL?,
         @ViewBuilder content: @escaping (Image) -> Content,
@@ -235,7 +239,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         self.content = content
         self.placeholder = placeholder
     }
-    
+
     var body: some View {
         Group {
             if let image = loadedImage {
@@ -256,18 +260,18 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             loadFailed = false
         }
     }
-    
+
     private func loadImage() async {
         guard let url = url else {
             loadedImage = nil
             return
         }
-        
+
         if let cached = ImageCache.shared.get(for: url) {
             loadedImage = cached
             return
         }
-        
+
         do {
             let image = try await ImageLoader.shared.load(url: url)
             guard !Task.isCancelled else { return }
@@ -277,7 +281,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         } catch {
             guard !Task.isCancelled else { return }
             loadedImage = nil
-            
+
             if error.isNetworkConnectionError && !loadFailed {
                 loadFailed = true
                 try? await Task.sleep(nanoseconds: UInt64(Self.delayedRetryDelay * 1_000_000_000))
@@ -302,11 +306,11 @@ typealias PlatformImage = UIImage
 @MainActor
 final class ImageLoader {
     static let shared = ImageLoader()
-    
+
     private let session: URLSession
     private let urlCache: URLCache
     private let thumbnailMaxPixelSize: CGFloat = 420
-    
+
     private init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
@@ -322,10 +326,10 @@ final class ImageLoader {
         self.urlCache = cache
         self.session = URLSession(configuration: config)
     }
-    
+
     private static let maxImageRetries = 1
     private static let imageRetryDelay: TimeInterval = 1.0
-    
+
     func load(url: URL) async throws -> PlatformImage {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -336,16 +340,16 @@ final class ImageLoader {
         if let host = url.host {
             request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
         }
-        
+
         var lastError: Error = ImageLoadError.invalidData
         let totalAttempts = Self.maxImageRetries + 1
-        
+
         for attempt in 0..<totalAttempts {
             do {
                 try Task.checkCancellation()
-                
+
                 let (data, response) = try await session.data(for: request)
-                
+
                 if let httpResponse = response as? HTTPURLResponse,
                    !(200...299).contains(httpResponse.statusCode) {
                     let error = ImageLoadError.httpError(httpResponse.statusCode)
@@ -357,12 +361,12 @@ final class ImageLoader {
                     }
                     throw error
                 }
-                
+
                 let maxPixelSize = thumbnailMaxPixelSize
                 guard let image = Self.decodeImage(data: data, maxPixelSize: maxPixelSize) else {
                     throw ImageLoadError.invalidData
                 }
-                
+
                 return image
             } catch is CancellationError {
                 throw CancellationError()
@@ -375,34 +379,34 @@ final class ImageLoader {
                 if attempt >= totalAttempts - 1 { throw error }
             }
         }
-        
+
         throw lastError
     }
-    
+
     private static func isRetryableImageError(_ error: Error, statusCode: Int) -> Bool {
         [408, 429, 500, 502, 503, 504].contains(statusCode)
     }
-    
+
     var cacheUsage: (memory: Int, disk: Int) {
         (urlCache.currentMemoryUsage, urlCache.currentDiskUsage)
     }
-    
+
     func clearCache() {
         urlCache.removeAllCachedResponses()
     }
-    
+
     private static func decodeImage(data: Data, maxPixelSize: CGFloat) -> PlatformImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return PlatformImage(data: data)
         }
-        
+
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxPixelSize.rounded(.up))),
             kCGImageSourceShouldCacheImmediately: true
         ]
-        
+
         if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
             #if os(macOS)
             return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
@@ -410,7 +414,7 @@ final class ImageLoader {
             return UIImage(cgImage: cgImage)
             #endif
         }
-        
+
         return PlatformImage(data: data)
     }
 }
@@ -426,22 +430,22 @@ enum ImageLoadError: Error {
 @MainActor
 final class ImageCache {
     static let shared = ImageCache()
-    
+
     private let cache = NSCache<NSURL, PlatformImage>()
-    
+
     private init() {
         cache.countLimit = 120
         cache.totalCostLimit = 40 * 1024 * 1024
     }
-    
+
     func get(for url: URL) -> PlatformImage? {
         cache.object(forKey: url as NSURL)
     }
-    
+
     func set(_ image: PlatformImage, for url: URL) {
         cache.setObject(image, forKey: url as NSURL, cost: image.memoryCost)
     }
-    
+
     func clear() {
         cache.removeAllObjects()
     }
@@ -478,11 +482,11 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
     let itemTitle: (Item) -> String
     let onSelect: (Item) -> Void
     let onCancel: () -> Void
-    
+
     // 动画状态
     @State private var animateIn = false
     @State private var hoverItemId: Item.ID? = nil
-    
+
     var body: some View {
         ZStack {
             // 背景遮罩
@@ -497,7 +501,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                     }
                 }
                 .ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // 顶部图标 & 标题
                 VStack(spacing: 16) {
@@ -508,7 +512,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                             .frame(width: 56, height: 56)
                             .blur(radius: 20)
                             .opacity(0.4)
-                        
+
                         // 主图标
                         Image(systemName: icon)
                             .font(.system(size: 26, weight: .bold))
@@ -525,13 +529,13 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                             .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
                     }
                     .padding(.top, 28)
-                    
+
                     Text(title)
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
                 }
                 .padding(.bottom, 24)
-                
+
                 // 选项列表
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 8) {
@@ -545,9 +549,9 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                                     Text(itemTitle(item))
                                         .font(.system(size: 15, weight: item == selectedItem ? .semibold : .medium))
                                         .foregroundColor(item == selectedItem ? .white : .white.opacity(0.7))
-                                    
+
                                     Spacer()
-                                    
+
                                     if item == selectedItem {
                                         Image(systemName: "checkmark.circle.fill")
                                             .foregroundColor(.orange)
@@ -583,11 +587,11 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                     .padding(.bottom, 16)
                 }
                 .frame(maxHeight: 320)
-                
+
                 Divider()
                     .background(Color.white.opacity(0.1))
                     .padding(.horizontal, 24)
-                
+
                 // 取消按钮
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -618,7 +622,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
             }
         }
     }
-    
+
     private func selectionBackground(item: Item) -> Color {
         if item == selectedItem {
             return Color.orange.opacity(0.2)
@@ -628,7 +632,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
             return Color.white.opacity(0.04)
         }
     }
-    
+
     private func selectionStroke(item: Item) -> Color {
         if item == selectedItem {
             return Color.orange.opacity(0.6)

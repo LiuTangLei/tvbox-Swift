@@ -9,6 +9,8 @@ class HomeViewModel: ObservableObject {
     @Published var sorts: [MovieSort.SortData] = []
     /// 当前选中的分类。
     @Published var selectedSort: MovieSort.SortData?
+    /// 当前分类筛选参数。
+    @Published var selectedFilters: [String: String] = [:]
     /// 首页推荐内容（对应"推荐"分类）。
     @Published var homeVideos: [Movie.Video] = []
     /// 普通分类的视频列表（分页加载）。
@@ -32,48 +34,90 @@ class HomeViewModel: ObservableObject {
     @Published var bridgeJarUiResponse: BridgeJarUiResponse?
     @Published var bridgeJarUiTitle = "Android Jar 界面"
     @Published var isBridgeJarUiPresented = false
-    
+
     /// 源数据访问服务。
     private let sourceService = SourceService.shared
     private let bridge = BridgeClient.shared
     private var bridgeTokenSource: SourceBean?
     private var bridgeJarUiSource: SourceBean?
+    @Published private var folderStack: [FolderLevel] = []
+    private var loadedSourceKey = ""
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
-    
+
+    private struct FolderLevel: Identifiable, Hashable {
+        let sort: MovieSort.SortData
+        let filters: [String: String]
+
+        var id: String { sort.id }
+    }
+
+    var isInFolder: Bool { !folderStack.isEmpty }
+
+    var isPagedListing: Bool {
+        if isInFolder { return true }
+        return selectedSort?.id != "home"
+    }
+
+    var displayVideos: [Movie.Video] {
+        if isPagedListing { return categoryVideos }
+        return homeVideos
+    }
+
+    var activeFilterGroups: [MovieSort.SortFilter] {
+        selectedSort?.filters ?? []
+    }
+
+    var folderPathTitle: String {
+        folderStack.map { $0.sort.name }.joined(separator: " / ")
+    }
+
     init() {
         setupNetworkRestoredAutoRetry()
     }
-    
+
     /// 加载分类列表
     func loadSorts() async {
         guard let source = ApiConfig.shared.homeSourceBean else { return }
+        if loadedSourceKey != source.key {
+            loadedSourceKey = source.key
+            selectedSort = nil
+            selectedFilters = [:]
+            folderStack = []
+            categoryVideos = []
+            homeVideos = []
+            currentPage = 1
+            hasMore = true
+        }
         isLoading = true
         errorMessage = nil
-        
+
         do {
             let result = try await sourceService.getSort(sourceBean: source)
-            
+
             // 插入本地"推荐"分类，保持 UI 与 Android 版本习惯一致。
             var allSorts = [MovieSort.SortData.home()]
             allSorts.append(contentsOf: result.sorts)
-            
+
             self.sorts = allSorts
             self.homeVideos = result.homeVideos
             lastLoadFailedDueToNetwork = false
-            
-            if selectedSort == nil {
-                selectedSort = allSorts.first
+
+            if let selectedSort, let matched = allSorts.first(where: { $0.id == selectedSort.id }) {
+                self.selectedSort = matched
+            } else if let first = allSorts.first {
+                selectedSort = first
+                selectedFilters = defaultFilters(for: first)
             }
         } catch {
             errorMessage = error.localizedDescription
             lastLoadFailedDueToNetwork = error.isNetworkConnectionError
         }
-        
+
         isLoading = false
     }
-    
+
     /// 网络恢复时，若上次因网络错误导致首页为空，自动重新加载。
     private func setupNetworkRestoredAutoRetry() {
         networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
@@ -86,42 +130,94 @@ class HomeViewModel: ObservableObject {
                 }
             }
     }
-    
+
     /// 选择分类
     func selectSort(_ sort: MovieSort.SortData) {
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
         selectedSort = sort
+        selectedFilters = defaultFilters(for: sort)
+        folderStack = []
         errorMessage = nil
         categoryVideos = []
         currentPage = 1
         hasMore = true
-        
+
         if sort.id == "home" {
             return
         } else {
             Task {
-                await loadCategoryVideos(page: 1, sort: sort)
+                await loadCategoryVideos(page: 1, sort: sort, filters: selectedFilters)
             }
         }
     }
-    
+
+    func selectFilter(_ filter: MovieSort.SortFilter, value: MovieSort.SortFilter.SortFilterValue) {
+        guard selectedSort != nil else { return }
+        var filters = selectedFilters
+        let trimmedValue = value.v.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedValue.isEmpty {
+            filters.removeValue(forKey: filter.key)
+        } else {
+            filters[filter.key] = trimmedValue
+        }
+        guard filters != selectedFilters else { return }
+        selectedFilters = filters
+        if !folderStack.isEmpty {
+            folderStack = folderStack.map { FolderLevel(sort: $0.sort, filters: filters) }
+        }
+        categoryVideos = []
+        currentPage = 1
+        hasMore = true
+        errorMessage = nil
+        guard let sort = currentListingSort, sort.id != "home" else { return }
+        Task { await loadCategoryVideos(page: 1, sort: sort, filters: filters) }
+    }
+
+    func isFilterValueSelected(_ filter: MovieSort.SortFilter, value: MovieSort.SortFilter.SortFilterValue) -> Bool {
+        let selectedValue = selectedFilters[filter.key] ?? ""
+        return selectedValue == value.v.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func openFolder(_ video: Movie.Video) async {
+        guard video.isFolder else { return }
+        let inheritedFilters = currentRequestFilters
+        let folderSort = MovieSort.SortData(id: video.id, name: video.name, flag: "1", filters: activeFilterGroups)
+        folderStack.append(FolderLevel(sort: folderSort, filters: inheritedFilters))
+        categoryVideos = []
+        currentPage = 1
+        hasMore = true
+        errorMessage = nil
+        await loadCategoryVideos(page: 1, sort: folderSort, filters: inheritedFilters)
+    }
+
+    func closeFolderLevel() async {
+        guard !folderStack.isEmpty else { return }
+        folderStack.removeLast()
+        categoryVideos = []
+        currentPage = 1
+        hasMore = true
+        errorMessage = nil
+        guard let sort = currentListingSort, sort.id != "home" else { return }
+        await loadCategoryVideos(page: 1, sort: sort, filters: currentRequestFilters)
+    }
+
     /// 加载分类视频列表
-    private func loadCategoryVideos(page: Int, sort: MovieSort.SortData) async {
+    private func loadCategoryVideos(page: Int, sort: MovieSort.SortData, filters: [String: String]) async {
         guard sort.id != "home" else { return }
         guard let source = ApiConfig.shared.homeSourceBean else { return }
         // 防重复并发加载，避免分页错序。
         guard !isLoading else { return }
-        
+
         isLoading = true
         defer { isLoading = false }
-        
+
         do {
-            let videoPage = try await sourceService.getListPage(sourceBean: source, sortData: sort, page: page)
+            let videoPage = try await sourceService.getListPage(sourceBean: source, sortData: sort, page: page, filters: filters)
             let videos = videoPage.videos
-            
+
             // 分类切换过程中，丢弃旧请求结果
-            guard selectedSort?.id == sort.id else { return }
-            
+            guard isCurrentListing(sort: sort, filters: filters) else { return }
+
             if page == 1 {
                 categoryVideos = videos
             } else {
@@ -135,26 +231,26 @@ class HomeViewModel: ObservableObject {
                 hasMore = !videos.isEmpty
             }
         } catch {
-            guard selectedSort?.id == sort.id else { return }
+            guard isCurrentListing(sort: sort, filters: filters) else { return }
             errorMessage = error.localizedDescription
         }
     }
-    
+
     /// 加载下一页
     func loadMore() async {
         guard let lastItem = categoryVideos.last else { return }
         await loadMoreIfNeeded(currentItem: lastItem)
     }
-    
+
     /// 当最后一个元素出现时触发加载下一页
     func loadMoreIfNeeded(currentItem: Movie.Video) async {
-        guard selectedSort?.id != "home" else { return }
+        guard isPagedListing else { return }
         guard hasMore, !isLoading else { return }
         guard categoryVideos.last?.id == currentItem.id else { return }
-        guard let sort = selectedSort else { return }
-        
+        guard let sort = currentListingSort else { return }
+
         let nextPage = currentPage + 1
-        await loadCategoryVideos(page: nextPage, sort: sort)
+        await loadCategoryVideos(page: nextPage, sort: sort, filters: currentRequestFilters)
     }
 
     func performAction(for video: Movie.Video) async {
@@ -275,26 +371,77 @@ class HomeViewModel: ObservableObject {
             if showMessage { actionMessage = error.localizedDescription }
         }
     }
-    
+
     /// 刷新
     func refresh() async {
         // 全量刷新时重置分页与错误态，再重新拉分类与当前分类内容。
+        let previousSortId = selectedSort?.id
+        let previousFilters = selectedFilters
+        folderStack = []
         currentPage = 1
         hasMore = true
         categoryVideos = []
         errorMessage = nil
         await loadSorts()
-        
-        guard let sort = selectedSort else { return }
-        if sort.id == "home" { return }
-        
-        if let matchedSort = sorts.first(where: { $0.id == sort.id }) {
+
+        if let previousSortId, let matchedSort = sorts.first(where: { $0.id == previousSortId }) {
             selectedSort = matchedSort
-            await loadCategoryVideos(page: 1, sort: matchedSort)
+            selectedFilters = validatedFilters(previousFilters, for: matchedSort)
+            guard matchedSort.id != "home" else { return }
+            await loadCategoryVideos(page: 1, sort: matchedSort, filters: selectedFilters)
         } else if let firstCategory = sorts.first(where: { $0.id != "home" }) {
             selectedSort = firstCategory
-            await loadCategoryVideos(page: 1, sort: firstCategory)
+            selectedFilters = defaultFilters(for: firstCategory)
+            await loadCategoryVideos(page: 1, sort: firstCategory, filters: selectedFilters)
+        } else if let first = sorts.first {
+            selectedSort = first
+            selectedFilters = defaultFilters(for: first)
         }
+    }
+
+    func resetAndReload() async {
+        loadedSourceKey = ApiConfig.shared.homeSourceBean?.key ?? ""
+        selectedSort = nil
+        selectedFilters = [:]
+        folderStack = []
+        sorts = []
+        homeVideos = []
+        categoryVideos = []
+        currentPage = 1
+        hasMore = true
+        errorMessage = nil
+        await loadSorts()
+        if let first = sorts.first { selectSort(first) }
+    }
+
+    private var currentListingSort: MovieSort.SortData? {
+        folderStack.last?.sort ?? selectedSort
+    }
+
+    private var currentRequestFilters: [String: String] {
+        folderStack.last?.filters ?? selectedFilters
+    }
+
+    private func isCurrentListing(sort: MovieSort.SortData, filters: [String: String]) -> Bool {
+        if let currentFolder = folderStack.last {
+            return currentFolder.sort.id == sort.id && currentFolder.filters == filters
+        }
+        return selectedSort?.id == sort.id && selectedFilters == filters
+    }
+
+    private func defaultFilters(for sort: MovieSort.SortData) -> [String: String] {
+        var filters: [String: String] = [:]
+        for filter in sort.filters {
+            guard let value = filter.initialValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { continue }
+            filters[filter.key] = value
+        }
+        return filters
+    }
+
+    private func validatedFilters(_ filters: [String: String], for sort: MovieSort.SortData) -> [String: String] {
+        let allowedKeys = Set(sort.filters.map(\.key))
+        let retained = filters.filter { allowedKeys.contains($0.key) }
+        return retained.isEmpty ? defaultFilters(for: sort) : retained
     }
 
     private func handleBridgeActionResponse(_ response: BridgeActionResponse, source: SourceBean) {

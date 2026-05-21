@@ -4,7 +4,7 @@ import SwiftUI
 struct SearchView: View {
     /// 搜索状态与结果管理。
     @StateObject private var viewModel = SearchViewModel()
-    
+
     #if os(iOS)
     /// iOS 卡片网格参数。
     private let columns = [
@@ -16,13 +16,13 @@ struct SearchView: View {
         GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)
     ]
     #endif
-    
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 // 搜索栏
                 searchBar
-                
+
                 // 内容
                 if viewModel.isSearching {
                     Spacer()
@@ -54,9 +54,9 @@ struct SearchView: View {
             #endif
         }
     }
-    
+
     // MARK: - 搜索栏
-    
+
     /// 顶部搜索输入区。
     private var searchBar: some View {
         HStack(spacing: 12) {
@@ -64,7 +64,7 @@ struct SearchView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white.opacity(0.8))
-                
+
                 TextField("搜索影片...", text: $viewModel.keyword)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
@@ -76,12 +76,14 @@ struct SearchView: View {
                     #if os(iOS)
                     .autocapitalization(.none)
                     #endif
-                
+
                 if !viewModel.keyword.isEmpty {
                     Button {
                         withAnimation {
                             viewModel.keyword = ""
                             viewModel.results = []
+                            viewModel.resultGroups = []
+                            viewModel.resetFolderBrowsing()
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -98,7 +100,7 @@ struct SearchView: View {
                 RoundedRectangle(cornerRadius: 16)
                     .stroke(LinearGradient(colors: [.orange.opacity(0.5), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
             )
-            
+
             Button {
                 Task { await viewModel.search() }
             } label: {
@@ -116,14 +118,113 @@ struct SearchView: View {
         .padding(.top, 20)
         .padding(.bottom, 10)
     }
-    
+
     // MARK: - 搜索结果
-    
+
     /// 搜索结果网格。
     private var searchResults: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(viewModel.results) { video in
+            VStack(alignment: .leading, spacing: 16) {
+                if viewModel.isBrowsingFolder {
+                    folderPathBar
+                    folderResults
+                } else {
+                    sourceFilterBar
+
+                    if viewModel.isShowingAllSources {
+                        ForEach(viewModel.resultGroups) { group in
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(spacing: 8) {
+                                    Text(group.source.name)
+                                        .font(.headline)
+                                        .foregroundColor(.white)
+                                    Text("\(group.videos.count)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.white.opacity(0.72))
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(Color.white.opacity(0.1)))
+                                }
+                                resultGrid(group.videos)
+                            }
+                        }
+                    } else {
+                        resultGrid(viewModel.visibleResults)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+        }
+        .navigationDestination(for: Movie.Video.self) { video in
+            DetailView(video: video)
+        }
+    }
+
+    private var sourceFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                sourceFilterButton(
+                    title: "全部",
+                    count: viewModel.results.count,
+                    selected: viewModel.isShowingAllSources
+                ) {
+                    viewModel.showAllSources()
+                }
+
+                ForEach(viewModel.resultGroups) { group in
+                    sourceFilterButton(
+                        title: group.source.name,
+                        count: group.videos.count,
+                        selected: viewModel.selectedSourceKey == group.source.key
+                    ) {
+                        viewModel.showSource(group.source.key)
+                    }
+                }
+            }
+        }
+    }
+
+    private func sourceFilterButton(
+        title: String,
+        count: Int,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundColor(selected ? .black.opacity(0.7) : .white.opacity(0.72))
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundColor(selected ? .black : .white.opacity(0.86))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                Capsule().fill(selected ? Color.orange : Color.white.opacity(0.08))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func resultGrid(_ videos: [Movie.Video]) -> some View {
+        LazyVGrid(columns: columns, spacing: 16) {
+            ForEach(videos) { video in
+                if video.isFolder {
+                    Button {
+                        Task { await viewModel.openFolder(video) }
+                    } label: {
+                        VodCardView(video: video)
+                    }
+                    #if os(iOS)
+                    .buttonStyle(VodCardPressStyle())
+                    #else
+                    .buttonStyle(.plain)
+                    #endif
+                } else {
                     NavigationLink(value: video) {
                         VodCardView(video: video)
                     }
@@ -134,16 +235,151 @@ struct SearchView: View {
                     #endif
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-        }
-        .navigationDestination(for: Movie.Video.self) { video in
-            DetailView(video: video)
         }
     }
-    
+
+    private var folderPathBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                viewModel.closeFolderLevel()
+            } label: {
+                Label("上一级", systemImage: "chevron.left")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .tint(.orange)
+
+            Text(viewModel.folderPathTitle)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.72))
+                .lineLimit(1)
+
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var folderResults: some View {
+        if viewModel.isFolderLoading && viewModel.folderVideos.isEmpty {
+            HStack {
+                Spacer()
+                ProgressView("加载目录...")
+                    .tint(.orange)
+                    .foregroundColor(.white.opacity(0.72))
+                Spacer()
+            }
+            .padding(.vertical, 48)
+        } else if let error = viewModel.folderErrorMessage, viewModel.folderVideos.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.title2)
+                    .foregroundColor(.orange)
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 48)
+        } else if viewModel.folderVideos.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "folder")
+                    .font(.title2)
+                    .foregroundColor(.orange)
+                Text("目录为空")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.72))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 48)
+        } else {
+            LazyVStack(spacing: 10) {
+                ForEach(viewModel.folderVideos) { video in
+                    folderRowLink(video)
+                        .onAppear {
+                            Task { await viewModel.loadMoreFolderIfNeeded(currentItem: video) }
+                        }
+                }
+            }
+
+            if viewModel.isFolderLoading || viewModel.currentFolderHasMore {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .tint(.orange)
+                    Spacer()
+                }
+                .padding(.vertical, 10)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func folderRowLink(_ video: Movie.Video) -> some View {
+        if video.isFolder {
+            Button {
+                Task { await viewModel.openFolder(video) }
+            } label: {
+                folderRow(video)
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink(value: video) {
+                folderRow(video)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func folderRow(_ video: Movie.Video) -> some View {
+        HStack(spacing: 12) {
+            CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        Image(systemName: video.isFolder ? "folder.fill" : "play.rectangle.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(video.isFolder ? .orange : .white.opacity(0.5))
+                    )
+            }
+            .frame(width: 54, height: 54)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(video.name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+
+                if !video.note.isEmpty {
+                    Text(video.note)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.62))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: video.isFolder ? "folder" : "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(video.isFolder ? .orange : .white.opacity(0.35))
+                .frame(width: 18)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.06))
+        )
+    }
+
     // MARK: - 搜索历史
-    
+
     /// 搜索历史区域，支持复用历史关键词与一键清空。
     private var searchHistorySection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -166,7 +402,7 @@ struct SearchView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
-                
+
                 FlowLayout(spacing: 8) {
                     ForEach(viewModel.searchHistory, id: \.self) { keyword in
                         Button {
@@ -186,7 +422,7 @@ struct SearchView: View {
                 }
                 .padding(.horizontal, 20)
             }
-            
+
             Spacer()
         }
     }
@@ -196,13 +432,13 @@ struct SearchView: View {
 struct FlowLayout: Layout {
     /// 子项间距。
     var spacing: CGFloat = 8
-    
+
     /// 计算整体尺寸。
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let result = arrangement(proposal: proposal, subviews: subviews)
         return result.size
     }
-    
+
     /// 按计算结果放置子视图。
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let result = arrangement(proposal: ProposedViewSize(width: bounds.width, height: bounds.height), subviews: subviews)
@@ -210,7 +446,7 @@ struct FlowLayout: Layout {
             subviews[index].place(at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y), proposal: .unspecified)
         }
     }
-    
+
     /// 核心排版算法：按最大宽度逐个放置，超宽后自动换行。
     private func arrangement(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, positions: [CGPoint]) {
         let maxWidth = proposal.width ?? .infinity
@@ -219,7 +455,7 @@ struct FlowLayout: Layout {
         var currentY: CGFloat = 0
         var lineHeight: CGFloat = 0
         var maxX: CGFloat = 0
-        
+
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
             if currentX + size.width > maxWidth && currentX > 0 {
@@ -232,7 +468,7 @@ struct FlowLayout: Layout {
             currentX += size.width + spacing
             maxX = max(maxX, currentX)
         }
-        
+
         return (CGSize(width: maxX, height: currentY + lineHeight), positions)
     }
 }

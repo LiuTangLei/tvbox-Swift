@@ -19,7 +19,7 @@ struct VodCardView: View {
     let video: Movie.Video
     /// 悬停状态（主要用于 macOS 悬停放大动效）。
     @State private var isHovered = false
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // 封面图
@@ -35,7 +35,7 @@ struct VodCardView: View {
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
                 .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
-                
+
                 // 底部渐变叠加（用于保护备注文字）
                 if !video.note.isEmpty {
                     LinearGradient(
@@ -45,7 +45,7 @@ struct VodCardView: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
                 }
-                
+
                 // 备注标签
                 if !video.note.isEmpty {
                     Text(video.note)
@@ -58,6 +58,21 @@ struct VodCardView: View {
                         )
                         .padding(8)
                 }
+
+                if video.isFolder {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "folder.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(7)
+                                .background(Circle().fill(Color.orange.opacity(0.9)))
+                                .padding(8)
+                        }
+                        Spacer()
+                    }
+                }
             }
             // 悬停缩放只增强视觉反馈，不影响点击命中区域。
             .scaleEffect(isHovered ? 1.05 : 1.0)
@@ -65,14 +80,14 @@ struct VodCardView: View {
             .onHover { hovering in
                 isHovered = hovering
             }
-            
+
             // 标题
             VStack(alignment: .leading, spacing: 2) {
                 Text(video.name)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.white)
                     .lineLimit(1)
-                
+
                 if !video.type.isEmpty {
                     Text(video.type)
                         .font(.system(size: 10))
@@ -86,7 +101,7 @@ struct VodCardView: View {
         .contentShape(Rectangle())
         #endif
     }
-    
+
     /// 海报占位图，避免图片加载失败导致卡片高度塌陷。
     private var placeholderImage: some View {
         RoundedRectangle(cornerRadius: AppTheme.cardRadius)

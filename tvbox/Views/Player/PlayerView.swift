@@ -46,12 +46,13 @@ struct SubtitleAppearance: Equatable {
         SubtitleAppearance(textScale: defaultTextScale, verticalOffset: defaultVerticalOffset)
     }
 
-    var vlcFontSize: Int {
-        Self.clamp(Int((32.0 * Double(textScale) / 100.0).rounded()), 18, 72)
+    var vlcRelativeFontSize: Int {
+        // libVLC stores the relative subtitle size as a divisor: lower values render larger text.
+        Self.clamp(Int((1600.0 / Double(textScale)).rounded()), 6, 24)
     }
 
     var vlcSubtitleMargin: Int {
-        max(0, verticalOffset)
+        verticalOffset
     }
 
     var avLinePosition: Double {
@@ -80,7 +81,7 @@ struct SubtitleAppearance: Equatable {
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
     let player: AVPlayer
-    
+
     var body: some View {
         #if os(macOS)
         MacOSPlayerView(player: player)
@@ -93,7 +94,7 @@ struct PlatformVideoPlayer: View {
 #if os(macOS)
 private struct MacOSPlayerView: NSViewRepresentable {
     let player: AVPlayer
-    
+
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .none
@@ -102,13 +103,13 @@ private struct MacOSPlayerView: NSViewRepresentable {
         view.player = player
         return view
     }
-    
+
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
         if nsView.player !== player {
             nsView.player = player
         }
     }
-    
+
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
         nsView.player = nil
     }
@@ -120,7 +121,7 @@ private struct MacOSPlayerView: NSViewRepresentable {
 final class SystemPlayerSessionController: ObservableObject {
     fileprivate var player: AVPlayer?
     fileprivate var mediaURLString: String?
-    
+
     func setPlayer(_ newPlayer: AVPlayer, urlString: String) {
         if player !== newPlayer {
             player?.pause()
@@ -129,7 +130,7 @@ final class SystemPlayerSessionController: ObservableObject {
         player = newPlayer
         mediaURLString = urlString
     }
-    
+
     func stop() {
         let stoppingPlayer = player
         player?.pause()
@@ -158,7 +159,7 @@ struct PlayerView: View {
     var vlcController: VLCPlayerController? = nil
     @AppStorage(HawkConfig.PLAY_TYPE_VOD) private var vodPlayTypeRaw = -1
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
-    
+
     private var selectedEngine: PlayerEngine {
         if shouldUseVLCForBridgeProxy {
             return .vlc
@@ -180,7 +181,7 @@ struct PlayerView: View {
         let path = url.path.lowercased()
         return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
     }
-    
+
     var body: some View {
         Group {
             switch selectedEngine {
@@ -243,7 +244,7 @@ struct AVPlayerContentView: View {
     @State private var player: AVPlayer?
     @State private var playbackEndObserver: NSObjectProtocol?
     @State private var timeObserverToken: Any?
-    
+
     // UI 状态
     @State private var isPlaying = false
     @State private var currentTime: Double = 0
@@ -268,7 +269,7 @@ struct AVPlayerContentView: View {
     @State private var audioSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
-    
+
     @State private var videoZoomScale: CGFloat = 1.0
 
     var body: some View {
@@ -295,7 +296,7 @@ struct AVPlayerContentView: View {
             if player == nil || isPreparing {
                 LoadingSpeedOverlay()
             }
-            
+
             if let error = playbackError {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -385,7 +386,7 @@ struct AVPlayerContentView: View {
             osdTimer?.invalidate()
         }
     }
-    
+
     private func setupPlayer() {
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[AVPlayer] URL sanitization failed for: \(urlString)")
@@ -395,7 +396,7 @@ struct AVPlayerContentView: View {
         let preferredRate = normalizedSavedPlaybackRate
         rate = preferredRate
         playbackError = nil
-        
+
         if let sharedController,
            sharedController.mediaURLString == targetURLString,
            let sharedPlayer = sharedController.player {
@@ -423,10 +424,10 @@ struct AVPlayerContentView: View {
             reportProgress(for: sharedPlayer)
             return
         }
-        
+
         // 清理旧播放器
         cleanupPlayer()
-        
+
         // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
         let asset = AVURLAsset(url: url)
         asset.resourceLoader.setDelegate(nil, queue: nil)
@@ -438,12 +439,12 @@ struct AVPlayerContentView: View {
         if let sharedController {
             sharedController.setPlayer(newPlayer, urlString: targetURLString)
         }
-        
+
         player = newPlayer
         bindPlayerObservers(for: newPlayer)
         startPlayback(for: newPlayer)
     }
-    
+
     /// 将原始 URL 字符串转换为合法的 URL，处理未编码的特殊字符。
     private static func sanitizedURL(from urlString: String) -> URL? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -457,7 +458,7 @@ struct AVPlayerContentView: View {
         }
         return nil
     }
-    
+
     private func bindPlayerObservers(for player: AVPlayer) {
         var observations: [NSKeyValueObservation] = [
             player.observe(\.timeControlStatus, options: [.new]) { p, _ in
@@ -510,7 +511,7 @@ struct AVPlayerContentView: View {
         volume = Double(player.volume)
         rate = normalizedSavedPlaybackRate
     }
-    
+
     private func detachPlayerObservers() {
         if let token = timeObserverToken {
             player?.removeTimeObserver(token)
@@ -523,20 +524,20 @@ struct AVPlayerContentView: View {
         playerObservers.forEach { $0.invalidate() }
         playerObservers.removeAll()
     }
-    
+
     private func cleanupPlayer(keepSharedPlayer: Bool = false) {
         let currentPlayer = player
         detachPlayerObservers()
         if !keepSharedPlayer {
             resetMediaTracks()
         }
-        
+
         guard let currentPlayer else { return }
         if keepSharedPlayer, sharedController?.player === currentPlayer {
             player = nil
             return
         }
-        
+
         currentPlayer.pause()
         if sharedController?.player === currentPlayer {
             sharedController?.player = nil
@@ -548,10 +549,10 @@ struct AVPlayerContentView: View {
             currentPlayer.replaceCurrentItem(with: nil)
         }
     }
-    
+
     private func startPlayback(for player: AVPlayer) {
         let target = max(startPosition, 0)
-        
+
         if target > 0 {
             let seekTime = CMTime(seconds: target, preferredTimescale: 600)
             player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
@@ -562,7 +563,7 @@ struct AVPlayerContentView: View {
             playAtPreferredRate(player)
         }
     }
-    
+
     private func togglePlayPause() {
         guard let player = player else { return }
         if player.rate == 0 {
@@ -571,12 +572,12 @@ struct AVPlayerContentView: View {
             player.pause()
         }
     }
-    
+
     private func togglePlayPauseWithOSD() {
         togglePlayPause()
         showOSD(icon: isPlaying ? "pause.fill" : "play.fill")
     }
-    
+
     private func wakeUpControls() {
         withAnimation { showControls = true }
         controlsTimer?.invalidate()
@@ -586,7 +587,7 @@ struct AVPlayerContentView: View {
             }
         }
     }
-    
+
     private func showOSD(icon: String) {
         osdIcon = icon
         osdOpacity = 1.0
@@ -597,10 +598,10 @@ struct AVPlayerContentView: View {
             }
         }
     }
-    
+
     private func observePlaybackEnd(for player: AVPlayer) {
         guard let item = player.currentItem else { return }
-        
+
         playbackEndObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
@@ -609,24 +610,24 @@ struct AVPlayerContentView: View {
             onPlaybackEnded?()
         }
     }
-    
+
     private func observePlaybackProgress(for player: AVPlayer) {
         let interval = CMTime(seconds: 1, preferredTimescale: 2)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { _ in
             reportProgress(for: player)
         }
     }
-    
+
     private func reportProgress(for player: AVPlayer?) {
         guard let player else { return }
         let current = player.currentTime().seconds
         guard current.isFinite, current >= 0 else { return }
-        
+
         if !isDraggingProgress {
             self.currentTime = current
             self.draggingSeconds = current
         }
-        
+
         let rawDuration = player.currentItem?.duration.seconds
         if let rawDuration, rawDuration.isFinite, rawDuration >= 0 {
             self.duration = rawDuration
@@ -779,14 +780,14 @@ struct AVPlayerContentView: View {
         }
         return fallback
     }
-    
+
     private var seekStep: Double {
         let saved = UserDefaults.standard.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         return Double(saved > 0 ? saved : 10)
     }
 
     private var volumeStep: Double { 0.1 }
-    
+
     private var progressUpperBound: Double {
         max(duration, max(currentTime, 1))
     }
@@ -807,11 +808,11 @@ struct AVPlayerContentView: View {
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.8))
                     .lineLimit(1)
-                
+
                 Slider(
                     value: Binding(
                         get: { isDraggingProgress ? draggingSeconds : currentTime },
-                        set: { 
+                        set: {
                             draggingSeconds = $0
                             wakeUpControls()
                         }
@@ -827,7 +828,7 @@ struct AVPlayerContentView: View {
                 )
                 .accentColor(.white)
                 .disabled(duration <= 0)
-                
+
                 Text(duration.durationString)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5))
@@ -836,15 +837,24 @@ struct AVPlayerContentView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 4)
-            
+
             // 控制按钮行 — 紧凑排列
             HStack(spacing: 0) {
-                // 左：倍速
-                playbackRateMenu
-                    .frame(minWidth: 36, alignment: .leading)
-                
+                // 左：倍速、音轨、字幕
+                HStack(spacing: 6) {
+                    playbackRateMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                        subtitleStyleMenu
+                    }
+                }
+                .frame(minWidth: 36, alignment: .leading)
+
                 Spacer()
-                
+
                 // 中间：主控按钮
                 HStack(spacing: 20) {
                     Button {
@@ -857,7 +867,7 @@ struct AVPlayerContentView: View {
                             .frame(minWidth: 36, minHeight: 36)
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         togglePlayPauseWithOSD()
@@ -867,7 +877,7 @@ struct AVPlayerContentView: View {
                             .frame(minWidth: 36, minHeight: 36)
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         seek(by: seekStep)
@@ -895,9 +905,9 @@ struct AVPlayerContentView: View {
                         .opacity(canPlayNext ? 1 : 0.4)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 // 右：全屏
                 if let onToggleFullScreen {
                     Button {
@@ -921,11 +931,11 @@ struct AVPlayerContentView: View {
                     .foregroundColor(.white.opacity(0.9))
                     .lineLimit(1)
                     .frame(width: 62, alignment: .leading)
-                
+
                 Slider(
                     value: Binding(
                         get: { isDraggingProgress ? draggingSeconds : currentTime },
-                        set: { 
+                        set: {
                             draggingSeconds = $0
                             wakeUpControls()
                         }
@@ -941,7 +951,7 @@ struct AVPlayerContentView: View {
                 )
                 .accentColor(.white)
                 .disabled(duration <= 0)
-                
+
                 Text(duration.durationString)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
@@ -949,7 +959,7 @@ struct AVPlayerContentView: View {
                     .frame(width: 62, alignment: .trailing)
             }
             .padding(.horizontal, 4)
-            
+
             HStack(spacing: 0) {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
@@ -963,9 +973,9 @@ struct AVPlayerContentView: View {
                     }
                 }
                 .frame(width: 356, alignment: .leading)
-                
+
                 Spacer()
-                
+
                 HStack(spacing: 24) {
                     Button {
                         wakeUpControls()
@@ -976,7 +986,7 @@ struct AVPlayerContentView: View {
                             .font(.system(size: 18, weight: .medium))
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         togglePlayPauseWithOSD()
@@ -985,13 +995,13 @@ struct AVPlayerContentView: View {
                             Circle()
                                 .fill(Color.white.opacity(0.15))
                                 .frame(width: 38, height: 38)
-                            
+
                             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 18, weight: .bold))
                         }
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         seek(by: seekStep)
@@ -1017,9 +1027,9 @@ struct AVPlayerContentView: View {
                         .opacity(canPlayNext ? 1 : 0.4)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 HStack(spacing: 14) {
                     HStack(spacing: 6) {
                         Button {
@@ -1046,7 +1056,7 @@ struct AVPlayerContentView: View {
                         )
                         .frame(width: 80)
                     }
-                    
+
                     if let onToggleFullScreen {
                         Button {
                             wakeUpControls()
@@ -1121,7 +1131,7 @@ struct AVPlayerContentView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        audioTracks.filter { !$0.isDisabled }.count > 1
+        audioTracks.contains { !$0.isDisabled }
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1312,7 +1322,14 @@ struct AVPlayerContentView: View {
         currentTime = target
         draggingSeconds = target
         let time = CMTime(seconds: target, preferredTimescale: 600)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        isPreparing = true
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            DispatchQueue.main.async {
+                guard self.player === player else { return }
+                self.isPreparing = player.reasonForWaitingToPlay != nil
+                    || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            }
+        }
     }
 
     private func commitProgressSeek() {
@@ -1326,23 +1343,29 @@ struct AVPlayerContentView: View {
         guard seconds.isFinite else { return 0 }
         return min(max(seconds, 0), progressUpperBound)
     }
-    
+
     private func seek(by offset: Double) {
         guard let player else { return }
-        
+
         let current = player.currentTime().seconds
         guard current.isFinite else { return }
         let wasPlaying = player.rate != 0 || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-        
+
         var target = max(current + offset, 0)
         if let duration = player.currentItem?.duration.seconds, duration.isFinite {
             target = min(target, duration)
         }
-        
+
+        isPreparing = true
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { _ in
-            reportProgress(for: player)
-            if wasPlaying {
-                playAtPreferredRate(player)
+            DispatchQueue.main.async {
+                guard self.player === player else { return }
+                reportProgress(for: player)
+                if wasPlaying {
+                    playAtPreferredRate(player)
+                }
+                self.isPreparing = player.reasonForWaitingToPlay != nil
+                    || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             }
         }
     }
@@ -1554,7 +1577,7 @@ private struct SystemPlayerKeyboardCaptureView: NSViewRepresentable {
     let onToggleFullScreen: () -> Void
     let onVolumeDown: () -> Void
     let onVolumeUp: () -> Void
-    
+
     func makeNSView(context: Context) -> SystemPlayerKeyCaptureNSView {
         let view = SystemPlayerKeyCaptureNSView(frame: .zero)
         applyCallbacks(to: view)
@@ -1563,14 +1586,14 @@ private struct SystemPlayerKeyboardCaptureView: NSViewRepresentable {
         }
         return view
     }
-    
+
     func updateNSView(_ nsView: SystemPlayerKeyCaptureNSView, context: Context) {
         applyCallbacks(to: nsView)
         DispatchQueue.main.async {
             nsView.activate()
         }
     }
-    
+
     private func applyCallbacks(to view: SystemPlayerKeyCaptureNSView) {
         view.onLeft = onLeft
         view.onRight = onRight
@@ -1588,24 +1611,24 @@ private final class SystemPlayerKeyCaptureNSView: NSView {
     var onToggleFullScreen: (() -> Void)?
     var onVolumeDown: (() -> Void)?
     var onVolumeUp: (() -> Void)?
-    
+
     override var acceptsFirstResponder: Bool { true }
-    
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         activate()
     }
-    
+
     func activate() {
         window?.makeFirstResponder(self)
     }
-    
+
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.intersection([.command, .control, .option]).isEmpty == false {
             super.keyDown(with: event)
             return
         }
-        
+
         switch event.keyCode {
         case 123: // left
             onLeft?()
@@ -1624,7 +1647,7 @@ private final class SystemPlayerKeyCaptureNSView: NSView {
             return
         default: break
         }
-        
+
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         switch key {
         case "k": onTogglePlayPause?()
@@ -1641,7 +1664,7 @@ private struct SystemPlayerKeyboardCaptureView: UIViewRepresentable {
     let onToggleFullScreen: () -> Void
     let onVolumeDown: () -> Void
     let onVolumeUp: () -> Void
-    
+
     func makeUIView(context: Context) -> SystemPlayerKeyCaptureUIView {
         let view = SystemPlayerKeyCaptureUIView(frame: .zero)
         applyCallbacks(to: view)
@@ -1650,14 +1673,14 @@ private struct SystemPlayerKeyboardCaptureView: UIViewRepresentable {
         }
         return view
     }
-    
+
     func updateUIView(_ uiView: SystemPlayerKeyCaptureUIView, context: Context) {
         applyCallbacks(to: uiView)
         DispatchQueue.main.async {
             uiView.activate()
         }
     }
-    
+
     private func applyCallbacks(to view: SystemPlayerKeyCaptureUIView) {
         view.onLeft = onLeft
         view.onRight = onRight
@@ -1675,9 +1698,9 @@ private final class SystemPlayerKeyCaptureUIView: UIView {
     var onToggleFullScreen: (() -> Void)?
     var onVolumeDown: (() -> Void)?
     var onVolumeUp: (() -> Void)?
-    
+
     override var canBecomeFirstResponder: Bool { true }
-    
+
     override var keyCommands: [UIKeyCommand]? {
         [
             UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(handleLeft)),
@@ -1689,16 +1712,16 @@ private final class SystemPlayerKeyCaptureUIView: UIView {
             UIKeyCommand(input: "f", modifierFlags: [], action: #selector(handleToggleFullScreen))
         ]
     }
-    
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         activate()
     }
-    
+
     func activate() {
         becomeFirstResponder()
     }
-    
+
     @objc private func handleLeft() { onLeft?() }
     @objc private func handleRight() { onRight?() }
     @objc private func handleVolumeDown() { onVolumeDown?() }

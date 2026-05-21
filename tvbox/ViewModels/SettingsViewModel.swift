@@ -10,7 +10,7 @@ class SettingsViewModel: ObservableObject {
         enum Target {
             case vod
             case live
-            
+
             var title: String {
                 switch self {
                 case .vod: return "点播"
@@ -18,7 +18,7 @@ class SettingsViewModel: ObservableObject {
                 }
             }
         }
-        
+
         let id = UUID()
         /// 目标类型。
         let target: Target
@@ -27,7 +27,7 @@ class SettingsViewModel: ObservableObject {
         /// 可选仓库列表。
         let options: [ApiConfig.MultiRepoOption]
     }
-    
+
     /// 点播配置地址。
     @Published var vodApiUrl: String = ""
     /// 直播配置地址。
@@ -62,7 +62,7 @@ class SettingsViewModel: ObservableObject {
     @Published var isTestingBridge = false
     /// 缓存占用展示文本。
     @Published var cacheSizeString: String = "0 KB"
-    
+
     /// 快进步长候选项。
     let playTimeStepOptions: [Int] = [5, 10, 15, 30, 60]
     /// 当前构建可用播放器列表。
@@ -71,7 +71,7 @@ class SettingsViewModel: ObservableObject {
     let decodeModeOptions: [VideoDecodeMode] = VideoDecodeMode.allCases
     /// VLC 缓冲模式候选。
     let vlcBufferModeOptions: [VLCBufferMode] = VLCBufferMode.allCases
-    
+
     /// 初始化时完成三件事：
     /// 1) 回填已保存的配置地址
     /// 2) 兼容老版本单一播放器字段到新字段
@@ -108,14 +108,14 @@ class SettingsViewModel: ObservableObject {
         vlcBufferMode = VLCBufferMode.fromStoredValue(
             defaults.integer(forKey: HawkConfig.PLAY_VLC_BUFFER_MODE)
         )
-        
+
         let savedStep = defaults.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         playTimeStep = savedStep > 0 ? savedStep : 10
         bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeServerUrl = defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? ""
         refreshCacheSize()
     }
-    
+
     /// 加载配置
     func loadConfig() async {
         let trimmedVod = vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -124,15 +124,15 @@ class SettingsViewModel: ObservableObject {
             configError = "请输入点播接口地址"
             return
         }
-        
+
         isLoadingConfig = true
         configError = nil
         configSuccess = false
         pendingMultiRepoSelection = nil
-        
+
         do {
             let resolvedLive = trimmedLive.isEmpty ? trimmedVod : trimmedLive
-            
+
             // 若探测到多仓库入口，先中断加载并弹出候选，让用户显式选定目标仓库。
             if let pending = try await detectPendingMultiRepoSelection(
                 vodUrl: trimmedVod,
@@ -142,7 +142,7 @@ class SettingsViewModel: ObservableObject {
                 isLoadingConfig = false
                 return
             }
-            
+
             try await ApiConfig.shared.loadConfigs(vodApiUrl: trimmedVod, liveApiUrl: resolvedLive)
             // 保存用户输入（live 允许空值，表示跟随点播地址）。
             UserDefaults.standard.set(trimmedVod, forKey: HawkConfig.API_URL)
@@ -155,15 +155,15 @@ class SettingsViewModel: ObservableObject {
         } catch {
             configError = error.localizedDescription
         }
-        
+
         isLoadingConfig = false
     }
-    
+
     /// 处理多仓库弹窗选择结果，并继续走统一加载流程。
     func selectPendingMultiRepoOption(_ option: ApiConfig.MultiRepoOption) async {
         guard let pending = pendingMultiRepoSelection else { return }
         let normalizedSource = ApiConfig.normalizeConfigUrl(pending.sourceUrl)
-        
+
         switch pending.target {
         case .vod:
             let normalizedLive = ApiConfig.normalizeConfigUrl(liveApiUrl)
@@ -177,17 +177,17 @@ class SettingsViewModel: ObservableObject {
         case .live:
             liveApiUrl = option.url
         }
-        
+
         pendingMultiRepoSelection = nil
         await loadConfig()
     }
-    
+
     /// 取消多仓库选择，恢复到普通待输入状态。
     func cancelPendingMultiRepoSelection() {
         pendingMultiRepoSelection = nil
         isLoadingConfig = false
     }
-    
+
     /// 尝试识别输入地址是否为多仓库入口。
     /// - Returns: 需要弹窗选择时返回待选对象，否则返回 `nil`。
     private func detectPendingMultiRepoSelection(
@@ -204,13 +204,13 @@ class SettingsViewModel: ObservableObject {
                 options: vodOptions
             )
         }
-        
+
         let normalizedVod = ApiConfig.normalizeConfigUrl(vodUrl)
         let normalizedLive = ApiConfig.normalizeConfigUrl(liveUrl)
         guard normalizedLive != normalizedVod else {
             return nil
         }
-        
+
         if let liveOptions = try await ApiConfig.shared.fetchMultiRepoOptions(from: liveUrl) {
             guard !liveOptions.isEmpty else {
                 throw ConfigError.parseError("直播多仓库配置中没有可用地址")
@@ -221,17 +221,17 @@ class SettingsViewModel: ObservableObject {
                 options: liveOptions
             )
         }
-        
+
         return nil
     }
-    
+
     // MARK: - API 历史
-    
+
     /// 读取 API 历史。
     private func loadApiHistory() {
         apiHistory = UserDefaults.standard.stringArray(forKey: "api_history") ?? []
     }
-    
+
     /// 新增历史并去重，最多保留 10 条。
     private func addToApiHistory(_ url: String) {
         apiHistory.removeAll { $0 == url }
@@ -241,13 +241,13 @@ class SettingsViewModel: ObservableObject {
         }
         UserDefaults.standard.set(apiHistory, forKey: "api_history")
     }
-    
+
     /// 删除单条 API 历史。
     func removeApiHistory(_ url: String) {
         apiHistory.removeAll { $0 == url }
         UserDefaults.standard.set(apiHistory, forKey: "api_history")
     }
-    
+
     /// 清除所有缓存
     func clearCache() {
         URLCache.shared.removeAllCachedResponses()
@@ -255,32 +255,34 @@ class SettingsViewModel: ObservableObject {
         ImageCache.shared.clear()
         refreshCacheSize()
     }
-    
+
     /// 设置快进步长
     func setPlayTimeStep(_ step: Int) {
         guard step > 0 else { return }
         playTimeStep = step
         UserDefaults.standard.set(step, forKey: HawkConfig.PLAY_TIME_STEP)
     }
-    
+
     func setBridgeEnabled(_ enabled: Bool) {
         bridgeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeStatusText = enabled ? "待检测" : "已停用"
+        notifyBridgeAvailabilityChanged()
     }
-    
+
     func saveBridgeSettingsAndTest() async {
         let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         bridgeServerUrl = trimmed
         UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
         UserDefaults.standard.set(bridgeEnabled, forKey: HawkConfig.BRIDGE_ENABLED)
+        notifyBridgeAvailabilityChanged()
         guard bridgeEnabled, !trimmed.isEmpty else {
             bridgeStatusText = bridgeEnabled ? "未配置" : "已停用"
             return
         }
         await testBridge()
     }
-    
+
     func testBridge() async {
         guard bridgeEnabled else {
             bridgeStatusText = "已停用"
@@ -313,21 +315,30 @@ class SettingsViewModel: ObservableObject {
         }
         return parts.joined(separator: " ")
     }
-    
+
+    private func notifyBridgeAvailabilityChanged() {
+        let homeSourceChanged = ApiConfig.shared.reconcileHomeSourceForBridgeAvailability()
+        NotificationCenter.default.post(
+            name: .tvboxBridgeAvailabilityDidChange,
+            object: nil,
+            userInfo: ["homeSourceChanged": homeSourceChanged]
+        )
+    }
+
     /// 设置点播播放器内核
     func setVodPlayerEngine(_ engine: PlayerEngine) {
         guard playerEngineOptions.contains(engine) else { return }
         vodPlayerEngine = engine
         UserDefaults.standard.set(engine.rawValue, forKey: HawkConfig.PLAY_TYPE_VOD)
     }
-    
+
     /// 设置直播播放器内核
     func setLivePlayerEngine(_ engine: PlayerEngine) {
         guard playerEngineOptions.contains(engine) else { return }
         livePlayerEngine = engine
         UserDefaults.standard.set(engine.rawValue, forKey: HawkConfig.PLAY_TYPE_LIVE)
     }
-    
+
     /// 设置视频解码模式
     func setDecodeMode(_ mode: VideoDecodeMode) {
         guard decodeModeOptions.contains(mode) else { return }
@@ -341,14 +352,14 @@ class SettingsViewModel: ObservableObject {
         vlcBufferMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: HawkConfig.PLAY_VLC_BUFFER_MODE)
     }
-    
+
     /// 统计并刷新缓存占用展示（网络缓存 + 图片缓存磁盘占用）。
     private func refreshCacheSize() {
         let sharedDisk = URLCache.shared.currentDiskUsage
         let imageDisk = ImageLoader.shared.cacheUsage.disk
         cacheSizeString = Self.formatSize(bytes: sharedDisk + imageDisk)
     }
-    
+
     /// 格式化字节大小。
     private static func formatSize(bytes: Int) -> String {
         let size = max(0, bytes)

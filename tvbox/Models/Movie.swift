@@ -12,7 +12,7 @@ struct Movie: Codable {
     var total: Int = 0
     /// 每页条数。
     var limit: Int = 0
-    
+
     /// 单个视频条目
     struct Video: Codable, Identifiable, Hashable {
         /// 视频唯一 ID（接口可能返回 Int 或 String，见自定义解码）。
@@ -47,7 +47,9 @@ struct Movie: Codable {
         var action: String = ""
         /// Android/FongMi 标签，例如 folder。
         var tag: String = ""
-        
+        /// Android/FongMi folder 标记补充字段；存在时同样视为文件夹。
+        var cate: FolderCate? = nil
+
         init(id: String = UUID().uuidString, name: String = "", pic: String = "",
              note: String = "", sourceKey: String = "") {
             self.id = id
@@ -56,7 +58,7 @@ struct Movie: Codable {
             self.note = note
             self.sourceKey = sourceKey
         }
-        
+
         enum CodingKeys: String, CodingKey {
             case id = "vod_id"
             case name = "vod_name"
@@ -73,9 +75,16 @@ struct Movie: Codable {
             case dt = "vod_play_from"
             case action
             case tag = "vod_tag"
+            case cate
             case sourceKey
         }
-        
+
+        struct FolderCate: Codable, Hashable {
+            var land: Int?
+            var circle: Int?
+            var ratio: Double?
+        }
+
         /// 自定义解码以兼容多源字段类型差异（如 `vod_id` / `type_id` 可能是 Int 或 String）。
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,10 +113,11 @@ struct Movie: Codable {
             self.dt = (try? container.decode(String.self, forKey: .dt)) ?? ""
             self.action = (try? container.decode(String.self, forKey: .action)) ?? ""
             self.tag = (try? container.decode(String.self, forKey: .tag)) ?? ""
+            self.cate = try? container.decode(FolderCate.self, forKey: .cate)
             self.sourceKey = (try? container.decode(String.self, forKey: .sourceKey)) ?? ""
         }
 
         var isAction: Bool { !action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        var isFolder: Bool { tag == "folder" }
+        var isFolder: Bool { tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "folder" || cate != nil }
     }
 }

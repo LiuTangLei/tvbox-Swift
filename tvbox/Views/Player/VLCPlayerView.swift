@@ -24,7 +24,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         "--audio-time-stretch",
         "--no-video-title-show",
         "--sub-autodetect-file",
-        "--sub-autodetect-fuzzy=3"
+        "--sub-autodetect-fuzzy=3",
+        // Keep letterbox padding in VLC's subtitle layout area so subtitle margin can reach it.
+        "--video-filter=canvas",
+        "--canvas-width=1920",
+        "--canvas-height=1080"
     ]
     private static let playerInstanceSelector = NSSelectorFromString("playerInstance")
     private static let libVLCStopAsync: LibVLCStopAsyncFunction? = {
@@ -42,15 +46,65 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             return unsafeBitCast(symbol, to: LibVLCSetTextRendererIntFunction.self)
         }
     }()
+    private static let libVLCListChildren: LibVLCListChildrenFunction? = {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+        return "vlc_list_children".withCString { symbolName in
+            guard let symbol = dlsym(defaultHandle, symbolName) else { return nil }
+            return unsafeBitCast(symbol, to: LibVLCListChildrenFunction.self)
+        }
+    }()
+    private static let libVLCListRelease: LibVLCListReleaseFunction? = {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+        return "vlc_list_release".withCString { symbolName in
+            guard let symbol = dlsym(defaultHandle, symbolName) else { return nil }
+            return unsafeBitCast(symbol, to: LibVLCListReleaseFunction.self)
+        }
+    }()
+    private static let libVLCVarType: LibVLCVarTypeFunction? = {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+        return "var_Type".withCString { symbolName in
+            guard let symbol = dlsym(defaultHandle, symbolName) else { return nil }
+            return unsafeBitCast(symbol, to: LibVLCVarTypeFunction.self)
+        }
+    }()
+    private static let libVLCVarSet: LibVLCVarSetFunction? = {
+        let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)
+        return "var_Set".withCString { symbolName in
+            guard let symbol = dlsym(defaultHandle, symbolName) else { return nil }
+            return unsafeBitCast(symbol, to: LibVLCVarSetFunction.self)
+        }
+    }()
     private typealias LibVLCStopAsyncFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
     private typealias LibVLCSetTextRendererIntFunction = @convention(c) (UnsafeMutableRawPointer?, UInt32, Int32) -> Void
-    
+    private typealias LibVLCListChildrenFunction = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    private typealias LibVLCListReleaseFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
+    private typealias LibVLCVarTypeFunction = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Int32
+    private typealias LibVLCVarSetFunction = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UInt64) -> Int32
+
+    private struct LibVLCObjectList {
+        var type: Int32
+        var count: Int32
+        var values: UnsafeMutablePointer<LibVLCValue>?
+    }
+
+    private struct LibVLCValue {
+        var storage: UInt64
+
+        init(integer: Int) {
+            storage = UInt64(bitPattern: Int64(integer))
+        }
+
+        var address: UnsafeMutableRawPointer? {
+            UnsafeMutableRawPointer(bitPattern: UInt(storage))
+        }
+    }
+
     private var _mediaPlayer: VLCMediaPlayer?
     var mediaPlayer: VLCMediaPlayer {
         if let existing = _mediaPlayer {
             return existing
         }
-        let player = VLCMediaPlayer(options: VLCPlayerController.stablePlaybackOptions)
+        let player = VLCMediaPlayer(options: playerOptions)
         _mediaPlayer = player
         player.delegate = self
         player.drawable = persistentDrawableView
@@ -67,6 +121,12 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var selectedAudioTrackID: String?
     @Published var selectedSubtitleTrackID: String?
     @Published var subtitleAppearance = SubtitleAppearance.load()
+    private var playerOptions: [String] {
+        Self.stablePlaybackOptions + [
+            "--freetype-rel-fontsize=\(subtitleAppearance.vlcRelativeFontSize)",
+            "--sub-margin=\(subtitleAppearance.vlcSubtitleMargin)"
+        ]
+    }
     #if os(macOS)
     private let persistentDrawableView = NSView(frame: .zero)
     private weak var lastAttachedContainer: NSView?
@@ -79,11 +139,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var lastDrawableContainerIdentifier: ObjectIdentifier?
     private var lastDrawableContainerSize: CGSize = .zero
     private var lastDrawableRebindAt: Date = .distantPast
-    
+
     var hasValidDuration: Bool {
         durationSeconds > 0
     }
-    
+
     private var progressTimer: Timer?
     private var pendingSeekSeconds: Double?
     private var isLive = false
@@ -118,7 +178,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private let progressPublishThreshold: Double = 0.25
     private let durationPublishThreshold: Double = 0.5
     private var lastNonZeroVolume = defaultVolume
-    
+
     override init() {
         super.init()
         let savedObj = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED)
@@ -143,7 +203,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         persistentDrawableView.backgroundColor = .black
         #endif
     }
-    
+
     deinit {
         if let player = _mediaPlayer {
             _mediaPlayer = nil
@@ -155,7 +215,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             }
         }
     }
-    
+
     func play(
         url: URL,
         startPosition: Double,
@@ -177,7 +237,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             isLive: isLive,
             isBridgeProxy: targetIsBridgeProxy
         )
-        
+
         // 同一路径/同场景（点播或直播）时复用当前实例，避免切全屏触发重新加载
         if currentMediaURLString == targetURLString,
            currentMediaIsLive == isLive,
@@ -197,7 +257,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             emitProgress()
             return
         }
-        
+
         stopProgressTimer()
         cancelBufferingFallbackTimer()
         cancelDelayedPreparingIndicator()
@@ -210,10 +270,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         pendingSeekSeconds = isLive ? nil : max(startPosition, 0)
         setPlaybackStatus(preparing: true, playing: false)
         resetProgressState()
-        
+
         mediaPlayer.stop()
         let media = VLCMedia(url: url)
-        
+
         let cacheConfig = Self.cacheConfig(isLive: isLive, isBridgeProxy: targetIsBridgeProxy, bufferMode: bufferMode)
         let enableFrameDrop = isLive ? bufferMode.enableFrameDrop : false
         let enableSkipFrames = isLive && bufferMode.enableFrameDrop
@@ -227,9 +287,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "sub-autodetect-file": 1,
             "sub-autodetect-fuzzy": 3,
             "subsdec-encoding": "UTF-8",
-            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "freetype-fontsize": subtitleAppearance.vlcFontSize,
-            "sub-margin": subtitleAppearance.vlcSubtitleMargin
+            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ]
         if isLive || !targetIsBridgeProxy {
             mediaOptions["http-continuous"] = 1
@@ -248,12 +306,12 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if url.scheme?.lowercased() == "rtsp" {
             mediaOptions["rtsp-tcp"] = 1
         }
-        
+
         media.addOptions(mediaOptions)
         // 对布尔型选项使用显式 no- 前缀，避免 0/1 在不同 libvlc 版本下解释不一致。
         media.addOption(enableFrameDrop ? "drop-late-frames" : "no-drop-late-frames")
         media.addOption(enableSkipFrames ? "skip-frames" : "no-skip-frames")
-        
+
         mediaPlayer.media = media
         mediaPlayer.play()
         applyPlaybackRate()
@@ -268,7 +326,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaDecodeMode = effectiveDecodeMode
         currentMediaBufferMode = bufferMode
     }
-    
+
     func stop() {
         stopProgressTimer()
         resetPlaybackRecoveryState()
@@ -300,7 +358,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             _ = p
         }
     }
-    
+
     func togglePlayback() {
         if isPlaying {
             mediaPlayer.pause()
@@ -309,20 +367,20 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             applyPlaybackRate()
         }
     }
-    
+
     func setPlaybackRate(_ rate: Float) {
         let normalized = Self.normalizedPlaybackRate(from: rate)
         playbackRate = normalized
         UserDefaults.standard.set(Double(normalized), forKey: HawkConfig.PLAY_SPEED)
         applyPlaybackRate()
     }
-    
+
     func increasePlaybackRate() {
         guard let index = Self.supportedPlaybackRates.firstIndex(of: playbackRate),
               index + 1 < Self.supportedPlaybackRates.count else { return }
         setPlaybackRate(Self.supportedPlaybackRates[index + 1])
     }
-    
+
     func decreasePlaybackRate() {
         guard let index = Self.supportedPlaybackRates.firstIndex(of: playbackRate),
               index - 1 >= 0 else { return }
@@ -353,10 +411,6 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func setSubtitleAppearance(_ appearance: SubtitleAppearance) {
         subtitleAppearance = appearance
         appearance.save()
-        mediaPlayer.media?.addOptions([
-            "freetype-fontsize": appearance.vlcFontSize,
-            "sub-margin": appearance.vlcSubtitleMargin
-        ])
         applySubtitleAppearance()
     }
 
@@ -371,7 +425,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.currentVideoSubTitleIndex = Int32(track.rawValue)
         refreshTrackOptions()
     }
-    
+
     #if os(macOS)
     func attachDrawable(to container: NSView) {
         let containerIdentifier = ObjectIdentifier(container)
@@ -404,7 +458,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         scheduleDelayedDrawableRebind(for: container)
         resumePlaybackAfterDrawableRebindIfNeeded()
     }
-    
+
     func detachDrawable(from container: NSView) {
         if lastAttachedContainer === container {
             lastAttachedContainer = nil
@@ -448,7 +502,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         scheduleDelayedDrawableRebind(for: container)
         resumePlaybackAfterDrawableRebindIfNeeded()
     }
-    
+
     func detachDrawable(from container: UIView) {
         if lastAttachedContainer === container {
             lastAttachedContainer = nil
@@ -645,7 +699,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         }
     }
     #endif
-    
+
     func seek(by offset: Double) {
         guard !isLive else { return }
         var target = max(currentTimeSeconds + offset, 0)
@@ -654,26 +708,27 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         }
         seek(to: target)
     }
-    
+
     func seek(to seconds: Double) {
         guard !isLive else { return }
         let maxSeconds = min(durationSeconds > 0 ? durationSeconds : Double(Int32.max) / 1000.0, Double(Int32.max) / 1000.0)
         let value = max(0, min(seconds, maxSeconds))
+        beginSeekBufferingFeedback(at: value)
         currentTimeSeconds = value
         mediaPlayer.time = VLCTime(int: Int32(value * 1000.0))
         onProgressChanged?(value, hasValidDuration ? durationSeconds : nil)
     }
-    
+
     nonisolated func mediaPlayerStateChanged(_ aNotification: Notification) {
         Task { @MainActor [weak self] in
             self?.handlePlayerStateChanged()
         }
     }
-    
+
     nonisolated func mediaPlayerTimeChanged(_ aNotification: Notification) {
         // 使用定时器统一采样进度，避免 VLC 高频 time 回调带来主线程负载。
     }
-    
+
     private func handlePlayerStateChanged() {
         switch mediaPlayer.state {
         case .opening, .buffering:
@@ -710,7 +765,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             break
         }
     }
-    
+
     private func startProgressTimer() {
         stopProgressTimer()
         let interval = isLive ? progressUpdateIntervalLive : progressUpdateIntervalVod
@@ -723,31 +778,31 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         progressTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
-    
+
     private func stopProgressTimer() {
         progressTimer?.invalidate()
         progressTimer = nil
     }
-    
+
     private func applyPendingSeekIfNeeded() {
         guard let pendingSeekSeconds, pendingSeekSeconds > 0 else { return }
         seek(to: pendingSeekSeconds)
         self.pendingSeekSeconds = nil
     }
-    
+
     private func emitProgress() {
         refreshPlaybackFlags()
         monitorVideoOutputRecoveryIfNeeded()
         guard !isLive else { return }
         let current = currentSeconds()
         guard current.isFinite, current >= 0 else { return }
-        
+
         let roundedCurrent = (current / progressPublishThreshold).rounded() * progressPublishThreshold
         let didUpdateCurrent = abs(roundedCurrent - currentTimeSeconds) >= progressPublishThreshold
         if didUpdateCurrent {
             currentTimeSeconds = roundedCurrent
         }
-        
+
         var didUpdateDuration = false
         if let duration = durationSecondsFromMedia() {
             if abs(duration - durationSeconds) >= durationPublishThreshold {
@@ -755,11 +810,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 didUpdateDuration = true
             }
         }
-        
+
         guard didUpdateCurrent || didUpdateDuration else { return }
         onProgressChanged?(currentTimeSeconds, hasValidDuration ? durationSeconds : nil)
     }
-    
+
     private func refreshPlaybackFlags() {
         // 部分直播源会长时间停留在 buffering/opening 回调，但实际已开始渲染。
         // 使用底层 isPlaying 兜底，避免“永远加载中”。
@@ -771,7 +826,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             cancelBufferingFallbackTimer()
             return
         }
-        
+
         switch mediaPlayer.state {
         case .opening, .buffering:
             setPlaybackStatus(preparing: true, playing: false)
@@ -783,7 +838,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             break
         }
     }
-    
+
     private func applyPlaybackRate() {
         guard mediaPlayer.rate != playbackRate else { return }
         mediaPlayer.rate = playbackRate
@@ -796,10 +851,37 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func applySubtitleAppearance() {
-        guard let playerPointer = playerInstancePointer(), let setTextRendererInt = Self.libVLCSetTextRendererInt else { return }
-        setTextRendererInt(playerPointer, 1, Int32(subtitleAppearance.vlcFontSize))
+        guard let playerPointer = playerInstancePointer() else { return }
+        if let setTextRendererInt = Self.libVLCSetTextRendererInt {
+            setTextRendererInt(playerPointer, 1, Int32(subtitleAppearance.vlcRelativeFontSize))
+        }
+        applyLiveSubtitleMargin(to: playerPointer)
     }
-    
+
+    private func applyLiveSubtitleMargin(to playerPointer: UnsafeMutableRawPointer) {
+        guard let listChildren = Self.libVLCListChildren,
+              let listRelease = Self.libVLCListRelease,
+              let varType = Self.libVLCVarType,
+              let varSet = Self.libVLCVarSet,
+              let childListPointer = listChildren(playerPointer) else {
+            return
+        }
+        defer { listRelease(childListPointer) }
+
+        let childList = childListPointer.assumingMemoryBound(to: LibVLCObjectList.self)
+        guard let children = childList.pointee.values else { return }
+        "sub-margin".withCString { variableName in
+            let margin = LibVLCValue(integer: subtitleAppearance.vlcSubtitleMargin)
+            for index in 0..<Int(childList.pointee.count) {
+                guard let child = children.advanced(by: index).pointee.address,
+                      varType(child, variableName) != 0 else {
+                    continue
+                }
+                _ = varSet(child, variableName, margin.storage)
+            }
+        }
+    }
+
     private func syncDecodeModeFromSettings() {
         if let decodeModeOverride {
             decodeMode = decodeModeOverride
@@ -815,7 +897,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             UserDefaults.standard.integer(forKey: HawkConfig.PLAY_VLC_BUFFER_MODE)
         )
     }
-    
+
     private static func normalizedPlaybackRate(from raw: Float) -> Float {
         guard !supportedPlaybackRates.isEmpty else { return 1.0 }
         return supportedPlaybackRates.min(by: { abs($0 - raw) < abs($1 - raw) }) ?? 1.0
@@ -824,7 +906,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private static func normalizedVolume(from raw: Int) -> Int {
         min(max(raw, 0), maxVolume)
     }
-    
+
     private static func cacheConfig(isLive: Bool, isBridgeProxy: Bool, bufferMode: VLCBufferMode) -> (network: Int, live: Int, file: Int) {
         if !isLive && isBridgeProxy {
             return (network: 1800, live: 1600, file: 2400)
@@ -1028,6 +1110,14 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         scheduleBufferingFallbackIfNeeded()
     }
 
+    private func beginSeekBufferingFeedback(at seconds: Double) {
+        guard !isLive else { return }
+        bufferingBaselineSecondsVod = seconds
+        isInBufferingState = true
+        setPlaybackStatus(preparing: true, playing: false)
+        scheduleBufferingFallbackIfNeeded()
+    }
+
     private func isStillStalledSinceBufferingStartedVod() -> Bool {
         let current = max(currentSeconds(), currentTimeSeconds)
         return (current - bufferingBaselineSecondsVod) < vodBufferingProgressAdvanceThreshold
@@ -1053,7 +1143,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         isInBufferingState = false
         bufferingBaselineSecondsVod = 0
     }
-    
+
     private func setPlaybackStatus(preparing: Bool, playing: Bool) {
         if isPreparing != preparing {
             isPreparing = preparing
@@ -1062,7 +1152,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             isPlaying = playing
         }
     }
-    
+
     private func resetProgressState() {
         if currentTimeSeconds != 0 {
             currentTimeSeconds = 0
@@ -1071,13 +1161,13 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             durationSeconds = 0
         }
     }
-    
+
     private func currentSeconds() -> Double {
         let raw = mediaPlayer.time.intValue
         if raw < 0 { return 0 }
         return Double(raw) / 1000.0
     }
-    
+
     private func durationSecondsFromMedia() -> Double? {
         let raw = mediaPlayer.media?.length.intValue ?? 0
         guard raw > 0 else { return nil }
@@ -1107,18 +1197,18 @@ struct VLCVodPlayerView: View {
     @StateObject private var ownedController = VLCPlayerController()
     @State private var isDraggingProgress = false
     @State private var draggingSeconds: Double = 0
-    
+
     @State private var showControls = true
     @State private var controlsTimer: Timer?
     @State private var osdIcon: String?
     @State private var osdOpacity: Double = 0
     @State private var osdTimer: Timer?
     @State private var startPlaybackTask: Task<Void, Never>?
-    
+
     private var controller: VLCPlayerController {
         sharedController ?? ownedController
     }
-    
+
     var body: some View {
         ZStack {
             VLCDrawableView(controller: controller)
@@ -1131,11 +1221,11 @@ struct VLCVodPlayerView: View {
                     togglePlaybackWithOSD()
                 }
             #endif
-            
+
             if controller.isPreparing {
                 LoadingSpeedOverlay()
             }
-            
+
             if let osdIcon = osdIcon {
                 Image(systemName: osdIcon)
                     .font(.system(size: 60, weight: .semibold))
@@ -1222,7 +1312,7 @@ struct VLCVodPlayerView: View {
             osdTimer?.invalidate()
         }
     }
-    
+
     private func wakeUpControls() {
         withAnimation { showControls = true }
         controlsTimer?.invalidate()
@@ -1232,7 +1322,7 @@ struct VLCVodPlayerView: View {
             }
         }
     }
-    
+
     private func showOSD(icon: String) {
         osdIcon = icon
         osdOpacity = 1.0
@@ -1243,12 +1333,12 @@ struct VLCVodPlayerView: View {
             }
         }
     }
-    
+
     private func togglePlaybackWithOSD() {
         controller.togglePlayback()
         showOSD(icon: controller.isPlaying ? "pause.fill" : "play.fill")
     }
-    
+
     private func startPlayback() {
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[VLC] URL sanitization failed for: \(urlString)")
@@ -1271,7 +1361,7 @@ struct VLCVodPlayerView: View {
             )
         }
     }
-    
+
     /// 将原始 URL 字符串转换为合法的 URL，处理未编码的特殊字符。
     private static func sanitizedURL(from urlString: String) -> URL? {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1284,22 +1374,22 @@ struct VLCVodPlayerView: View {
         }
         return nil
     }
-    
+
     private var seekStep: Double {
         let saved = UserDefaults.standard.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         return Double(saved > 0 ? saved : 10)
     }
 
     private var volumeStep: Int { 10 }
-    
+
     private var progressUpperBound: Double {
         max(controller.durationSeconds, max(controller.currentTimeSeconds, 1))
     }
-    
+
     private var currentDisplaySeconds: Double {
         isDraggingProgress ? draggingSeconds : controller.currentTimeSeconds
     }
-    
+
     private var totalDisplayText: String {
         controller.hasValidDuration ? controller.durationSeconds.durationString : "--:--"
     }
@@ -1314,7 +1404,7 @@ struct VLCVodPlayerView: View {
         guard seconds.isFinite else { return 0 }
         return min(max(seconds, 0), progressUpperBound)
     }
-    
+
     private func playbackControls(containerWidth: CGFloat) -> some View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
@@ -1330,11 +1420,11 @@ struct VLCVodPlayerView: View {
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.8))
                     .lineLimit(1)
-                
+
                 Slider(
                     value: Binding(
                         get: { isDraggingProgress ? draggingSeconds : controller.currentTimeSeconds },
-                        set: { 
+                        set: {
                             draggingSeconds = $0
                             wakeUpControls()
                         }
@@ -1350,7 +1440,7 @@ struct VLCVodPlayerView: View {
                 )
                 .accentColor(.white)
                 .disabled(!controller.hasValidDuration)
-                
+
                 Text(totalDisplayText)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5))
@@ -1359,15 +1449,24 @@ struct VLCVodPlayerView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 4)
-            
+
             // 控制按钮行 — 紧凑排列
             HStack(spacing: 0) {
-                // 左：倍速
-                playbackRateMenu
-                    .frame(minWidth: 36, alignment: .leading)
-                
+                // 左：倍速、音轨、字幕
+                HStack(spacing: 6) {
+                    playbackRateMenu
+                    if shouldShowAudioTrackMenu {
+                        audioTrackMenu
+                    }
+                    if shouldShowSubtitleTrackMenu {
+                        subtitleTrackMenu
+                        subtitleStyleMenu
+                    }
+                }
+                .frame(minWidth: 36, alignment: .leading)
+
                 Spacer()
-                
+
                 // 中间：主控按钮
                 HStack(spacing: 20) {
                     Button {
@@ -1380,7 +1479,7 @@ struct VLCVodPlayerView: View {
                             .frame(minWidth: 36, minHeight: 36)
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         togglePlaybackWithOSD()
@@ -1390,7 +1489,7 @@ struct VLCVodPlayerView: View {
                             .frame(minWidth: 36, minHeight: 36)
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         controller.seek(by: seekStep)
@@ -1418,9 +1517,9 @@ struct VLCVodPlayerView: View {
                         .opacity(canPlayNext ? 1 : 0.4)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 // 右：全屏
                 if let onToggleFullScreen {
                     Button {
@@ -1444,11 +1543,11 @@ struct VLCVodPlayerView: View {
                     .foregroundColor(.white.opacity(0.9))
                     .lineLimit(1)
                     .frame(width: 62, alignment: .leading)
-                
+
                 Slider(
                     value: Binding(
                         get: { isDraggingProgress ? draggingSeconds : controller.currentTimeSeconds },
-                        set: { 
+                        set: {
                             draggingSeconds = $0
                             wakeUpControls()
                         }
@@ -1464,7 +1563,7 @@ struct VLCVodPlayerView: View {
                 )
                 .accentColor(.white)
                 .disabled(!controller.hasValidDuration)
-                
+
                 Text(totalDisplayText)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
@@ -1472,7 +1571,7 @@ struct VLCVodPlayerView: View {
                     .frame(width: 62, alignment: .trailing)
             }
             .padding(.horizontal, 4)
-            
+
             HStack(spacing: 0) {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
@@ -1486,9 +1585,9 @@ struct VLCVodPlayerView: View {
                     }
                 }
                 .frame(width: 356, alignment: .leading)
-                
+
                 Spacer()
-                
+
                 HStack(spacing: 24) {
                     Button {
                         wakeUpControls()
@@ -1499,7 +1598,7 @@ struct VLCVodPlayerView: View {
                             .font(.system(size: 18, weight: .medium))
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         togglePlaybackWithOSD()
@@ -1508,13 +1607,13 @@ struct VLCVodPlayerView: View {
                             Circle()
                                 .fill(Color.white.opacity(0.15))
                                 .frame(width: 38, height: 38)
-                            
+
                             Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 18, weight: .bold))
                         }
                     }
                     .buttonStyle(.plain)
-                    
+
                     Button {
                         wakeUpControls()
                         controller.seek(by: seekStep)
@@ -1540,9 +1639,9 @@ struct VLCVodPlayerView: View {
                         .opacity(canPlayNext ? 1 : 0.4)
                     }
                 }
-                
+
                 Spacer()
-                
+
                 HStack(spacing: 14) {
                     HStack(spacing: 6) {
                         Button {
@@ -1568,7 +1667,7 @@ struct VLCVodPlayerView: View {
                         )
                         .frame(width: 80)
                     }
-                    
+
                     if let onToggleFullScreen {
                         Button {
                             wakeUpControls()
@@ -1608,7 +1707,7 @@ struct VLCVodPlayerView: View {
         #endif
         .environment(\.colorScheme, .dark)
     }
-    
+
     private var playbackRateMenu: some View {
         Menu {
             ForEach(VLCPlayerController.supportedPlaybackRates, id: \.self) { rate in
@@ -1643,7 +1742,7 @@ struct VLCVodPlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.filter { !$0.isDisabled }.count > 1
+        controller.audioTracks.contains { !$0.isDisabled }
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1775,7 +1874,7 @@ struct VLCVodPlayerView: View {
     private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
         tracks.first { $0.id == selectedID }?.compactTitle ?? fallback
     }
-    
+
     private func playbackRateLabel(_ rate: Float) -> String {
         if rate.rounded() == rate {
             return "\(Int(rate))x"
@@ -1805,13 +1904,13 @@ struct VLCLivePlayerView: View {
     var onToggleFullScreen: (() -> Void)? = nil
     @StateObject private var controller = VLCPlayerController()
     private var volumeStep: Int { 10 }
-    
+
     @State private var osdIcon: String?
     @State private var osdOpacity: Double = 0
     @State private var osdTimer: Timer?
     @State private var showControls = true
     @State private var controlsTimer: Timer?
-    
+
     var body: some View {
         ZStack {
             VLCDrawableView(controller: controller)
@@ -1824,11 +1923,11 @@ struct VLCLivePlayerView: View {
                     togglePlaybackWithOSD()
                 }
             #endif
-            
+
             if controller.isPreparing {
                 LoadingSpeedOverlay()
             }
-            
+
             if let osdIcon = osdIcon {
                 Image(systemName: osdIcon)
                     .font(.system(size: 60, weight: .semibold))
@@ -1914,9 +2013,9 @@ struct VLCLivePlayerView: View {
             controlsTimer?.invalidate()
         }
     }
-    
+
     // MARK: - iOS Live Controls Overlay
-    
+
     #if os(iOS)
     private var liveControlsOverlay: some View {
         HStack(spacing: 20) {
@@ -1941,9 +2040,9 @@ struct VLCLivePlayerView: View {
         .padding(.horizontal, 16)
     }
     #endif
-    
+
     // MARK: - Controls Timer
-    
+
     private func wakeUpControls() {
         withAnimation { showControls = true }
         controlsTimer?.invalidate()
@@ -1953,7 +2052,7 @@ struct VLCLivePlayerView: View {
             }
         }
     }
-    
+
     private func showOSD(icon: String) {
         osdIcon = icon
         osdOpacity = 1.0
@@ -1964,12 +2063,12 @@ struct VLCLivePlayerView: View {
             }
         }
     }
-    
+
     private func togglePlaybackWithOSD() {
         controller.togglePlayback()
         showOSD(icon: controller.isPlaying ? "pause.fill" : "play.fill")
     }
-    
+
     private func startPlayback() {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed) ?? trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap({ URL(string: $0) }) else {
@@ -1987,7 +2086,7 @@ struct VLCLivePlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.filter { !$0.isDisabled }.count > 1
+        controller.audioTracks.contains { !$0.isDisabled }
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -2108,7 +2207,7 @@ struct VLCLivePlayerView: View {
 
 private struct VLCDrawableView: View {
     let controller: VLCPlayerController
-    
+
     var body: some View {
         #if os(macOS)
         VLCMacDrawableView(controller: controller)
@@ -2127,7 +2226,7 @@ private struct KeyboardShortcutCaptureView: View {
     let onIncreaseSpeed: () -> Void
     let onVolumeDown: () -> Void
     let onVolumeUp: () -> Void
-    
+
     var body: some View {
         #if os(macOS)
         MacKeyboardCaptureView(
@@ -2158,19 +2257,19 @@ private struct KeyboardShortcutCaptureView: View {
 #if os(macOS)
 private struct VLCMacDrawableView: NSViewRepresentable {
     let controller: VLCPlayerController
-    
+
     final class Coordinator {
         let controller: VLCPlayerController
-        
+
         init(controller: VLCPlayerController) {
             self.controller = controller
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(controller: controller)
     }
-    
+
     func makeNSView(context: Context) -> VLCOutputNSView {
         let view = VLCOutputNSView(frame: .zero)
         view.wantsLayer = true
@@ -2181,14 +2280,14 @@ private struct VLCMacDrawableView: NSViewRepresentable {
         view.requestLifecycleUpdate()
         return view
     }
-    
+
     func updateNSView(_ nsView: VLCOutputNSView, context: Context) {
         nsView.onLifecycle = { container in
             context.coordinator.controller.attachDrawable(to: container)
         }
         nsView.requestLifecycleUpdate()
     }
-    
+
     static func dismantleNSView(_ nsView: VLCOutputNSView, coordinator: Coordinator) {
         nsView.onLifecycle = nil
         coordinator.controller.detachDrawable(from: nsView)
@@ -2197,7 +2296,7 @@ private struct VLCMacDrawableView: NSViewRepresentable {
 
 private final class VLCOutputNSView: NSView {
     var onLifecycle: ((NSView) -> Void)?
-    
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         requestLifecycleUpdate()
@@ -2207,12 +2306,12 @@ private final class VLCOutputNSView: NSView {
         super.viewDidMoveToSuperview()
         requestLifecycleUpdate()
     }
-    
+
     override func layout() {
         super.layout()
         requestLifecycleUpdate()
     }
-    
+
     func requestLifecycleUpdate() {
         onLifecycle?(self)
     }
@@ -2227,7 +2326,7 @@ private struct MacKeyboardCaptureView: NSViewRepresentable {
     let onIncreaseSpeed: () -> Void
     let onVolumeDown: () -> Void
     let onVolumeUp: () -> Void
-    
+
     func makeNSView(context: Context) -> MacKeyCaptureNSView {
         let view = MacKeyCaptureNSView(frame: .zero)
         applyCallbacks(to: view)
@@ -2236,14 +2335,14 @@ private struct MacKeyboardCaptureView: NSViewRepresentable {
         }
         return view
     }
-    
+
     func updateNSView(_ nsView: MacKeyCaptureNSView, context: Context) {
         applyCallbacks(to: nsView)
         DispatchQueue.main.async {
             nsView.activate()
         }
     }
-    
+
     private func applyCallbacks(to view: MacKeyCaptureNSView) {
         view.onLeft = onLeft
         view.onRight = onRight
@@ -2265,24 +2364,24 @@ private final class MacKeyCaptureNSView: NSView {
     var onIncreaseSpeed: (() -> Void)?
     var onVolumeDown: (() -> Void)?
     var onVolumeUp: (() -> Void)?
-    
+
     override var acceptsFirstResponder: Bool { true }
-    
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         activate()
     }
-    
+
     func activate() {
         window?.makeFirstResponder(self)
     }
-    
+
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.intersection([.command, .control, .option]).isEmpty == false {
             super.keyDown(with: event)
             return
         }
-        
+
         switch event.keyCode {
         case 123: // left
             onLeft?()
@@ -2302,7 +2401,7 @@ private final class MacKeyCaptureNSView: NSView {
         default:
             break
         }
-        
+
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         switch key {
         case "k":
@@ -2321,19 +2420,19 @@ private final class MacKeyCaptureNSView: NSView {
 #else
 private struct VLCIOSDrawableView: UIViewRepresentable {
     let controller: VLCPlayerController
-    
+
     final class Coordinator {
         let controller: VLCPlayerController
-        
+
         init(controller: VLCPlayerController) {
             self.controller = controller
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(controller: controller)
     }
-    
+
     func makeUIView(context: Context) -> VLCOutputUIView {
         let view = VLCOutputUIView(frame: .zero)
         view.backgroundColor = .black
@@ -2343,14 +2442,14 @@ private struct VLCIOSDrawableView: UIViewRepresentable {
         view.requestLifecycleUpdate()
         return view
     }
-    
+
     func updateUIView(_ uiView: VLCOutputUIView, context: Context) {
         uiView.onLifecycle = { container in
             context.coordinator.controller.attachDrawable(to: container)
         }
         uiView.requestLifecycleUpdate()
     }
-    
+
     static func dismantleUIView(_ uiView: VLCOutputUIView, coordinator: Coordinator) {
         uiView.onLifecycle = nil
         coordinator.controller.detachDrawable(from: uiView)
@@ -2359,7 +2458,7 @@ private struct VLCIOSDrawableView: UIViewRepresentable {
 
 private final class VLCOutputUIView: UIView {
     var onLifecycle: ((UIView) -> Void)?
-    
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         requestLifecycleUpdate()
@@ -2369,12 +2468,12 @@ private final class VLCOutputUIView: UIView {
         super.didMoveToSuperview()
         requestLifecycleUpdate()
     }
-    
+
     override func layoutSubviews() {
         super.layoutSubviews()
         requestLifecycleUpdate()
     }
-    
+
     func requestLifecycleUpdate() {
         onLifecycle?(self)
     }
@@ -2389,7 +2488,7 @@ private struct IOSKeyboardCaptureView: UIViewRepresentable {
     let onIncreaseSpeed: () -> Void
     let onVolumeDown: () -> Void
     let onVolumeUp: () -> Void
-    
+
     func makeUIView(context: Context) -> IOSKeyCaptureView {
         let view = IOSKeyCaptureView(frame: .zero)
         applyCallbacks(to: view)
@@ -2398,14 +2497,14 @@ private struct IOSKeyboardCaptureView: UIViewRepresentable {
         }
         return view
     }
-    
+
     func updateUIView(_ uiView: IOSKeyCaptureView, context: Context) {
         applyCallbacks(to: uiView)
         DispatchQueue.main.async {
             uiView.activate()
         }
     }
-    
+
     private func applyCallbacks(to view: IOSKeyCaptureView) {
         view.onLeft = onLeft
         view.onRight = onRight
@@ -2427,9 +2526,9 @@ private final class IOSKeyCaptureView: UIView {
     var onIncreaseSpeed: (() -> Void)?
     var onVolumeDown: (() -> Void)?
     var onVolumeUp: (() -> Void)?
-    
+
     override var canBecomeFirstResponder: Bool { true }
-    
+
     override var keyCommands: [UIKeyCommand]? {
         [
             UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(handleLeft)),
@@ -2443,36 +2542,36 @@ private final class IOSKeyCaptureView: UIView {
             UIKeyCommand(input: "]", modifierFlags: [], action: #selector(handleIncreaseSpeed))
         ]
     }
-    
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         activate()
     }
-    
+
     func activate() {
         becomeFirstResponder()
     }
-    
+
     @objc private func handleLeft() {
         onLeft?()
     }
-    
+
     @objc private func handleRight() {
         onRight?()
     }
-    
+
     @objc private func handleTogglePlayPause() {
         onTogglePlayPause?()
     }
-    
+
     @objc private func handleToggleFullScreen() {
         onToggleFullScreen?()
     }
-    
+
     @objc private func handleDecreaseSpeed() {
         onDecreaseSpeed?()
     }
-    
+
     @objc private func handleIncreaseSpeed() {
         onIncreaseSpeed?()
     }
@@ -2501,7 +2600,7 @@ struct VLCVodPlayerView: View {
     var onToggleFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
-    
+
     var body: some View {
         AVPlayerContentView(
             urlString: urlString,
@@ -2519,7 +2618,7 @@ struct VLCLivePlayerView: View {
     let urlString: String
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
-    
+
     var body: some View {
         Color.black
     }

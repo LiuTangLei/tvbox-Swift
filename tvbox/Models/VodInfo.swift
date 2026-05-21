@@ -24,17 +24,17 @@ struct VodInfo: Codable, Identifiable {
     var des: String = ""
     /// 来源站点 key。
     var sourceKey: String = ""
-    
+
     /// 播放来源（线路）列表
     var playFlags: [String] = []
     /// key: flag名称, value: 剧集列表
     var playUrlMap: [String: [Episode]] = [:]
-    
+
     /// 当前选中线路。
     var playFlag: String = ""
     /// 当前播放剧集索引。
     var playIndex: Int = 0
-    
+
     /// 单集信息
     struct Episode: Codable, Identifiable, Hashable {
         var id: String { name }
@@ -42,15 +42,26 @@ struct VodInfo: Codable, Identifiable {
         let name: String
         /// 集播放地址。
         let url: String
-        
+
         init(name: String, url: String) {
             self.name = name
             self.url = url
         }
     }
-    
+
+    /// Android Result 在 JSON 里已经展开的线路与剧集结构。
+    struct FlagGroup {
+        let name: String
+        let episodes: [Episode]
+    }
+
     /// 从 Movie.Video 和详情数据构建
-    static func from(video: Movie.Video, playFrom: String, playUrl: String) -> VodInfo {
+    static func from(
+        video: Movie.Video,
+        playFrom: String,
+        playUrl: String,
+        flagGroups: [FlagGroup] = []
+    ) -> VodInfo {
         var info = VodInfo(id: video.id)
         info.name = video.name
         info.pic = video.pic
@@ -62,13 +73,25 @@ struct VodInfo: Codable, Identifiable {
         info.actor = video.actor
         info.des = video.des.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         info.sourceKey = video.sourceKey
-        
+
+        let structuredGroups = flagGroups.filter {
+            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !$0.episodes.isEmpty
+        }
+        if !structuredGroups.isEmpty {
+            info.playFlags = structuredGroups.map(\.name)
+            for group in structuredGroups {
+                info.playUrlMap[group.name] = group.episodes
+            }
+            info.playFlag = structuredGroups[0].name
+            return info
+        }
+
         // 解析播放列表：
         // playFrom 格式: "线路1$$$线路2$$$线路3"
         // playUrl  格式: "第1集$url1#第2集$url2$$$第1集$url3#第2集$url4"
         let flags = playFrom.components(separatedBy: "$$$").filter { !$0.isEmpty }
         let urls = playUrl.components(separatedBy: "$$$")
-        
+
         info.playFlags = flags
         for (i, flag) in flags.enumerated() {
             if i < urls.count {
@@ -80,19 +103,19 @@ struct VodInfo: Codable, Identifiable {
                 info.playUrlMap[flag] = episodes
             }
         }
-        
+
         if let first = flags.first {
             info.playFlag = first
         }
-        
+
         return info
     }
-    
+
     /// 当前线路下的剧集。
     var currentEpisodes: [Episode] {
         playUrlMap[playFlag] ?? []
     }
-    
+
     /// 当前线路 + 当前索引对应的剧集对象。
     var currentEpisode: Episode? {
         let eps = currentEpisodes

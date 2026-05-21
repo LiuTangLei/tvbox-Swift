@@ -4,7 +4,7 @@ import Foundation
 struct SourceBean: Codable, Identifiable, Hashable {
     /// 以源 key 作为稳定标识。
     var id: String { key }
-    
+
     /// 源唯一键。
     let key: String
     /// 源显示名。
@@ -23,9 +23,9 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let type: Int
     /// 扩展参数（remote 源常用）。
     let ext: String?
-    /// type=3 站点级 jar；为空时应使用配置顶层 spider fallback。
+    /// type=3 站点级 jar；非 type=3 源不应携带配置顶层 spider fallback。
     let jar: String?
-    
+
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
             playerType: Int = 0, type: Int = 1, ext: String? = nil, jar: String? = nil) {
@@ -38,24 +38,24 @@ struct SourceBean: Codable, Identifiable, Hashable {
         self.playerType = playerType
         self.type = type
         self.ext = ext
-        self.jar = jar
+        self.jar = type == 3 ? jar : nil
     }
-    
+
     var isSearchable: Bool { searchable == 1 }
     var isFilterable: Bool { filterable == 1 }
     var isQuickSearchEnabled: Bool { quickSearch == 1 }
-    
+
     /// 是否由 Swift 本地直接支持；type=3 需要 Bridge Server。
     var isSupportedInSwift: Bool {
         return type == 0 || type == 1 || type == 4
     }
-    
+
     var requiresBridge: Bool { type == 3 }
-    
-    var isPlayableWithBridge: Bool {
+
+    var isAvailableForPlayback: Bool {
         isSupportedInSwift || (requiresBridge && BridgeClient.shared.isEnabled)
     }
-    
+
     /// 类型描述
     var typeDescription: String {
         switch type {
@@ -66,7 +66,7 @@ struct SourceBean: Codable, Identifiable, Hashable {
         default: return "未知"
         }
     }
-    
+
     /// api 字段是否为有效 HTTP URL
     var isHttpApi: Bool {
         return api.hasPrefix("http://") || api.hasPrefix("https://")
