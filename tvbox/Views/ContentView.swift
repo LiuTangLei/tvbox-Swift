@@ -306,14 +306,15 @@ struct ContentView: View {
                         )
                         
                         // 历史记录
-                        if !settingsVM.apiHistory.isEmpty {
+                        let configHistory = settingsVM.addressHistory(for: .config)
+                        if !configHistory.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("最近使用")
                                     .font(.caption)
                                     .foregroundColor(.white.opacity(0.5))
                                     .padding(.horizontal, 4)
                                 
-                                ForEach(settingsVM.apiHistory.prefix(3), id: \.self) { url in
+                                ForEach(configHistory.prefix(3), id: \.self) { url in
                                     Button {
                                         switch setupInputTarget {
                                         case .vod:

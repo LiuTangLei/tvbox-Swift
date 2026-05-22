@@ -2,10 +2,14 @@
 
 ## Current State
 
-- `HeadlessServerService` is shared by the Android mobile and leanback flavors. Each `HomeActivity` starts it after the app is opened.
-- The service starts Nano/Bridge as a foreground service and declares the Android foreground-service type `dataSync`.
-- Leanback has a boot receiver today. Mobile currently starts the service after the user opens the app.
-- Some Bridge work is HTTP-only, but Jar UI and detail-UI fallback paths still need a foreground Android `Activity` or bring the host app back to the front.
+- `TVBridge` now has its own `BridgeServerService` host in addition to the shared Android app `HeadlessServerService` path.
+- `BridgeServerService` starts Nano/Bridge as a `connectedDevice` foreground service, keeps a persistent notification, and holds partial CPU, Wi-Fi high-performance, and multicast locks while running.
+- The service registers screen, unlock, power, and network callbacks; screen-off handling rechecks the server and reschedules the watchdog without launching UI.
+- A watchdog alarm uses `setAndAllowWhileIdle()` to recheck the service roughly every 9 minutes, and an earlier 1-minute recheck is scheduled after task removal or unexpected service destruction.
+- Boot, package replace, unlock, and common quick-boot broadcasts request service startup.
+- `BridgeActivity` exposes user-visible entries for notification permission, all-files access, battery optimization allowlist, app settings, and common vendor autostart/background settings.
+- Some Bridge work is HTTP-only, but Jar UI and detail-UI fallback paths still need a foreground Android `Activity` or a visible/operable Android host surface.
+- A previous 1-pixel Activity keep-alive experiment was removed from the default path after Huawei `ZRHungService` force-stopped the whole package when `BridgeKeepAliveActivity` appeared during screen-off. On Huawei/Honor, background UI tricks are more dangerous than a recoverable service stop.
 
 ## Feasibility
 
@@ -22,9 +26,16 @@ It is not safe to promise "all functions" in every background state:
 ## Follow-Up Direction
 
 1. Keep the normal development default on the mobile flavor and retain leanback smoke coverage.
-2. Add an explicit server status surface and a user-visible server start/stop affordance if Android becomes a regular Bridge appliance.
-3. Decide whether production long-running serving remains `dataSync`, moves to a more appropriate foreground-service declaration, or uses an Android runtime that stays actively hosted by another deployment layer.
-4. Test three levels separately: app sent Home, screen locked shortly after start, and long idle/Doze behavior on a physical phone.
+2. Add an explicit diagnostics surface: foreground service state, battery allowlist state, notification permission, lock state, network type, watchdog schedule, current port, and recent Bridge errors.
+3. Test four levels separately: app sent Home, screen locked shortly after start, long idle/Doze behavior, and vendor-specific background cleanup on a physical phone.
+4. If TVBridge becomes a production Bridge appliance, prefer a controlled always-powered Android runtime or emulator appliance over relying on an unplugged phone.
+
+## Huawei / Honor Notes
+
+- Huawei `ZRHungService`, PowerGenie, System Manager, and related App Launch policies can force-stop an app instead of merely killing its process. Once force-stopped, ordinary receivers, alarms, and foreground-service restarts do not run until the user opens the app again.
+- Do not start a keep-alive Activity from `ACTION_SCREEN_OFF` on Huawei/Honor. Android background-activity-launch rules already classify this as restricted behavior, and Huawei firmware may escalate it to a package force-stop.
+- Required manual settings to test on Huawei/Honor: Battery > App launch > TVBridge > Manage manually, enable Auto-launch / Secondary launch / Run in background; Battery optimization > TVBridge > Don't allow optimization; System Manager smart tune-up/background cleanup disabled for TVBridge when available.
+- If the device still uses PowerGenie-style killing and the app is not on Huawei's whitelist, there may be no app-side API that guarantees persistence. The practical options are an always-powered Android box/emulator appliance, MDM/device-owner provisioning, or user-side ADB removal/disablement of vendor task killers on a test device.
 
 ## VPS Appliance Option
 

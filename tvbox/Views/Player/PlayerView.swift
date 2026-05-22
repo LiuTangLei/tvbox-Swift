@@ -97,6 +97,8 @@ private struct MacOSPlayerView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.cgColor
         view.controlsStyle = .none
         view.showsFullScreenToggleButton = false
         view.videoGravity = .resizeAspect
@@ -105,6 +107,7 @@ private struct MacOSPlayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.layer?.backgroundColor = NSColor.black.cgColor
         if nsView.player !== player {
             nsView.player = player
         }
@@ -385,6 +388,8 @@ struct AVPlayerContentView: View {
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
     }
 
     private func setupPlayer() {

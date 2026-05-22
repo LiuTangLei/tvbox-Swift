@@ -1,5 +1,6 @@
 import SwiftUI
 import Darwin
+import QuartzCore
 
 #if canImport(VLCKitSPM)
 import VLCKitSPM
@@ -24,11 +25,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         "--audio-time-stretch",
         "--no-video-title-show",
         "--sub-autodetect-file",
-        "--sub-autodetect-fuzzy=3",
-        // Keep letterbox padding in VLC's subtitle layout area so subtitle margin can reach it.
-        "--video-filter=canvas",
-        "--canvas-width=1920",
-        "--canvas-height=1080"
+        "--sub-autodetect-fuzzy=3"
     ]
     private static let playerInstanceSelector = NSSelectorFromString("playerInstance")
     private static let libVLCStopAsync: LibVLCStopAsyncFunction? = {
@@ -199,8 +196,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         #if os(macOS)
         persistentDrawableView.wantsLayer = true
         persistentDrawableView.layer?.backgroundColor = NSColor.black.cgColor
+        persistentDrawableView.autoresizingMask = [.width, .height]
         #else
         persistentDrawableView.backgroundColor = .black
+        persistentDrawableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         #endif
     }
 
@@ -289,7 +288,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "subsdec-encoding": "UTF-8",
             "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ]
-        if isLive || !targetIsBridgeProxy {
+        // MP4 VOD commonly keeps its moov index at the tail. Let VLC range-seek
+        // for it instead of forcing the HTTP input into a sequential stream.
+        if isLive {
             mediaOptions["http-continuous"] = 1
         }
         if !isLive {
@@ -428,6 +429,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     #if os(macOS)
     func attachDrawable(to container: NSView) {
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.black.cgColor
         let containerIdentifier = ObjectIdentifier(container)
         let containerSize = container.bounds.size
         let containerChanged = lastDrawableContainerIdentifier != containerIdentifier
@@ -440,16 +443,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
         if persistentDrawableView.superview !== container {
             persistentDrawableView.removeFromSuperview()
-            persistentDrawableView.translatesAutoresizingMaskIntoConstraints = false
+            persistentDrawableView.translatesAutoresizingMaskIntoConstraints = true
             container.addSubview(persistentDrawableView)
-            NSLayoutConstraint.activate([
-                persistentDrawableView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                persistentDrawableView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                persistentDrawableView.topAnchor.constraint(equalTo: container.topAnchor),
-                persistentDrawableView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-            ])
-            container.layoutSubtreeIfNeeded()
         }
+        layoutDrawable(in: container)
 
         guard shouldRebind else { return }
 
@@ -470,8 +467,18 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             persistentDrawableView.removeFromSuperview()
         }
     }
+
+    func forceDrawableRefresh() {
+        guard let container = lastAttachedContainer else { return }
+        layoutDrawable(in: container)
+        cancelScheduledRebinds()
+        refreshDrawableBinding()
+        scheduleDelayedDrawableRebind(for: container)
+        resumePlaybackAfterDrawableRebindIfNeeded()
+    }
     #else
     func attachDrawable(to container: UIView) {
+        container.backgroundColor = .black
         let containerIdentifier = ObjectIdentifier(container)
         let containerSize = container.bounds.size
         let containerChanged = lastDrawableContainerIdentifier != containerIdentifier
@@ -484,16 +491,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
         if persistentDrawableView.superview !== container {
             persistentDrawableView.removeFromSuperview()
-            persistentDrawableView.translatesAutoresizingMaskIntoConstraints = false
+            persistentDrawableView.translatesAutoresizingMaskIntoConstraints = true
             container.addSubview(persistentDrawableView)
-            NSLayoutConstraint.activate([
-                persistentDrawableView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                persistentDrawableView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                persistentDrawableView.topAnchor.constraint(equalTo: container.topAnchor),
-                persistentDrawableView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-            ])
-            container.layoutIfNeeded()
         }
+        layoutDrawable(in: container)
 
         guard shouldRebind else { return }
 
@@ -513,6 +514,32 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if persistentDrawableView.superview === container {
             persistentDrawableView.removeFromSuperview()
         }
+    }
+
+    func forceDrawableRefresh() {
+        guard let container = lastAttachedContainer else { return }
+        layoutDrawable(in: container)
+        mediaPlayer.drawable = persistentDrawableView
+    }
+    #endif
+
+    #if os(macOS)
+    private func layoutDrawable(in container: NSView) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        persistentDrawableView.frame = container.bounds
+        persistentDrawableView.layer?.backgroundColor = NSColor.black.cgColor
+        persistentDrawableView.needsLayout = true
+        CATransaction.commit()
+    }
+    #else
+    private func layoutDrawable(in container: UIView) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        persistentDrawableView.frame = container.bounds
+        persistentDrawableView.backgroundColor = .black
+        persistentDrawableView.setNeedsLayout()
+        CATransaction.commit()
     }
     #endif
 
@@ -677,6 +704,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 guard let self, let container else { return }
                 guard self.lastAttachedContainer === container else { return }
                 guard self.persistentDrawableView.superview === container else { return }
+                self.layoutDrawable(in: container)
                 self.refreshDrawableBinding()
                 self.resumePlaybackAfterDrawableRebindIfNeeded()
             }
@@ -691,6 +719,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 guard let self, let container else { return }
                 guard self.lastAttachedContainer === container else { return }
                 guard self.persistentDrawableView.superview === container else { return }
+                self.layoutDrawable(in: container)
                 self.refreshDrawableBinding()
                 self.resumePlaybackAfterDrawableRebindIfNeeded()
             }
@@ -1311,6 +1340,8 @@ struct VLCVodPlayerView: View {
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
     }
 
     private func wakeUpControls() {

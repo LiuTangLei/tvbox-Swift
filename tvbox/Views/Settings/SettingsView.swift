@@ -2,10 +2,12 @@ import SwiftUI
 
 /// 设置页 - 对应 Android 版 SettingActivity + ModelSettingFragment
 struct SettingsView: View {
-    enum ApiInputType {
+    enum ApiInputType: String, Identifiable {
         case vod
         case live
         case bridge
+
+        var id: String { rawValue }
 
         var title: String {
             switch self {
@@ -27,8 +29,7 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
     @StateObject private var apiConfig = ApiConfig.shared
     @EnvironmentObject var appState: AppState
-    @State private var showApiInput = false
-    @State private var editingApiType: ApiInputType = .vod
+    @State private var activeApiInputType: ApiInputType?
     @State private var showAbout = false
     @State private var sourceSearchText = ""
     @State private var showingPicker: PickerType = .none
@@ -53,8 +54,7 @@ struct SettingsView: View {
                             title: "点播接口地址",
                             value: viewModel.vodApiUrl.isEmpty ? "未配置" : viewModel.vodApiUrl
                         ) {
-                            editingApiType = .vod
-                            showApiInput = true
+                            activeApiInputType = .vod
                         }
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(
@@ -62,8 +62,7 @@ struct SettingsView: View {
                             title: "直播接口地址",
                             value: viewModel.liveApiUrl.isEmpty ? "跟随点播接口" : viewModel.liveApiUrl
                         ) {
-                            editingApiType = .live
-                            showApiInput = true
+                            activeApiInputType = .live
                         }
                         Divider().background(Color.white.opacity(0.1))
                         if !apiConfig.sourceBeanList.isEmpty {
@@ -97,8 +96,7 @@ struct SettingsView: View {
                             title: "Bridge Server",
                             value: viewModel.bridgeServerUrl.isEmpty ? viewModel.bridgeStatusText : viewModel.bridgeStatusText
                         ) {
-                            editingApiType = .bridge
-                            showApiInput = true
+                            activeApiInputType = .bridge
                         }
                     }
 
@@ -174,8 +172,8 @@ struct SettingsView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             #endif
-            .sheet(isPresented: $showApiInput) {
-                apiInputSheet
+            .sheet(item: $activeApiInputType) { inputType in
+                apiInputSheet(for: inputType)
             }
         }
         .overlay(pickerOverlay)
@@ -258,13 +256,13 @@ struct SettingsView: View {
 
     // MARK: - API 输入弹窗
 
-    private var apiInputSheet: some View {
+    private func apiInputSheet(for inputType: ApiInputType) -> some View {
         NavigationStack {
             VStack(spacing: 16) {
                 HStack {
                     Image(systemName: "link")
                         .foregroundColor(.secondary)
-                    TextField(editingApiType.placeholder, text: currentApiBinding)
+                    TextField(inputType.placeholder, text: currentApiBinding(for: inputType))
                         .textFieldStyle(.plain)
                         #if os(iOS)
                         .autocapitalization(.none)
@@ -279,7 +277,7 @@ struct SettingsView: View {
                 HStack {
                     Button {
                         if let text = readPasteboardText() {
-                            currentApiBinding.wrappedValue = text
+                            currentApiBinding(for: inputType).wrappedValue = text
                         }
                     } label: {
                         Label("粘贴", systemImage: "doc.on.clipboard")
@@ -290,16 +288,16 @@ struct SettingsView: View {
                 }
 
                 // 历史记录
-                if !viewModel.apiHistory.isEmpty {
+                if !history(for: inputType).isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("历史记录")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
-                        ForEach(viewModel.apiHistory, id: \.self) { url in
+                        ForEach(history(for: inputType), id: \.self) { url in
                             HStack {
                                 Button {
-                                    currentApiBinding.wrappedValue = url
+                                    currentApiBinding(for: inputType).wrappedValue = url
                                 } label: {
                                     HStack {
                                         Image(systemName: "clock")
@@ -314,7 +312,7 @@ struct SettingsView: View {
                                 Spacer()
 
                                 Button {
-                                    viewModel.removeApiHistory(url)
+                                    viewModel.removeAddressHistory(url, kind: historyKind(for: inputType))
                                 } label: {
                                     Image(systemName: "xmark.circle")
                                         .font(.caption)
@@ -334,25 +332,25 @@ struct SettingsView: View {
                 Spacer()
             }
             .padding()
-            .navigationTitle(editingApiType.title)
+            .navigationTitle(inputType.title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showApiInput = false }
+                    Button("取消") { activeApiInputType = nil }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task {
-                            if editingApiType == .bridge {
+                            if inputType == .bridge {
                                 await viewModel.saveBridgeSettingsAndTest()
-                                showApiInput = false
+                                activeApiInputType = nil
                             } else {
                                 await viewModel.loadConfig()
                                 if viewModel.configSuccess {
                                     appState.applyLoadedConfigState()
-                                    showApiInput = false
+                                    activeApiInputType = nil
                                 }
                             }
                         }
@@ -366,7 +364,7 @@ struct SettingsView: View {
                     .disabled(
                         viewModel.isLoadingConfig
                         || viewModel.isTestingBridge
-                        || (editingApiType != .bridge && viewModel.vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        || (inputType != .bridge && viewModel.vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     )
                 }
             }
@@ -391,7 +389,7 @@ struct SettingsView: View {
                         await viewModel.selectPendingMultiRepoOption(option)
                         if viewModel.configSuccess {
                             appState.applyLoadedConfigState()
-                            showApiInput = false
+                            activeApiInputType = nil
                         }
                     }
                 },
@@ -402,8 +400,8 @@ struct SettingsView: View {
         }
     }
 
-    private var currentApiBinding: Binding<String> {
-        switch editingApiType {
+    private func currentApiBinding(for inputType: ApiInputType) -> Binding<String> {
+        switch inputType {
         case .vod:
             return $viewModel.vodApiUrl
         case .live:
@@ -411,6 +409,19 @@ struct SettingsView: View {
         case .bridge:
             return $viewModel.bridgeServerUrl
         }
+    }
+
+    private func historyKind(for inputType: ApiInputType) -> SettingsViewModel.AddressHistoryKind {
+        switch inputType {
+        case .bridge:
+            return .bridge
+        case .vod, .live:
+            return .config
+        }
+    }
+
+    private func history(for inputType: ApiInputType) -> [String] {
+        viewModel.addressHistory(for: historyKind(for: inputType))
     }
 
     private func readPasteboardText() -> String? {

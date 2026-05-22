@@ -4,6 +4,20 @@ import SwiftUI
 /// 设置 ViewModel
 @MainActor
 class SettingsViewModel: ObservableObject {
+    enum AddressHistoryKind {
+        case config
+        case bridge
+
+        var defaultsKey: String {
+            switch self {
+            case .config:
+                return HawkConfig.CONFIG_API_HISTORY
+            case .bridge:
+                return HawkConfig.BRIDGE_SERVER_HISTORY
+            }
+        }
+    }
+
     /// 当输入地址是“多仓库入口”时，先弹出候选仓库供用户确认。
     struct PendingMultiRepoSelection: Identifiable {
         /// 当前待选择的是点播仓库还是直播仓库。
@@ -40,8 +54,10 @@ class SettingsViewModel: ObservableObject {
     @Published var configSuccess = false
     /// 多仓库待选状态，为 nil 表示无需弹窗。
     @Published var pendingMultiRepoSelection: PendingMultiRepoSelection?
-    /// 最近输入过的 API 历史。
-    @Published var apiHistory: [String] = []
+    /// 最近输入过的配置地址历史。
+    @Published private(set) var configApiHistory: [String] = []
+    /// 最近输入过的 Bridge 地址历史。
+    @Published private(set) var bridgeServerHistory: [String] = []
     /// 点播播放器内核选择。
     @Published var vodPlayerEngine: PlayerEngine = .system
     /// 直播播放器内核选择。
@@ -85,7 +101,7 @@ class SettingsViewModel: ObservableObject {
         } else {
             liveApiUrl = savedVod
         }
-        loadApiHistory()
+        loadAddressHistories()
         let hasLegacyPlayer = defaults.object(forKey: HawkConfig.PLAY_TYPE) != nil
         let legacyPlayerRaw = defaults.integer(forKey: HawkConfig.PLAY_TYPE)
         let defaultVodRaw = PlayerEngine.defaultVodEngine.rawValue
@@ -149,8 +165,10 @@ class SettingsViewModel: ObservableObject {
             UserDefaults.standard.set(trimmedLive, forKey: HawkConfig.LIVE_API_URL)
             vodApiUrl = trimmedVod
             liveApiUrl = trimmedLive
-            addToApiHistory(trimmedVod)
-            addToApiHistory(resolvedLive)
+            addToAddressHistory(trimmedVod, kind: .config)
+            if !trimmedLive.isEmpty {
+                addToAddressHistory(trimmedLive, kind: .config)
+            }
             configSuccess = true
         } catch {
             configError = error.localizedDescription
@@ -225,27 +243,65 @@ class SettingsViewModel: ObservableObject {
         return nil
     }
 
-    // MARK: - API 历史
+    // MARK: - 地址历史
 
-    /// 读取 API 历史。
-    private func loadApiHistory() {
-        apiHistory = UserDefaults.standard.stringArray(forKey: "api_history") ?? []
+    func addressHistory(for kind: AddressHistoryKind) -> [String] {
+        switch kind {
+        case .config:
+            return configApiHistory
+        case .bridge:
+            return bridgeServerHistory
+        }
+    }
+
+    /// 读取各类地址历史；老版本统一历史默认迁移到配置地址历史。
+    private func loadAddressHistories() {
+        let defaults = UserDefaults.standard
+
+        if defaults.object(forKey: HawkConfig.CONFIG_API_HISTORY) != nil {
+            configApiHistory = defaults.stringArray(forKey: HawkConfig.CONFIG_API_HISTORY) ?? []
+        } else {
+            let legacyHistory = defaults.stringArray(forKey: "api_history") ?? []
+            configApiHistory = legacyHistory
+            defaults.set(legacyHistory, forKey: HawkConfig.CONFIG_API_HISTORY)
+        }
+
+        bridgeServerHistory = defaults.stringArray(forKey: HawkConfig.BRIDGE_SERVER_HISTORY) ?? []
     }
 
     /// 新增历史并去重，最多保留 10 条。
-    private func addToApiHistory(_ url: String) {
-        apiHistory.removeAll { $0 == url }
-        apiHistory.insert(url, at: 0)
-        if apiHistory.count > 10 {
-            apiHistory = Array(apiHistory.prefix(10))
+    private func addToAddressHistory(_ url: String, kind: AddressHistoryKind) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        switch kind {
+        case .config:
+            configApiHistory.removeAll { $0 == trimmed }
+            configApiHistory.insert(trimmed, at: 0)
+            if configApiHistory.count > 10 {
+                configApiHistory = Array(configApiHistory.prefix(10))
+            }
+            UserDefaults.standard.set(configApiHistory, forKey: kind.defaultsKey)
+        case .bridge:
+            bridgeServerHistory.removeAll { $0 == trimmed }
+            bridgeServerHistory.insert(trimmed, at: 0)
+            if bridgeServerHistory.count > 10 {
+                bridgeServerHistory = Array(bridgeServerHistory.prefix(10))
+            }
+            UserDefaults.standard.set(bridgeServerHistory, forKey: kind.defaultsKey)
         }
-        UserDefaults.standard.set(apiHistory, forKey: "api_history")
     }
 
-    /// 删除单条 API 历史。
-    func removeApiHistory(_ url: String) {
-        apiHistory.removeAll { $0 == url }
-        UserDefaults.standard.set(apiHistory, forKey: "api_history")
+    /// 删除单条地址历史。
+    func removeAddressHistory(_ url: String, kind: AddressHistoryKind) {
+        switch kind {
+        case .config:
+            configApiHistory.removeAll { $0 == url }
+            UserDefaults.standard.set(configApiHistory, forKey: kind.defaultsKey)
+        case .bridge:
+            bridgeServerHistory.removeAll { $0 == url }
+            UserDefaults.standard.set(bridgeServerHistory, forKey: kind.defaultsKey)
+        }
     }
 
     /// 清除所有缓存
@@ -275,6 +331,7 @@ class SettingsViewModel: ObservableObject {
         bridgeServerUrl = trimmed
         UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
         UserDefaults.standard.set(bridgeEnabled, forKey: HawkConfig.BRIDGE_ENABLED)
+        addToAddressHistory(trimmed, kind: .bridge)
         notifyBridgeAvailabilityChanged()
         guard bridgeEnabled, !trimmed.isEmpty else {
             bridgeStatusText = bridgeEnabled ? "未配置" : "已停用"

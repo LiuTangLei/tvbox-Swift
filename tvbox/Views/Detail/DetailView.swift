@@ -44,6 +44,7 @@ struct DetailView: View {
                         vlcController: sharedVLCController
                     )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
+                        .frame(maxWidth: .infinity)
                         .aspectRatio(16/9, contentMode: .fit)
                         .background(Color.black)
                         .onTapGesture(count: 2) {
@@ -145,6 +146,7 @@ struct DetailView: View {
                 showFullScreen = false
             }
             appState.exitPlayerFullScreen()
+            refreshMacDrawableAfterFullScreenExit()
         }
         #endif
         #if os(iOS)
@@ -193,6 +195,27 @@ struct DetailView: View {
                     },
                     onSubmit: { values in
                         Task { await viewModel.submitBridgeToken(values: values) }
+                    }
+                )
+            }
+        }
+        .sheet(
+            isPresented: $viewModel.isBridgeJarUiPresented,
+            onDismiss: { viewModel.dismissPlaybackBridgeJarUiPresentation() }
+        ) {
+            if let response = viewModel.bridgeJarUiResponse {
+                BridgeJarUiSheet(
+                    title: viewModel.bridgeJarUiTitle,
+                    initialResponse: response,
+                    onPoll: {
+                        try await viewModel.pollPlaybackBridgeJarUi()
+                    },
+                    onAction: { action in
+                        try await viewModel.sendPlaybackBridgeJarUiAction(action)
+                    },
+                    onCancel: viewModel.cancelPlaybackBridgeJarUi,
+                    onComplete: {
+                        await viewModel.closePlaybackBridgeJarUi()
                     }
                 )
             }
@@ -715,6 +738,15 @@ struct DetailView: View {
         }
         showFullScreen = false
         appState.exitPlayerFullScreen()
+        refreshMacDrawableAfterFullScreenExit()
+    }
+
+    private func refreshMacDrawableAfterFullScreenExit() {
+        [0.0, 0.12, 0.35].forEach { delay in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                sharedVLCController.forceDrawableRefresh()
+            }
+        }
     }
     #endif
 }
@@ -1243,8 +1275,8 @@ struct BridgeJarUiSheet: View {
                     .gesture(
                         DragGesture(minimumDistance: 0).onEnded { value in
                             guard layout.scale > 0 else { return }
-                            let x = Double(value.location.x / layout.scale)
-                            let y = Double(value.location.y / layout.scale)
+                            let x = Double((value.location.x - layout.offsetX) / layout.scale)
+                            let y = Double((value.location.y - layout.offsetY) / layout.scale)
                             guard x >= 0, y >= 0, x <= canvasWidth, y <= canvasHeight else { return }
                             Task { await send(.click(x: x, y: y)) }
                         }
@@ -1582,6 +1614,8 @@ struct FullScreenPlayerView: View {
                 systemController: systemController,
                 vlcController: vlcController
             )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
                 .ignoresSafeArea()
             
             VStack {

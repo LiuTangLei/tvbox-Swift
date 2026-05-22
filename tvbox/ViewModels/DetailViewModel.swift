@@ -58,6 +58,12 @@ class DetailViewModel: ObservableObject {
     @Published var isSubmittingBridgeToken = false
     /// Bridge Token 提交错误。
     @Published var bridgeTokenErrorMessage: String?
+    /// 直接从播放解析返回的 Android Jar UI 快照。
+    @Published var bridgeJarUiResponse: BridgeJarUiResponse?
+    /// 是否展示播放路径的 Android Jar UI 桥接窗口。
+    @Published var isBridgeJarUiPresented = false
+    /// 播放路径 Android Jar UI 标题。
+    @Published var bridgeJarUiTitle = "Android Jar 弹窗"
     /// 播放器高频回调进度，不直接绑定 UI，避免高频刷新引发性能问题。
     private var realtimeProgressSeconds: Double = 0
     
@@ -295,6 +301,8 @@ class DetailViewModel: ObservableObject {
         playUrl = nil
         bridgeTokenPrompt = nil
         isBridgeTokenPromptPresented = false
+        bridgeJarUiResponse = nil
+        isBridgeJarUiPresented = false
         bridgeTokenErrorMessage = nil
         errorMessage = nil
         detailPlaybackLogger.info("bridge play start source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
@@ -330,6 +338,21 @@ class DetailViewModel: ObservableObject {
                     errorMessage = nil
                     bridgeTokenPrompt = prompt
                     isBridgeTokenPromptPresented = true
+                    return
+                }
+                if case BridgeError.jarUiRequired(let response) = error {
+                    detailPlaybackLogger.info("bridge jar ui required source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
+                    pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
+                    isPlaying = false
+                    playUrl = nil
+                    bridgePlaybackMessage = response.message ?? "请在 macOS 上操作 Android Jar 弹窗"
+                    bridgeTokenErrorMessage = nil
+                    errorMessage = nil
+                    bridgeTokenPrompt = nil
+                    isBridgeTokenPromptPresented = false
+                    bridgeJarUiTitle = "Android Jar 弹窗"
+                    bridgeJarUiResponse = response
+                    isBridgeJarUiPresented = true
                     return
                 }
                 detailPlaybackLogger.error("bridge play failed source=\(source.key, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
@@ -408,6 +431,43 @@ class DetailViewModel: ObservableObject {
     func sendBridgeJarUiAction(_ action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
         guard let pending = pendingBridgePlayback, let prompt = bridgeTokenPrompt else { throw BridgeError.notConfigured }
         return try await BridgeClient.shared.jarUiAction(source: pending.source, prompt: prompt, action: action)
+    }
+
+    func pollPlaybackBridgeJarUi() async throws -> BridgeJarUiStatusResponse {
+        guard let pending = pendingBridgePlayback else { throw BridgeError.notConfigured }
+        return try await BridgeClient.shared.jarUiStatus(source: pending.source)
+    }
+
+    func sendPlaybackBridgeJarUiAction(_ action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
+        guard let pending = pendingBridgePlayback else { throw BridgeError.notConfigured }
+        return try await BridgeClient.shared.jarUiAction(source: pending.source, action: action)
+    }
+
+    func cancelPlaybackBridgeJarUi() {
+        Task { await closePlaybackBridgeJarUi(retryPlayback: false) }
+    }
+
+    func dismissPlaybackBridgeJarUiPresentation() {
+        bridgeJarUiResponse = nil
+        isBridgeJarUiPresented = false
+    }
+
+    func closePlaybackBridgeJarUi(retryPlayback: Bool = true) async {
+        guard let pending = pendingBridgePlayback else {
+            dismissPlaybackBridgeJarUiPresentation()
+            return
+        }
+        do {
+            try await BridgeClient.shared.closeJarUi(source: pending.source)
+        } catch {
+            bridgeTokenErrorMessage = error.localizedDescription
+        }
+        bridgeJarUiResponse = nil
+        isBridgeJarUiPresented = false
+        bridgePlaybackMessage = nil
+        if retryPlayback {
+            startPlayback(episodeURL: pending.episodeURL, flag: pending.flag)
+        }
     }
     
     /// 重置清晰度解析与选择状态。

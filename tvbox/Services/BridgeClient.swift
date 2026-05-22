@@ -33,6 +33,15 @@ struct BridgePlayResponse: Decodable {
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
+    let image: String?
+    let width: Double?
+    let height: Double?
+    let elements: [BridgeUiElement]?
+    let toast: BridgeTransientOverlay?
+
+    var containsJarUiSnapshot: Bool {
+        mode == "androidJarUi" || image?.isEmpty == false || elements?.isEmpty == false
+    }
 }
 
 struct BridgeActionResponse: Decodable {
@@ -97,6 +106,18 @@ extension BridgeJarUiResponse {
         self.elements = actionResponse.elements
         self.toast = actionResponse.toast
         self.code = actionResponse.code
+    }
+
+    init(playResponse: BridgePlayResponse) {
+        self.ok = playResponse.ok
+        self.mode = playResponse.mode
+        self.message = playResponse.message
+        self.image = playResponse.image
+        self.width = playResponse.width
+        self.height = playResponse.height
+        self.elements = playResponse.elements
+        self.toast = playResponse.toast
+        self.code = playResponse.code
     }
 }
 
@@ -202,6 +223,7 @@ enum BridgeError: LocalizedError {
     case server(String)
     case unsupportedPlayback(String)
     case tokenRequired(BridgeTokenPrompt)
+    case jarUiRequired(BridgeJarUiResponse)
     
     var errorDescription: String? {
         switch self {
@@ -211,6 +233,7 @@ enum BridgeError: LocalizedError {
         case .server(let message): return "Bridge Server 错误: \(message)"
         case .unsupportedPlayback(let message): return message
         case .tokenRequired(let prompt): return prompt.message
+        case .jarUiRequired(let response): return response.message ?? "请在 macOS 上操作 Android Jar 弹窗"
         }
     }
 }
@@ -311,6 +334,9 @@ final class BridgeClient {
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
         let response = try decoder.decode(BridgePlayResponse.self, from: data)
         bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        if response.containsJarUiSnapshot {
+            throw BridgeError.jarUiRequired(BridgeJarUiResponse(playResponse: response))
+        }
         if response.ok == false {
             if response.code == "token_required", let prompt = response.prompt {
                 throw BridgeError.tokenRequired(prompt)
