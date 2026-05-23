@@ -156,6 +156,8 @@ struct PlayerView: View {
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
@@ -195,6 +197,8 @@ struct PlayerView: View {
                     onProgressChanged: onProgressChanged,
                     onPlaybackEnded: onPlaybackEnded,
                     onToggleFullScreen: onToggleFullScreen,
+                    onVideoOrientationChanged: onVideoOrientationChanged,
+                    isFullscreen: isFullscreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
                     sharedController: systemController
@@ -206,6 +210,8 @@ struct PlayerView: View {
                     onProgressChanged: onProgressChanged,
                     onPlaybackEnded: onPlaybackEnded,
                     onToggleFullScreen: onToggleFullScreen,
+                    onVideoOrientationChanged: onVideoOrientationChanged,
+                    isFullscreen: isFullscreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
                     sharedController: vlcController
@@ -234,12 +240,28 @@ struct PlayerView: View {
 
 /// 基于系统 AVPlayer 的点播播放器实现
 struct AVPlayerContentView: View {
+    private enum TrackSelectionSheetKind: String, Identifiable {
+        case audio
+        case subtitle
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .audio: return "音轨"
+            case .subtitle: return "字幕"
+            }
+        }
+    }
+
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     let urlString: String
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var sharedController: SystemPlayerSessionController? = nil
@@ -272,8 +294,10 @@ struct AVPlayerContentView: View {
     @State private var audioSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
+    @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
 
     @State private var videoZoomScale: CGFloat = 1.0
+    @State private var lastReportedVideoOrientation: Bool?
 
     var body: some View {
         ZStack {
@@ -388,6 +412,11 @@ struct AVPlayerContentView: View {
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
         }
+        #if os(iOS)
+        .sheet(item: $trackSelectionSheetKind) { kind in
+            trackSelectionSheet(for: kind)
+        }
+        #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
     }
@@ -502,8 +531,15 @@ struct AVPlayerContentView: View {
                 } else if observedItem.status == .readyToPlay {
                     DispatchQueue.main.async {
                         playbackError = nil
+                        reportVideoOrientation(for: observedItem.presentationSize)
                         refreshMediaTracks(for: player)
                     }
+                }
+            })
+            observations.append(item.observe(\.presentationSize, options: [.initial, .new]) { observedItem, _ in
+                let presentationSize = observedItem.presentationSize
+                DispatchQueue.main.async {
+                    reportVideoOrientation(for: presentationSize)
                 }
             })
         }
@@ -533,6 +569,7 @@ struct AVPlayerContentView: View {
     private func cleanupPlayer(keepSharedPlayer: Bool = false) {
         let currentPlayer = player
         detachPlayerObservers()
+        lastReportedVideoOrientation = nil
         if !keepSharedPlayer {
             resetMediaTracks()
         }
@@ -553,6 +590,21 @@ struct AVPlayerContentView: View {
         DispatchQueue.global(qos: .utility).async {
             currentPlayer.replaceCurrentItem(with: nil)
         }
+    }
+
+    private func reportVideoOrientation(for size: CGSize) {
+        let normalizedOrientation: Bool?
+        if size.width > size.height, size.height > 0 {
+            normalizedOrientation = true
+        } else if size.height > size.width, size.width > 0 {
+            normalizedOrientation = false
+        } else {
+            normalizedOrientation = nil
+        }
+
+        guard normalizedOrientation != lastReportedVideoOrientation else { return }
+        lastReportedVideoOrientation = normalizedOrientation
+        onVideoOrientationChanged?(normalizedOrientation)
     }
 
     private func startPlayback(for player: AVPlayer) {
@@ -797,6 +849,10 @@ struct AVPlayerContentView: View {
         max(duration, max(currentTime, 1))
     }
 
+    private var fullscreenToggleIconName: String {
+        isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
+    }
+
     private func playbackControls(containerWidth: CGFloat) -> some View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
@@ -919,7 +975,7 @@ struct AVPlayerContentView: View {
                         wakeUpControls()
                         onToggleFullScreen()
                     } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        Image(systemName: fullscreenToggleIconName)
                             .font(.system(size: 14, weight: .bold))
                             .frame(minWidth: 36, minHeight: 36)
                     }
@@ -1067,7 +1123,7 @@ struct AVPlayerContentView: View {
                             wakeUpControls()
                             onToggleFullScreen()
                         } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            Image(systemName: fullscreenToggleIconName)
                                 .font(.system(size: 15, weight: .bold))
                         }
                         .buttonStyle(.plain)
@@ -1152,6 +1208,18 @@ struct AVPlayerContentView: View {
     }
 
     private var audioTrackMenu: some View {
+        #if os(iOS)
+        Button {
+            wakeUpControls()
+            trackSelectionSheetKind = .audio
+        } label: {
+            trackMenuLabel(
+                icon: "waveform.circle.fill",
+                title: selectedTrackTitle(in: audioTracks, selectedID: selectedAudioTrackID, fallback: "音轨")
+            )
+        }
+        .buttonStyle(.plain)
+        #else
         Menu {
             ForEach(audioTracks.filter { !$0.isDisabled }) { track in
                 Button {
@@ -1169,9 +1237,22 @@ struct AVPlayerContentView: View {
             )
         }
         .buttonStyle(.plain)
+        #endif
     }
 
     private var subtitleTrackMenu: some View {
+        #if os(iOS)
+        Button {
+            wakeUpControls()
+            trackSelectionSheetKind = .subtitle
+        } label: {
+            trackMenuLabel(
+                icon: "captions.bubble.fill",
+                title: selectedTrackTitle(in: subtitleTracks, selectedID: selectedSubtitleTrackID, fallback: "字幕")
+            )
+        }
+        .buttonStyle(.plain)
+        #else
         Menu {
             if subtitleTracks.isEmpty {
                 Text("暂无可选字幕")
@@ -1193,6 +1274,7 @@ struct AVPlayerContentView: View {
             )
         }
         .buttonStyle(.plain)
+        #endif
     }
 
     private var subtitleStyleMenu: some View {
@@ -1241,6 +1323,68 @@ struct AVPlayerContentView: View {
             }
         }
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private func trackSelectionSheet(for kind: TrackSelectionSheetKind) -> some View {
+        NavigationStack {
+            List {
+                if kind == .audio {
+                    ForEach(audioTracks.filter { !$0.isDisabled }) { track in
+                        Button {
+                            wakeUpControls()
+                            selectAudioTrack(track)
+                            showOSD(icon: "waveform")
+                            trackSelectionSheetKind = nil
+                        } label: {
+                            trackSelectionSheetRow(track: track, selectedID: selectedAudioTrackID)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else {
+                    ForEach(subtitleTracks) { track in
+                        Button {
+                            wakeUpControls()
+                            selectSubtitleTrack(track)
+                            showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                            trackSelectionSheetKind = nil
+                        } label: {
+                            trackSelectionSheetRow(track: track, selectedID: selectedSubtitleTrackID)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.black)
+            .navigationTitle(kind.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        trackSelectionSheetKind = nil
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+
+    private func trackSelectionSheetRow(track: MediaTrackOption, selectedID: String?) -> some View {
+        HStack(spacing: 12) {
+            Text(track.title)
+                .foregroundColor(.white)
+            Spacer()
+            if track.id == selectedID {
+                Image(systemName: "checkmark")
+                    .foregroundColor(.orange)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+    #endif
 
     private func trackMenuLabel(icon: String, title: String) -> some View {
         HStack(spacing: 4) {

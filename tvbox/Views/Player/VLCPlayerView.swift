@@ -118,6 +118,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var selectedAudioTrackID: String?
     @Published var selectedSubtitleTrackID: String?
     @Published var subtitleAppearance = SubtitleAppearance.load()
+    #if os(iOS)
+    @Published private(set) var videoSize: CGSize = .zero
+    #endif
     private var playerOptions: [String] {
         Self.stablePlaybackOptions + [
             "--freetype-rel-fontsize=\(subtitleAppearance.vlcRelativeFontSize)",
@@ -342,6 +345,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         setPlaybackStatus(preparing: false, playing: false)
         resetProgressState()
         resetTrackOptions()
+        #if os(iOS)
+        videoSize = .zero
+        #endif
         currentMediaURLString = nil
         currentMediaIsLive = false
         currentMediaIsBridgeProxy = false
@@ -625,6 +631,14 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if selectedSubtitleTrackID != selectedSubtitleID { selectedSubtitleTrackID = selectedSubtitleID }
     }
 
+    #if os(iOS)
+    private func refreshVideoSize() {
+        let currentVideoSize = mediaPlayer.videoSize
+        guard currentVideoSize != videoSize else { return }
+        videoSize = currentVideoSize
+    }
+    #endif
+
     private func resetTrackOptions() {
         audioTracks = []
         subtitleTracks = []
@@ -759,6 +773,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func handlePlayerStateChanged() {
+        #if os(iOS)
+        refreshVideoSize()
+        #endif
         switch mediaPlayer.state {
         case .opening, .buffering:
             handleBufferingState()
@@ -820,6 +837,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func emitProgress() {
+        #if os(iOS)
+        refreshVideoSize()
+        #endif
         refreshPlaybackFlags()
         monitorVideoOutputRecoveryIfNeeded()
         guard !isLive else { return }
@@ -1215,11 +1235,27 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 }
 
 struct VLCVodPlayerView: View {
+    private enum TrackSelectionSheetKind: String, Identifiable {
+        case audio
+        case subtitle
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .audio: return "音轨"
+            case .subtitle: return "字幕"
+            }
+        }
+    }
+
     let urlString: String
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var sharedController: VLCPlayerController? = nil
@@ -1233,6 +1269,8 @@ struct VLCVodPlayerView: View {
     @State private var osdOpacity: Double = 0
     @State private var osdTimer: Timer?
     @State private var startPlaybackTask: Task<Void, Never>?
+    @State private var lastReportedVideoOrientation: Bool?
+    @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
 
     private var controller: VLCPlayerController {
         sharedController ?? ownedController
@@ -1321,6 +1359,9 @@ struct VLCVodPlayerView: View {
         .onAppear {
             startPlayback()
             wakeUpControls()
+            #if os(iOS)
+            reportVideoOrientation(for: controller.videoSize)
+            #endif
         }
         .onChange(of: urlString) { _, _ in
             startPlayback()
@@ -1331,6 +1372,11 @@ struct VLCVodPlayerView: View {
                 draggingSeconds = newValue
             }
         }
+        #if os(iOS)
+        .onReceive(controller.$videoSize) { newSize in
+            reportVideoOrientation(for: newSize)
+        }
+        #endif
         .onDisappear {
             startPlaybackTask?.cancel()
             startPlaybackTask = nil
@@ -1339,7 +1385,13 @@ struct VLCVodPlayerView: View {
             }
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
+            lastReportedVideoOrientation = nil
         }
+        #if os(iOS)
+        .sheet(item: $trackSelectionSheetKind) { kind in
+            trackSelectionSheet(for: kind)
+        }
+        #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
     }
@@ -1368,6 +1420,21 @@ struct VLCVodPlayerView: View {
     private func togglePlaybackWithOSD() {
         controller.togglePlayback()
         showOSD(icon: controller.isPlaying ? "pause.fill" : "play.fill")
+    }
+
+    private func reportVideoOrientation(for size: CGSize) {
+        let normalizedOrientation: Bool?
+        if size.width > size.height, size.height > 0 {
+            normalizedOrientation = true
+        } else if size.height > size.width, size.width > 0 {
+            normalizedOrientation = false
+        } else {
+            normalizedOrientation = nil
+        }
+
+        guard normalizedOrientation != lastReportedVideoOrientation else { return }
+        lastReportedVideoOrientation = normalizedOrientation
+        onVideoOrientationChanged?(normalizedOrientation)
     }
 
     private func startPlayback() {
@@ -1423,6 +1490,10 @@ struct VLCVodPlayerView: View {
 
     private var totalDisplayText: String {
         controller.hasValidDuration ? controller.durationSeconds.durationString : "--:--"
+    }
+
+    private var fullscreenToggleIconName: String {
+        isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
     }
 
     private func commitProgressSeek() {
@@ -1557,7 +1628,7 @@ struct VLCVodPlayerView: View {
                         wakeUpControls()
                         onToggleFullScreen()
                     } label: {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        Image(systemName: fullscreenToggleIconName)
                             .font(.system(size: 14, weight: .bold))
                             .frame(minWidth: 36, minHeight: 36)
                     }
@@ -1704,7 +1775,7 @@ struct VLCVodPlayerView: View {
                             wakeUpControls()
                             onToggleFullScreen()
                         } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            Image(systemName: fullscreenToggleIconName)
                                 .font(.system(size: 15, weight: .bold))
                         }
                         .buttonStyle(.plain)
@@ -1789,6 +1860,18 @@ struct VLCVodPlayerView: View {
     }
 
     private var audioTrackMenu: some View {
+        #if os(iOS)
+        Button {
+            wakeUpControls()
+            trackSelectionSheetKind = .audio
+        } label: {
+            trackMenuLabel(
+                icon: "waveform.circle.fill",
+                title: selectedTrackTitle(in: controller.audioTracks, selectedID: controller.selectedAudioTrackID, fallback: "音轨")
+            )
+        }
+        .buttonStyle(.plain)
+        #else
         Menu {
             ForEach(controller.audioTracks.filter { !$0.isDisabled }) { track in
                 Button {
@@ -1806,9 +1889,22 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
+        #endif
     }
 
     private var subtitleTrackMenu: some View {
+        #if os(iOS)
+        Button {
+            wakeUpControls()
+            trackSelectionSheetKind = .subtitle
+        } label: {
+            trackMenuLabel(
+                icon: "captions.bubble.fill",
+                title: selectedTrackTitle(in: controller.subtitleTracks, selectedID: controller.selectedSubtitleTrackID, fallback: "字幕")
+            )
+        }
+        .buttonStyle(.plain)
+        #else
         Menu {
             if controller.subtitleTracks.isEmpty {
                 Text("暂无可选字幕")
@@ -1830,6 +1926,7 @@ struct VLCVodPlayerView: View {
             )
         }
         .buttonStyle(.plain)
+        #endif
     }
 
     private var subtitleStyleMenu: some View {
@@ -1884,6 +1981,68 @@ struct VLCVodPlayerView: View {
             }
         }
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private func trackSelectionSheet(for kind: TrackSelectionSheetKind) -> some View {
+        NavigationStack {
+            List {
+                if kind == .audio {
+                    ForEach(controller.audioTracks.filter { !$0.isDisabled }) { track in
+                        Button {
+                            wakeUpControls()
+                            controller.selectAudioTrack(track)
+                            showOSD(icon: "waveform")
+                            trackSelectionSheetKind = nil
+                        } label: {
+                            trackSelectionSheetRow(track: track, selectedID: controller.selectedAudioTrackID)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else {
+                    ForEach(controller.subtitleTracks) { track in
+                        Button {
+                            wakeUpControls()
+                            controller.selectSubtitleTrack(track)
+                            showOSD(icon: track.isDisabled ? "captions.bubble" : "captions.bubble.fill")
+                            trackSelectionSheetKind = nil
+                        } label: {
+                            trackSelectionSheetRow(track: track, selectedID: controller.selectedSubtitleTrackID)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.black)
+            .navigationTitle(kind.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        trackSelectionSheetKind = nil
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+
+    private func trackSelectionSheetRow(track: MediaTrackOption, selectedID: String?) -> some View {
+        HStack(spacing: 12) {
+            Text(track.title)
+                .foregroundColor(.white)
+            Spacer()
+            if track.id == selectedID {
+                Image(systemName: "checkmark")
+                    .foregroundColor(.orange)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+    #endif
 
     private func trackMenuLabel(icon: String, title: String) -> some View {
         HStack(spacing: 4) {
@@ -2629,6 +2788,8 @@ struct VLCVodPlayerView: View {
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
+    var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
 
@@ -2639,6 +2800,8 @@ struct VLCVodPlayerView: View {
             onProgressChanged: onProgressChanged,
             onPlaybackEnded: onPlaybackEnded,
             onToggleFullScreen: onToggleFullScreen,
+            onVideoOrientationChanged: onVideoOrientationChanged,
+            isFullscreen: isFullscreen,
             canPlayNext: canPlayNext,
             onPlayNext: onPlayNext
         )

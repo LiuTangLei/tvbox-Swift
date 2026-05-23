@@ -23,6 +23,14 @@ class SourceService {
 
     private init() {}
 
+    private func shouldUseBridge(for sourceBean: SourceBean) throws -> Bool {
+        guard sourceBean.requiresBridge else { return false }
+        guard bridge.isEnabled else {
+            throw SourceError.unsupportedType(sourceBean.typeDescription)
+        }
+        return true
+    }
+
     // MARK: - 获取分类列表
 
     /// 获取指定源的分类列表和首页推荐
@@ -31,7 +39,7 @@ class SourceService {
         guard !api.isEmpty else {
             throw SourceError.emptyApi
         }
-        if sourceBean.requiresBridge {
+        if try shouldUseBridge(for: sourceBean) {
             let jsonStr = try await bridge.home(source: sourceBean)
             return try parseSort(jsonStr, sourceBean: sourceBean)
         }
@@ -188,7 +196,7 @@ class SourceService {
     func getListPage(sourceBean: SourceBean, sortData: MovieSort.SortData, page: Int = 1, filters: [String: String]? = nil) async throws -> VideoPage {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
-        if sourceBean.requiresBridge {
+        if try shouldUseBridge(for: sourceBean) {
             let jsonStr = try await bridge.category(source: sourceBean, sortData: sortData, page: page, filters: filters)
             return try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: page)
         }
@@ -389,7 +397,7 @@ class SourceService {
     func getDetail(sourceBean: SourceBean, vodId: String) async throws -> VodInfo? {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
-        if sourceBean.requiresBridge {
+        if try shouldUseBridge(for: sourceBean) {
             let jsonStr = try await bridge.detail(source: sourceBean, vodId: vodId)
             return try parseDetail(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
         }
@@ -494,7 +502,7 @@ class SourceService {
     func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
-        if sourceBean.requiresBridge {
+        if try shouldUseBridge(for: sourceBean) {
             let jsonStr = try await bridge.search(source: sourceBean, keyword: keyword)
             let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
             return filterSearchResults(videos, keyword: keyword)

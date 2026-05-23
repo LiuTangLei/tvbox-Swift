@@ -499,7 +499,7 @@ struct SettingsView: View {
                                                 .padding(.vertical, 3)
                                                 .background(Capsule().fill(Color.green.opacity(0.15)))
                                         } else if !source.isAvailableForPlayback {
-                                            Text(source.requiresBridge ? "需 Bridge" : "暂不支持")
+                                            Text("暂不支持")
                                                 .font(.system(size: 10, weight: .medium))
                                                 .foregroundColor(.red.opacity(0.8))
                                                 .padding(.horizontal, 6)

@@ -1592,32 +1592,52 @@ struct FullScreenPlayerView: View {
     var vlcController: VLCPlayerController? = nil
     var onCloseRequested: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    #if os(iOS)
+    @State private var requestedVideoOrientation: Bool?
+    #endif
     
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            
-            PlayerView(
-                urlString: urlString,
-                startPosition: startPosition,
-                onProgressChanged: onProgressChanged,
-                onPlaybackEnded: onPlaybackEnded,
-                onToggleFullScreen: {
-                    if let onCloseRequested {
-                        onCloseRequested()
-                    } else {
-                        dismiss()
-                    }
-                },
-                canPlayNext: canPlayNext,
-                onPlayNext: onPlayNext,
-                systemController: systemController,
-                vlcController: vlcController
-            )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            GeometryReader { proxy in
+                let shouldRotatePlayerContent = shouldRotatePlayerContent(in: proxy.size)
+
+                PlayerView(
+                    urlString: urlString,
+                    startPosition: startPosition,
+                    onProgressChanged: onProgressChanged,
+                    onPlaybackEnded: onPlaybackEnded,
+                    onToggleFullScreen: {
+                        if let onCloseRequested {
+                            onCloseRequested()
+                        } else {
+                            dismiss()
+                        }
+                    },
+                    onVideoOrientationChanged: { isLandscape in
+                        #if os(iOS)
+                        applyFullScreenOrientation(for: isLandscape)
+                        #endif
+                    },
+                    isFullscreen: true,
+                    canPlayNext: canPlayNext,
+                    onPlayNext: onPlayNext,
+                    systemController: systemController,
+                    vlcController: vlcController
+                )
+                .frame(
+                    width: shouldRotatePlayerContent ? proxy.size.height : proxy.size.width,
+                    height: shouldRotatePlayerContent ? proxy.size.width : proxy.size.height
+                )
+                .rotationEffect(.degrees(shouldRotatePlayerContent ? 90 : 0))
                 .background(Color.black)
-                .ignoresSafeArea()
-            
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .animation(.easeInOut(duration: 0.25), value: shouldRotatePlayerContent)
+            }
+            .ignoresSafeArea()
+
+            #if !os(iOS)
             VStack {
                 HStack {
                     Button {
@@ -1636,6 +1656,30 @@ struct FullScreenPlayerView: View {
                 .padding()
                 Spacer()
             }
+            #endif
         }
+        #if os(iOS)
+        .statusBar(hidden: true)
+        .onDisappear {
+            requestedVideoOrientation = nil
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private func applyFullScreenOrientation(for isLandscape: Bool?) {
+        guard let isLandscape else { return }
+        guard requestedVideoOrientation != isLandscape else { return }
+        requestedVideoOrientation = isLandscape
+    }
+
+    #endif
+
+    private func shouldRotatePlayerContent(in size: CGSize) -> Bool {
+        #if os(iOS)
+        requestedVideoOrientation == true && size.height > size.width
+        #else
+        false
+        #endif
     }
 }

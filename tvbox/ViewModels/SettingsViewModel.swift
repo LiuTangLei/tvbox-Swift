@@ -326,6 +326,18 @@ class SettingsViewModel: ObservableObject {
         notifyBridgeAvailabilityChanged()
     }
 
+    func prepareBridgeForSetup() {
+        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldEnableBridge = !trimmed.isEmpty
+        bridgeServerUrl = trimmed
+        bridgeEnabled = shouldEnableBridge
+        bridgeStatusText = shouldEnableBridge ? "待检测" : "未配置"
+        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        UserDefaults.standard.set(shouldEnableBridge, forKey: HawkConfig.BRIDGE_ENABLED)
+        addToAddressHistory(trimmed, kind: .bridge)
+        notifyBridgeAvailabilityChanged()
+    }
+
     func saveBridgeSettingsAndTest() async {
         let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         bridgeServerUrl = trimmed

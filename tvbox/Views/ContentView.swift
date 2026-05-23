@@ -5,7 +5,7 @@ struct ContentView: View {
     /// 首次配置页点击“最近使用”时，当前要写入的输入框目标。
     private enum ApiInputTarget {
         case vod
-        case live
+        case bridge
     }
     
     /// 全局状态（配置加载、分栏状态等）。
@@ -247,13 +247,13 @@ struct ContentView: View {
                             .glassCard(cornerRadius: 15)
                             
                             HStack {
-                                Image(systemName: "tv")
+                                Image(systemName: "point.3.connected.trianglepath.dotted")
                                     .foregroundColor(.orange)
-                                TextField("请输入直播接口地址 (URL，可留空跟随点播)", text: $settingsVM.liveApiUrl)
+                                TextField("请输入 Bridge Server 地址（可留空）", text: $settingsVM.bridgeServerUrl)
                                     .textFieldStyle(.plain)
                                     .foregroundColor(.white)
                                     .onTapGesture {
-                                        setupInputTarget = .live
+                                        setupInputTarget = .bridge
                                     }
                                     #if os(iOS)
                                     .autocapitalization(.none)
@@ -262,7 +262,7 @@ struct ContentView: View {
                                 
                                 Button {
                                     if let text = readPasteboardText() {
-                                        settingsVM.liveApiUrl = text
+                                        settingsVM.bridgeServerUrl = text
                                     }
                                 } label: {
                                     Image(systemName: "doc.on.clipboard")
@@ -272,11 +272,18 @@ struct ContentView: View {
                             }
                             .padding()
                             .glassCard(cornerRadius: 15)
+
+                            Text("Bridge 地址可留空；未配置时 type=3 数据源会显示为暂不支持。")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.55))
+                                .padding(.horizontal, 4)
                         }
                         
                         // 确认按钮
                         Button {
                             Task {
+                                settingsVM.liveApiUrl = ""
+                                settingsVM.prepareBridgeForSetup()
                                 await settingsVM.loadConfig()
                                 if settingsVM.configSuccess {
                                     appState.applyLoadedConfigState()
@@ -306,7 +313,8 @@ struct ContentView: View {
                         )
                         
                         // 历史记录
-                        let configHistory = settingsVM.addressHistory(for: .config)
+                        let historyKind: SettingsViewModel.AddressHistoryKind = setupInputTarget == .bridge ? .bridge : .config
+                        let configHistory = settingsVM.addressHistory(for: historyKind)
                         if !configHistory.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("最近使用")
@@ -319,8 +327,8 @@ struct ContentView: View {
                                         switch setupInputTarget {
                                         case .vod:
                                             settingsVM.vodApiUrl = url
-                                        case .live:
-                                            settingsVM.liveApiUrl = url
+                                        case .bridge:
+                                            settingsVM.bridgeServerUrl = url
                                         }
                                     } label: {
                                         HStack {
