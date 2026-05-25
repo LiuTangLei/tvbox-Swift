@@ -298,7 +298,7 @@ struct HomeView: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
                         ForEach(videos) { video in
-                            if video.isAction {
+                            if viewModel.isBridgeActionCard(video) {
                                 Button {
                                     Task { await viewModel.performAction(for: video) }
                                 } label: {

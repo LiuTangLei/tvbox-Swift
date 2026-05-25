@@ -249,7 +249,7 @@ struct ContentView: View {
                             HStack {
                                 Image(systemName: "point.3.connected.trianglepath.dotted")
                                     .foregroundColor(.orange)
-                                TextField("请输入 Bridge Server 地址（可留空）", text: $settingsVM.bridgeServerUrl)
+                                TextField("请输入 Bridge Server 地址（可留空，裸域名默认 https）", text: $settingsVM.bridgeServerUrl)
                                     .textFieldStyle(.plain)
                                     .foregroundColor(.white)
                                     .onTapGesture {
@@ -273,7 +273,7 @@ struct ContentView: View {
                             .padding()
                             .glassCard(cornerRadius: 15)
 
-                            Text("Bridge 地址可留空；未配置时 type=3 数据源会显示为暂不支持。")
+                            Text("Bridge 地址可留空；裸域名会自动按 HTTPS 保存，未配置时 type=3 数据源会显示为暂不支持。")
                                 .font(.caption)
                                 .foregroundColor(.white.opacity(0.55))
                                 .padding(.horizontal, 4)

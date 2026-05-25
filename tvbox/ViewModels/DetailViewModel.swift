@@ -28,6 +28,8 @@ struct PlaybackQualityOption: Identifiable, Hashable {
 class DetailViewModel: ObservableObject {
     /// 详情信息主体。
     @Published var vodInfo: VodInfo?
+    /// 当前详情实际对应的视频条目；自动跨源后会更新为新来源条目。
+    @Published var activeVideo: Movie.Video?
     /// 加载状态。
     @Published var isLoading = false
     /// 错误提示。
@@ -42,8 +44,14 @@ class DetailViewModel: ObservableObject {
     @Published var isResolvingBridgePlayback = false
     /// Bridge 播放解析或登录提示。
     @Published var bridgePlaybackMessage: String?
+    /// 自动换源状态。
+    @Published var isAutoSwitchingPlayback = false
+    /// 自动换源提示。
+    @Published var playbackFallbackMessage: String?
     /// 当前实际播放地址（可能是原始地址，也可能是清晰度切换后的子流地址）。
     @Published var playUrl: String?
+    /// 当前播放地址需要携带的 HTTP 请求头。
+    @Published var playHeaders: [String: String] = [:]
     /// 续播起始位置（秒）。
     @Published var resumeSeconds: Double = 0
     /// 当前可选清晰度列表。
@@ -82,46 +90,133 @@ class DetailViewModel: ObservableObject {
     private var playbackResolveToken = UUID()
     private var pendingBridgePlayback: PendingBridgePlayback?
     private var bridgeCredentialAutoSubmitted: Set<String> = []
+    private var failedPlaybackAttempts: Set<String> = []
+    private var failedSiteVideoKeys: Set<String> = []
+    private var autoRecoveryTask: Task<Void, Never>?
+    private var playbackWatchdogTask: Task<Void, Never>?
+    private var playbackWatchdogToken = UUID()
+    private var playbackWatchdogBaseline: Double = 0
+    private let playbackStartupTimeoutNanoseconds: UInt64 = 14_000_000_000
     
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
         guard let source = ApiConfig.shared.getSource(key: video.sourceKey)
                 ?? ApiConfig.shared.homeSourceBean else { return }
         currentSource = source
+        activeVideo = video
+        resetAutomaticPlaybackRecovery(clearAttempts: true)
         
         isLoading = true
         errorMessage = nil
         
         do {
-            if let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) {
-                self.vodInfo = info
-                self.selectedFlag = info.playFlag
-                self.selectedEpisodeIndex = info.playIndex
-                self.resumeSeconds = 0
-                self.realtimeProgressSeconds = 0
-                self.isResolvingBridgePlayback = false
-                self.bridgePlaybackMessage = nil
-                self.bridgeTokenPrompt = nil
-                self.isBridgeTokenPromptPresented = false
-                self.bridgeCredentialAutoSubmitted.removeAll()
-                if source.requiresBridge {
-                    resetQualityState()
-                } else if let episode = info.currentEpisode {
-                    updateQualityOptions(for: episode.url, resetSelection: true)
-                } else {
-                    resetQualityState()
+            let detail = try await sourceService.getDetail(sourceBean: source, vodId: video.id)
+            if let info = playableDetail(detail) ?? fallbackDetail(from: video, source: source) {
+                applyLoadedDetail(info, source: source, video: video)
+                if !hasPlayableEpisodes(detail) {
+                    errorMessage = "该来源详情接口没有返回播放列表，已使用搜索结果中的播放地址"
                 }
+            } else {
+                clearLoadedDetail()
+                errorMessage = "该来源没有返回可播放详情，请返回搜索页选择其它来源"
             }
         } catch {
+            clearLoadedDetail()
             errorMessage = error.localizedDescription
         }
         
         isLoading = false
     }
+
+    private func playableDetail(_ info: VodInfo?) -> VodInfo? {
+        guard let info, hasPlayableEpisodes(info) else { return nil }
+        return info
+    }
+
+    private func hasPlayableEpisodes(_ info: VodInfo?) -> Bool {
+        guard let info else { return false }
+        return info.playUrlMap.values.contains { !$0.isEmpty }
+    }
+
+    private func fallbackDetail(from video: Movie.Video, source: SourceBean) -> VodInfo? {
+        let rawPlayUrl = video.playUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawPlayUrl.isEmpty else { return nil }
+
+        var fallbackVideo = video
+        fallbackVideo.sourceKey = source.key
+        let playUrl = normalizedFallbackPlayUrl(rawPlayUrl)
+        let playFrom = fallbackPlayFrom(video.dt, playUrl: playUrl)
+        let info = VodInfo.from(video: fallbackVideo, playFrom: playFrom, playUrl: playUrl)
+        return hasPlayableEpisodes(info) ? info : nil
+    }
+
+    private func normalizedFallbackPlayUrl(_ rawPlayUrl: String) -> String {
+        rawPlayUrl.components(separatedBy: "$$$").map { group in
+            let trimmedGroup = group.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedGroup.isEmpty else { return "" }
+            let episodes = trimmedGroup.components(separatedBy: "#")
+            return episodes.enumerated().map { index, episode in
+                let trimmedEpisode = episode.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedEpisode.isEmpty else { return "" }
+                if trimmedEpisode.contains("$") { return trimmedEpisode }
+                return "第\(index + 1)集$\(trimmedEpisode)"
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "#")
+        }
+        .filter { !$0.isEmpty }
+        .joined(separator: "$$$")
+    }
+
+    private func fallbackPlayFrom(_ rawPlayFrom: String, playUrl: String) -> String {
+        let trimmedPlayFrom = rawPlayFrom.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPlayFrom.isEmpty { return trimmedPlayFrom }
+        let count = max(playUrl.components(separatedBy: "$$$").filter { !$0.isEmpty }.count, 1)
+        if count == 1 { return "默认" }
+        return (1...count).map { "线路\($0)" }.joined(separator: "$$$")
+    }
+
+    private func applyLoadedDetail(_ info: VodInfo, source: SourceBean, video: Movie.Video) {
+        self.vodInfo = info
+        self.currentSource = source
+        self.activeVideo = video
+        self.selectedFlag = info.playFlag
+        self.selectedEpisodeIndex = info.playIndex
+        self.resumeSeconds = 0
+        self.realtimeProgressSeconds = 0
+        self.isResolvingBridgePlayback = false
+        self.bridgePlaybackMessage = nil
+        self.bridgeTokenPrompt = nil
+        self.isBridgeTokenPromptPresented = false
+        self.playHeaders = [:]
+        self.bridgeCredentialAutoSubmitted.removeAll()
+        if source.requiresBridge {
+            resetQualityState()
+        } else if let episode = info.currentEpisode {
+            updateQualityOptions(for: episode.url, resetSelection: true)
+        } else {
+            resetQualityState()
+        }
+    }
+
+    private func clearLoadedDetail() {
+        vodInfo = nil
+        selectedFlag = ""
+        selectedEpisodeIndex = 0
+        isResolvingBridgePlayback = false
+        bridgePlaybackMessage = nil
+        bridgeTokenPrompt = nil
+        isBridgeTokenPromptPresented = false
+        playHeaders = [:]
+        playUrl = nil
+        isPlaying = false
+        resetQualityState()
+    }
     
     /// 选择线路
     func selectFlag(_ flag: String) {
         guard selectedFlag != flag else { return }
+        resetAutomaticPlaybackRecovery(clearAttempts: true)
         let currentIndex = selectedEpisodeIndex
         
         selectedFlag = flag
@@ -156,6 +251,7 @@ class DetailViewModel: ObservableObject {
     /// 选择剧集并播放
     func selectEpisode(index: Int) {
         guard selectedEpisodeIndex != index || !isPlaying || isResolvingBridgePlayback else { return }
+        resetAutomaticPlaybackRecovery(clearAttempts: true)
         selectedEpisodeIndex = index
         vodInfo?.playIndex = index
         resumeSeconds = 0
@@ -216,13 +312,23 @@ class DetailViewModel: ObservableObject {
         let progress = max(currentPlaybackSeconds(), 0)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
+        playHeaders = [:]
         playUrl = targetURL
     }
     
     /// 播放器时间回调
     func updatePlaybackProgress(seconds: Double) {
         guard seconds.isFinite else { return }
-        realtimeProgressSeconds = max(seconds, 0)
+        let normalizedSeconds = max(seconds, 0)
+        realtimeProgressSeconds = normalizedSeconds
+        if normalizedSeconds - playbackWatchdogBaseline >= 1.0 || (playbackWatchdogBaseline < 1.0 && normalizedSeconds >= 1.0) {
+            cancelPlaybackWatchdog()
+        }
+    }
+
+    /// 播放器已进入实际播放状态，避免慢进度/分段流被启动 watchdog 误判。
+    func markPlaybackStarted() {
+        cancelPlaybackWatchdog()
     }
     
     /// 当前实时进度（不触发 UI 高频刷新）
@@ -257,6 +363,12 @@ class DetailViewModel: ObservableObject {
         }
         return false
     }
+
+    /// 播放器报告失败、卡住或首帧超时后，按 FongMi 的思路自动尝试其它线路/站点。
+    func handlePlaybackFailure(reason: String) {
+        guard playUrl != nil || isResolvingBridgePlayback else { return }
+        startAutomaticPlaybackRecovery(trigger: reason)
+    }
     
     /// 当前剧集列表
     var currentEpisodes: [VodInfo.Episode] {
@@ -283,14 +395,17 @@ class DetailViewModel: ObservableObject {
     }
     
     private func startPlayback(episodeURL: String, flag: String) {
+        cancelPlaybackWatchdog()
         guard let source = currentSource, source.requiresBridge else {
             playbackResolveToken = UUID()
             isResolvingBridgePlayback = false
             bridgePlaybackMessage = nil
             bridgeTokenPrompt = nil
             isBridgeTokenPromptPresented = false
+            playHeaders = [:]
             playUrl = selectedPlayableURL(fallback: episodeURL)
             isPlaying = true
+            schedulePlaybackWatchdog()
             return
         }
         let token = UUID()
@@ -299,6 +414,7 @@ class DetailViewModel: ObservableObject {
         isResolvingBridgePlayback = true
         bridgePlaybackMessage = "正在获取播放地址..."
         playUrl = nil
+        playHeaders = [:]
         bridgeTokenPrompt = nil
         isBridgeTokenPromptPresented = false
         bridgeJarUiResponse = nil
@@ -308,13 +424,15 @@ class DetailViewModel: ObservableObject {
         detailPlaybackLogger.info("bridge play start source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
         Task { [source, episodeURL, flag, token] in
             do {
-                let resolvedURL = try await BridgeClient.shared.play(source: source, flag: flag, id: episodeURL)
+                let playback = try await BridgeClient.shared.play(source: source, flag: flag, id: episodeURL)
                 guard playbackResolveToken == token else { return }
                 detailPlaybackLogger.info("bridge play resolved source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
                 isResolvingBridgePlayback = false
                 bridgePlaybackMessage = nil
-                playUrl = resolvedURL
+                playHeaders = playback.headers
+                playUrl = playback.url
                 isPlaying = true
+                schedulePlaybackWatchdog()
                 errorMessage = nil
             } catch {
                 guard playbackResolveToken == token else { return }
@@ -332,6 +450,7 @@ class DetailViewModel: ObservableObject {
                     }
                     pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
                     isPlaying = false
+                    playHeaders = [:]
                     playUrl = nil
                     bridgePlaybackMessage = prompt.message
                     bridgeTokenErrorMessage = nil
@@ -344,6 +463,7 @@ class DetailViewModel: ObservableObject {
                     detailPlaybackLogger.info("bridge jar ui required source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
                     pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
                     isPlaying = false
+                    playHeaders = [:]
                     playUrl = nil
                     bridgePlaybackMessage = response.message ?? "请在 macOS 上操作 Android Jar 弹窗"
                     bridgeTokenErrorMessage = nil
@@ -356,9 +476,8 @@ class DetailViewModel: ObservableObject {
                     return
                 }
                 detailPlaybackLogger.error("bridge play failed source=\(source.key, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                errorMessage = error.localizedDescription
                 bridgePlaybackMessage = nil
-                isPlaying = false
+                startAutomaticPlaybackRecovery(trigger: error.localizedDescription)
             }
         }
     }
@@ -468,6 +587,274 @@ class DetailViewModel: ObservableObject {
         if retryPlayback {
             startPlayback(episodeURL: pending.episodeURL, flag: pending.flag)
         }
+    }
+
+    private func startAutomaticPlaybackRecovery(trigger: String) {
+        guard currentSource?.isChangeable == true else {
+            cancelPlaybackWatchdog()
+            isAutoSwitchingPlayback = false
+            playbackFallbackMessage = nil
+            isPlaying = false
+            errorMessage = "播放失败：\(trigger)"
+            return
+        }
+        guard autoRecoveryTask == nil else { return }
+        markCurrentPlaybackAttemptFailed()
+        cancelPlaybackWatchdog()
+        isAutoSwitchingPlayback = true
+        playbackFallbackMessage = "播放异常，正在尝试其它线路..."
+        errorMessage = nil
+        bridgePlaybackMessage = nil
+        isResolvingBridgePlayback = false
+        isPlaying = false
+        playUrl = nil
+        playHeaders = [:]
+
+        autoRecoveryTask = Task { [trigger] in
+            await self.performAutomaticPlaybackRecovery(trigger: trigger)
+        }
+    }
+
+    private func performAutomaticPlaybackRecovery(trigger: String) async {
+        guard !Task.isCancelled else {
+            autoRecoveryTask = nil
+            isAutoSwitchingPlayback = false
+            return
+        }
+        if switchToNextFlag(trigger: trigger) {
+            autoRecoveryTask = nil
+            isAutoSwitchingPlayback = false
+            return
+        }
+
+        guard !Task.isCancelled else {
+            autoRecoveryTask = nil
+            isAutoSwitchingPlayback = false
+            return
+        }
+        if await switchToNextSite(trigger: trigger) {
+            autoRecoveryTask = nil
+            isAutoSwitchingPlayback = false
+            return
+        }
+
+        autoRecoveryTask = nil
+        isAutoSwitchingPlayback = false
+        playbackFallbackMessage = nil
+        errorMessage = "当前播放源不可用，已尝试其它线路和可搜索站点"
+    }
+
+    private func switchToNextFlag(trigger: String) -> Bool {
+        guard let info = vodInfo, let source = currentSource else { return false }
+        guard !info.playFlags.isEmpty else { return false }
+        let currentFlagIndex = info.playFlags.firstIndex(of: selectedFlag) ?? -1
+        let startIndex = max(currentFlagIndex + 1, 0)
+        guard startIndex < info.playFlags.count else { return false }
+
+        for flagIndex in startIndex..<info.playFlags.count {
+            let flag = info.playFlags[flagIndex]
+            let episodes = info.playUrlMap[flag] ?? []
+            guard !episodes.isEmpty else { continue }
+            let targetEpisodeIndex = min(max(selectedEpisodeIndex, 0), episodes.count - 1)
+            let episodeURL = episodes[targetEpisodeIndex].url
+            let key = playbackAttemptKey(
+                sourceKey: source.key,
+                vodId: info.id,
+                flag: flag,
+                episodeIndex: targetEpisodeIndex,
+                url: episodeURL
+            )
+            guard !failedPlaybackAttempts.contains(key) else { continue }
+
+            let progress = max(currentPlaybackSeconds(), 0)
+            selectedFlag = flag
+            selectedEpisodeIndex = targetEpisodeIndex
+            vodInfo?.playFlag = flag
+            vodInfo?.playIndex = targetEpisodeIndex
+            resumeSeconds = progress >= 5 ? progress : 0
+            realtimeProgressSeconds = resumeSeconds
+            if currentSource?.requiresBridge == true {
+                resetQualityState()
+            } else {
+                updateQualityOptions(for: episodeURL, resetSelection: true)
+            }
+            playbackFallbackMessage = "播放异常，已自动切换到线路 \(flag)"
+            detailPlaybackLogger.info("auto switch flag source=\(source.key, privacy: .public) flag=\(flag, privacy: .public) trigger=\(trigger, privacy: .public)")
+            startPlayback(episodeURL: episodeURL, flag: flag)
+            return true
+        }
+
+        return false
+    }
+
+    private func switchToNextSite(trigger: String) async -> Bool {
+        guard let info = vodInfo else { return false }
+        let keyword = info.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return false }
+        playbackFallbackMessage = "线路不可用，正在搜索其它站点..."
+
+        let targetName = Self.normalizedAutoMatchText(keyword)
+        guard !targetName.isEmpty else { return false }
+        let groups = await sourceService.searchGroups(keyword: keyword)
+        guard !Task.isCancelled else { return false }
+
+        for group in groups where group.source.isChangeable && group.source.isAvailableForPlayback {
+            for candidate in group.videos {
+                let candidateName = Self.normalizedAutoMatchText(candidate.name)
+                guard candidateName == targetName else { continue }
+                let siteVideoKey = playbackSiteVideoKey(sourceKey: group.source.key, vodId: candidate.id)
+                guard !failedSiteVideoKeys.contains(siteVideoKey) else { continue }
+
+                var video = candidate
+                video.sourceKey = group.source.key
+                do {
+                    guard var detail = try await sourceService.getDetail(sourceBean: group.source, vodId: video.id) else {
+                        failedSiteVideoKeys.insert(siteVideoKey)
+                        continue
+                    }
+                    guard applyAutomaticSiteCandidate(video: video, source: group.source, detail: &detail, trigger: trigger) else {
+                        failedSiteVideoKeys.insert(siteVideoKey)
+                        continue
+                    }
+                    return true
+                } catch {
+                    failedSiteVideoKeys.insert(siteVideoKey)
+                    continue
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func applyAutomaticSiteCandidate(video: Movie.Video, source: SourceBean, detail: inout VodInfo, trigger: String) -> Bool {
+        guard !detail.playFlags.isEmpty else { return false }
+        let previousIndex = selectedEpisodeIndex
+        let previousEpisodeName = vodInfo?.currentEpisode?.name ?? ""
+        let targetFlag = detail.playFlags.contains(selectedFlag) ? selectedFlag : (detail.playFlag.isEmpty ? detail.playFlags[0] : detail.playFlag)
+        let episodes = detail.playUrlMap[targetFlag] ?? []
+        guard !episodes.isEmpty else { return false }
+
+        let matchedIndex = episodes.firstIndex {
+            Self.normalizedAutoMatchText($0.name) == Self.normalizedAutoMatchText(previousEpisodeName)
+        }
+        let targetEpisodeIndex = matchedIndex ?? min(max(previousIndex, 0), episodes.count - 1)
+        let episodeURL = episodes[targetEpisodeIndex].url
+        let candidateKey = playbackAttemptKey(
+            sourceKey: source.key,
+            vodId: detail.id,
+            flag: targetFlag,
+            episodeIndex: targetEpisodeIndex,
+            url: episodeURL
+        )
+        guard !failedPlaybackAttempts.contains(candidateKey) else { return false }
+
+        currentSource = source
+        activeVideo = video
+        detail.playFlag = targetFlag
+        detail.playIndex = targetEpisodeIndex
+        vodInfo = detail
+        selectedFlag = targetFlag
+        selectedEpisodeIndex = targetEpisodeIndex
+        bridgeCredentialAutoSubmitted.removeAll()
+        pendingBridgePlayback = nil
+        bridgeTokenPrompt = nil
+        isBridgeTokenPromptPresented = false
+        bridgeJarUiResponse = nil
+        isBridgeJarUiPresented = false
+        resumeSeconds = currentPlaybackSeconds() >= 5 ? currentPlaybackSeconds() : 0
+        realtimeProgressSeconds = resumeSeconds
+        if source.requiresBridge {
+            resetQualityState()
+        } else {
+            updateQualityOptions(for: episodeURL, resetSelection: true)
+        }
+        let detailId = detail.id
+        playbackFallbackMessage = "播放异常，已自动切换到 \(source.name)"
+        detailPlaybackLogger.info("auto switch site source=\(source.key, privacy: .public) vod=\(detailId, privacy: .public) trigger=\(trigger, privacy: .public)")
+        startPlayback(episodeURL: episodeURL, flag: targetFlag)
+        return true
+    }
+
+    private func markCurrentPlaybackAttemptFailed() {
+        guard let info = vodInfo, let source = currentSource else { return }
+        let currentURL = playUrl ?? info.currentEpisode?.url ?? ""
+        failedPlaybackAttempts.insert(playbackAttemptKey(
+            sourceKey: source.key,
+            vodId: info.id,
+            flag: selectedFlag,
+            episodeIndex: selectedEpisodeIndex,
+            url: currentURL
+        ))
+        failedSiteVideoKeys.insert(playbackSiteVideoKey(sourceKey: source.key, vodId: info.id))
+    }
+
+    private func resetAutomaticPlaybackRecovery(clearAttempts: Bool) {
+        autoRecoveryTask?.cancel()
+        autoRecoveryTask = nil
+        cancelPlaybackWatchdog()
+        isAutoSwitchingPlayback = false
+        playbackFallbackMessage = nil
+        if clearAttempts {
+            failedPlaybackAttempts.removeAll()
+            failedSiteVideoKeys.removeAll()
+        }
+    }
+
+    private func schedulePlaybackWatchdog() {
+        cancelPlaybackWatchdog()
+        guard isPlaying, let currentURL = playUrl, !currentURL.isEmpty else { return }
+        let token = UUID()
+        playbackWatchdogToken = token
+        playbackWatchdogBaseline = currentPlaybackSeconds()
+        let baseline = playbackWatchdogBaseline
+        let timeout = playbackStartupTimeoutNanoseconds
+        playbackWatchdogTask = Task { [token, currentURL, baseline, timeout] in
+            try? await Task.sleep(nanoseconds: timeout)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.playbackWatchdogToken == token,
+                      self.isPlaying,
+                      self.playUrl == currentURL else { return }
+                let advanced = self.currentPlaybackSeconds() - baseline
+                if advanced < 1.0 {
+                    self.handlePlaybackFailure(reason: "播放启动超时")
+                }
+            }
+        }
+    }
+
+    private func cancelPlaybackWatchdog() {
+        playbackWatchdogTask?.cancel()
+        playbackWatchdogTask = nil
+        playbackWatchdogToken = UUID()
+    }
+
+    private func playbackAttemptKey(sourceKey: String, vodId: String, flag: String, episodeIndex: Int, url: String) -> String {
+        [
+            sourceKey,
+            vodId,
+            flag,
+            String(episodeIndex),
+            url.trimmingCharacters(in: .whitespacesAndNewlines)
+        ].joined(separator: "|")
+    }
+
+    private func playbackSiteVideoKey(sourceKey: String, vodId: String) -> String {
+        "\(sourceKey)|\(vodId)"
+    }
+
+    private static func normalizedAutoMatchText(_ text: String) -> String {
+        let folded = text.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        let scalars = folded.unicodeScalars.filter { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar) &&
+            !CharacterSet.punctuationCharacters.contains(scalar) &&
+            !CharacterSet.symbols.contains(scalar)
+        }
+        return String(String.UnicodeScalarView(scalars)).lowercased()
     }
     
     /// 重置清晰度解析与选择状态。

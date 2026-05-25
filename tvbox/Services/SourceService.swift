@@ -518,11 +518,10 @@ class SourceService {
             )
         } else if sourceBean.type == 4 {
             // Type 4: 远程接口
-            let quickValue = sourceBean.isQuickSearchEnabled ? "true" : "false"
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(name: "wd", value: keyword),
                 URLQueryItem(name: "ac", value: "detail"),
-                URLQueryItem(name: "quick", value: quickValue)
+                URLQueryItem(name: "quick", value: "false")
             ]
 
             // 加载 extend
@@ -557,9 +556,15 @@ class SourceService {
         let candidates = sources.enumerated().filter { _, source in
             source.isAvailableForPlayback && (source.requiresBridge || source.isHttpApi)
         }
+        let maxConcurrentSearches = 20
 
         return await withTaskGroup(of: (Int, SourceBean, [Movie.Video]).self) { group in
-            for (index, source) in candidates {
+            var nextCandidate = 0
+
+            func enqueueNextSearch() {
+                guard nextCandidate < candidates.count else { return }
+                let (index, source) = candidates[nextCandidate]
+                nextCandidate += 1
                 group.addTask { [self] in
                     do {
                         return (index, source, try await self.search(sourceBean: source, keyword: keyword))
@@ -569,9 +574,16 @@ class SourceService {
                 }
             }
 
+            for _ in 0..<min(maxConcurrentSearches, candidates.count) {
+                enqueueNextSearch()
+            }
+
             var groups: [(Int, SearchResultGroup)] = []
-            for await (index, source, videos) in group where !videos.isEmpty {
-                groups.append((index, SearchResultGroup(source: source, videos: videos)))
+            while let (index, source, videos) = await group.next() {
+                if !videos.isEmpty {
+                    groups.append((index, SearchResultGroup(source: source, videos: videos)))
+                }
+                enqueueNextSearch()
             }
             return groups.sorted { $0.0 < $1.0 }.map(\.1)
         }

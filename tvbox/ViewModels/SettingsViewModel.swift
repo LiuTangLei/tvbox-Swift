@@ -128,7 +128,10 @@ class SettingsViewModel: ObservableObject {
         let savedStep = defaults.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         playTimeStep = savedStep > 0 ? savedStep : 10
         bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
-        bridgeServerUrl = defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? ""
+        bridgeServerUrl = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
+        if !bridgeServerUrl.isEmpty {
+            defaults.set(bridgeServerUrl, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        }
         refreshCacheSize()
     }
 
@@ -266,12 +269,17 @@ class SettingsViewModel: ObservableObject {
             defaults.set(legacyHistory, forKey: HawkConfig.CONFIG_API_HISTORY)
         }
 
-        bridgeServerHistory = defaults.stringArray(forKey: HawkConfig.BRIDGE_SERVER_HISTORY) ?? []
+        bridgeServerHistory = (defaults.stringArray(forKey: HawkConfig.BRIDGE_SERVER_HISTORY) ?? [])
+            .map(BridgeServerEndpoint.normalized)
+            .filter { !$0.isEmpty }
+        defaults.set(bridgeServerHistory, forKey: HawkConfig.BRIDGE_SERVER_HISTORY)
     }
 
     /// 新增历史并去重，最多保留 10 条。
     private func addToAddressHistory(_ url: String, kind: AddressHistoryKind) {
-        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = kind == .bridge
+            ? BridgeServerEndpoint.normalized(url)
+            : url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         switch kind {
@@ -327,25 +335,21 @@ class SettingsViewModel: ObservableObject {
     }
 
     func prepareBridgeForSetup() {
-        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shouldEnableBridge = !trimmed.isEmpty
-        bridgeServerUrl = trimmed
+        let normalized = normalizeBridgeServerUrlForStorage()
+        let shouldEnableBridge = !normalized.isEmpty
         bridgeEnabled = shouldEnableBridge
         bridgeStatusText = shouldEnableBridge ? "待检测" : "未配置"
-        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
         UserDefaults.standard.set(shouldEnableBridge, forKey: HawkConfig.BRIDGE_ENABLED)
-        addToAddressHistory(trimmed, kind: .bridge)
+        addToAddressHistory(normalized, kind: .bridge)
         notifyBridgeAvailabilityChanged()
     }
 
     func saveBridgeSettingsAndTest() async {
-        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        bridgeServerUrl = trimmed
-        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        let normalized = normalizeBridgeServerUrlForStorage()
         UserDefaults.standard.set(bridgeEnabled, forKey: HawkConfig.BRIDGE_ENABLED)
-        addToAddressHistory(trimmed, kind: .bridge)
+        addToAddressHistory(normalized, kind: .bridge)
         notifyBridgeAvailabilityChanged()
-        guard bridgeEnabled, !trimmed.isEmpty else {
+        guard bridgeEnabled, !normalized.isEmpty else {
             bridgeStatusText = bridgeEnabled ? "未配置" : "已停用"
             return
         }
@@ -357,12 +361,11 @@ class SettingsViewModel: ObservableObject {
             bridgeStatusText = "已停用"
             return
         }
-        let trimmed = bridgeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let normalized = normalizeBridgeServerUrlForStorage()
+        guard !normalized.isEmpty else {
             bridgeStatusText = "未配置"
             return
         }
-        UserDefaults.standard.set(trimmed, forKey: HawkConfig.BRIDGE_SERVER_URL)
         isTestingBridge = true
         defer { isTestingBridge = false }
         do {
@@ -374,8 +377,15 @@ class SettingsViewModel: ObservableObject {
     }
 
     private func bridgeStatusDescription(for health: BridgeHealth) -> String {
-        let portText = health.port.map { ":\($0)" } ?? ""
-        var parts = ["可用\(portText)"]
+        var parts = ["可用"]
+        let endpoint = BridgeServerEndpoint.display(bridgeServerUrl)
+        if !endpoint.isEmpty {
+            parts.append(endpoint)
+        } else if let address = health.address, !address.isEmpty {
+            parts.append(BridgeServerEndpoint.display(address))
+        } else if let port = health.port {
+            parts.append(":\(port)")
+        }
         if let primary = health.abi?.primary, !primary.isEmpty {
             parts.append(primary)
         }
@@ -383,6 +393,21 @@ class SettingsViewModel: ObservableObject {
             parts.append("P2P受限")
         }
         return parts.joined(separator: " ")
+    }
+
+    var bridgeServerSummary: String {
+        let endpoint = BridgeServerEndpoint.display(bridgeServerUrl)
+        guard !endpoint.isEmpty else { return bridgeStatusText }
+        if bridgeStatusText.contains(endpoint) { return bridgeStatusText }
+        return "\(endpoint) · \(bridgeStatusText)"
+    }
+
+    @discardableResult
+    private func normalizeBridgeServerUrlForStorage() -> String {
+        let normalized = BridgeServerEndpoint.normalized(bridgeServerUrl)
+        bridgeServerUrl = normalized
+        UserDefaults.standard.set(normalized, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        return normalized
     }
 
     private func notifyBridgeAvailabilityChanged() {

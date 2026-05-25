@@ -43,6 +43,8 @@ struct Movie: Codable {
         var last: String = ""
         /// 播放来源信息（部分接口会复用该字段）。
         var dt: String = ""
+        /// 播放地址列表（部分搜索结果会直接携带该字段）。
+        var playUrl: String = ""
         /// Android/FongMi 动作卡片标记，存在时应执行 `SiteApi.action` 而不是进入详情。
         var action: String = ""
         /// Android/FongMi 标签，例如 folder。
@@ -73,6 +75,7 @@ struct Movie: Codable {
             case tid = "type_id"
             case last = "vod_time"
             case dt = "vod_play_from"
+            case playUrl = "vod_play_url"
             case action
             case tag = "vod_tag"
             case cate
@@ -111,6 +114,7 @@ struct Movie: Codable {
             }()
             self.last = (try? container.decode(String.self, forKey: .last)) ?? ""
             self.dt = (try? container.decode(String.self, forKey: .dt)) ?? ""
+            self.playUrl = (try? container.decode(String.self, forKey: .playUrl)) ?? ""
             self.action = (try? container.decode(String.self, forKey: .action)) ?? ""
             self.tag = (try? container.decode(String.self, forKey: .tag)) ?? ""
             self.cate = try? container.decode(FolderCate.self, forKey: .cate)

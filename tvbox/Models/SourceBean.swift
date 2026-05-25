@@ -17,6 +17,8 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let filterable: Int
     /// 快速搜索开关：0 关闭，1 开启（主要用于 remote 源 quick 参数）。
     let quickSearch: Int
+    /// 自动换源开关：0 禁止，1 允许，2 运行时标记为不可换。
+    let changeable: Int
     /// 源声明的播放器类型（历史字段，Swift 端目前主要走统一播放器策略）。
     let playerType: Int
     /// 源协议类型：0 XML，1 JSON，3 JAR，4 Remote。
@@ -28,13 +30,14 @@ struct SourceBean: Codable, Identifiable, Hashable {
 
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
-            playerType: Int = 0, type: Int = 1, ext: String? = nil, jar: String? = nil) {
+            changeable: Int = 1, playerType: Int = 0, type: Int = 1, ext: String? = nil, jar: String? = nil) {
         self.key = key
         self.name = name
         self.api = api
         self.searchable = searchable
         self.filterable = filterable
         self.quickSearch = quickSearch
+        self.changeable = changeable
         self.playerType = playerType
         self.type = type
         self.ext = ext
@@ -44,6 +47,7 @@ struct SourceBean: Codable, Identifiable, Hashable {
     var isSearchable: Bool { searchable == 1 }
     var isFilterable: Bool { filterable == 1 }
     var isQuickSearchEnabled: Bool { quickSearch == 1 }
+    var isChangeable: Bool { changeable == 1 }
 
     /// 是否由 Swift 本地直接支持；type=3 需要 Bridge Server。
     var isSupportedInSwift: Bool {

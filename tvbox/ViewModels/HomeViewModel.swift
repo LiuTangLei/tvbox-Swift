@@ -253,9 +253,16 @@ class HomeViewModel: ObservableObject {
         await loadCategoryVideos(page: nextPage, sort: sort, filters: currentRequestFilters)
     }
 
+    func isBridgeActionCard(_ video: Movie.Video) -> Bool {
+        if video.isAction { return true }
+        guard let source = ApiConfig.shared.getSource(key: video.sourceKey) ?? ApiConfig.shared.homeSourceBean else { return false }
+        guard source.requiresBridge, isBridgeConfigSource(source) else { return false }
+        return looksLikeBridgeSettingCard(video)
+    }
+
     func performAction(for video: Movie.Video) async {
         let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !action.isEmpty else { return }
+        guard !action.isEmpty || isBridgeActionCard(video) else { return }
         guard let source = ApiConfig.shared.getSource(key: video.sourceKey) ?? ApiConfig.shared.homeSourceBean else { return }
         guard source.requiresBridge else {
             actionMessage = "当前动作需要 Android Bridge"
@@ -442,6 +449,43 @@ class HomeViewModel: ObservableObject {
         let allowedKeys = Set(sort.filters.map(\.key))
         let retained = filters.filter { allowedKeys.contains($0.key) }
         return retained.isEmpty ? defaultFilters(for: sort) : retained
+    }
+
+    private func isBridgeConfigSource(_ source: SourceBean) -> Bool {
+        let text = "\(source.key) \(source.name) \(source.api)".lowercased()
+        return text.contains("config") || text.contains("配置中心")
+    }
+
+    private func looksLikeBridgeSettingCard(_ video: Movie.Video) -> Bool {
+        let id = video.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let name = video.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let note = video.note.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !id.isEmpty else { return false }
+        let text = "\(id) \(name) \(note)"
+        let hasSettingIntent = note.contains("点击")
+            || name.contains("设置")
+            || name.contains("清除")
+            || name.contains("重置")
+            || name.contains("备份")
+            || name.contains("恢复")
+            || name.contains("导入")
+            || name.contains("查看")
+            || id.contains("cookie")
+            || id.contains("token")
+            || id.contains("login")
+            || id.contains("clear")
+        let hasConfigKeyword = text.contains("cookie")
+            || text.contains("token")
+            || text.contains("账号")
+            || text.contains("设置")
+            || text.contains("清除")
+            || text.contains("配置")
+            || text.contains("备份")
+            || text.contains("恢复")
+            || text.contains("重置")
+            || text.contains("dns")
+            || text.contains("emby")
+        return hasSettingIntent && hasConfigKeyword
     }
 
     private func handleBridgeActionResponse(_ response: BridgeActionResponse, source: SourceBean) {

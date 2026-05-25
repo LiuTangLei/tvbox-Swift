@@ -21,7 +21,7 @@ struct SettingsView: View {
             switch self {
             case .vod: return "请输入点播接口地址"
             case .live: return "请输入直播接口地址（可留空跟随点播）"
-            case .bridge: return "例如 http://192.168.1.10:9978"
+            case .bridge: return "例如 https://tva.yesican.top 或 http://192.168.1.10:9978"
             }
         }
     }
@@ -94,7 +94,7 @@ struct SettingsView: View {
                         SettingsRow(
                             icon: "network",
                             title: "Bridge Server",
-                            value: viewModel.bridgeServerUrl.isEmpty ? viewModel.bridgeStatusText : viewModel.bridgeStatusText
+                            value: viewModel.bridgeServerSummary
                         ) {
                             activeApiInputType = .bridge
                         }

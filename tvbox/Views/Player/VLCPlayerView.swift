@@ -163,6 +163,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var currentMediaIsBridgeProxy = false
     private var currentMediaDecodeMode: VideoDecodeMode = .auto
     private var currentMediaBufferMode: VLCBufferMode = .defaultMode
+    private var currentMediaHeaderKey = ""
     private var onProgressChanged: ((Double, Double?) -> Void)?
     private var onPlaybackEnded: (() -> Void)?
     private var onPlaybackFailed: (() -> Void)?
@@ -220,6 +221,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     func play(
         url: URL,
+        httpHeaders: [String: String] = [:],
         startPosition: Double,
         isLive: Bool,
         onProgressChanged: ((Double, Double?) -> Void)?,
@@ -227,8 +229,10 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         onPlaybackFailed: (() -> Void)?
     ) {
         let targetURLString = url.absoluteString
+        let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
+        let targetHeaderKey = PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
         let targetIsBridgeProxy = Self.isBridgeProxyURL(url)
-        let isNewMedia = currentMediaURLString != targetURLString || currentMediaIsLive != isLive
+        let isNewMedia = currentMediaURLString != targetURLString || currentMediaHeaderKey != targetHeaderKey || currentMediaIsLive != isLive
         if isNewMedia {
             resetPlaybackRecoveryState()
         }
@@ -242,6 +246,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
         // 同一路径/同场景（点播或直播）时复用当前实例，避免切全屏触发重新加载
         if currentMediaURLString == targetURLString,
+           currentMediaHeaderKey == targetHeaderKey,
            currentMediaIsLive == isLive,
            currentMediaIsBridgeProxy == targetIsBridgeProxy,
            currentMediaDecodeMode == effectiveDecodeMode,
@@ -310,6 +315,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if url.scheme?.lowercased() == "rtsp" {
             mediaOptions["rtsp-tcp"] = 1
         }
+        applyHTTPHeaders(normalizedHeaders, to: &mediaOptions, media: media)
 
         media.addOptions(mediaOptions)
         // 对布尔型选项使用显式 no- 前缀，避免 0/1 在不同 libvlc 版本下解释不一致。
@@ -325,6 +331,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         scheduleTrackRefreshes()
         startProgressTimer()
         currentMediaURLString = targetURLString
+        currentMediaHeaderKey = targetHeaderKey
         currentMediaIsLive = isLive
         currentMediaIsBridgeProxy = targetIsBridgeProxy
         currentMediaDecodeMode = effectiveDecodeMode
@@ -349,6 +356,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         videoSize = .zero
         #endif
         currentMediaURLString = nil
+        currentMediaHeaderKey = ""
         currentMediaIsLive = false
         currentMediaIsBridgeProxy = false
         currentMediaDecodeMode = .auto
@@ -1228,6 +1236,21 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
     }
 
+    private func applyHTTPHeaders(_ headers: [String: String], to mediaOptions: inout [String: Any], media: VLCMedia) {
+        for (key, value) in headers {
+            switch key.lowercased() {
+            case "user-agent":
+                mediaOptions["http-user-agent"] = value
+            case "referer", "referrer":
+                mediaOptions["http-referrer"] = value
+            case "cookie":
+                mediaOptions["http-cookie"] = value
+            default:
+                media.addOption("http-header=\(key): \(value)")
+            }
+        }
+    }
+
     private static func effectiveDecodeMode(configured: VideoDecodeMode, isLive: Bool, isBridgeProxy: Bool) -> VideoDecodeMode {
         guard !isLive, isBridgeProxy, configured == .auto else { return configured }
         return .software
@@ -1250,9 +1273,12 @@ struct VLCVodPlayerView: View {
     }
 
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var isFullscreen: Bool = false
@@ -1367,10 +1393,17 @@ struct VLCVodPlayerView: View {
             startPlayback()
             wakeUpControls()
         }
+        .onChange(of: httpHeaders) { _, _ in
+            startPlayback()
+            wakeUpControls()
+        }
         .onChange(of: controller.currentTimeSeconds) { _, newValue in
             if !isDraggingProgress {
                 draggingSeconds = newValue
             }
+        }
+        .onChange(of: controller.isPlaying) { _, isPlaying in
+            if isPlaying { onPlaybackStarted?() }
         }
         #if os(iOS)
         .onReceive(controller.$videoSize) { newSize in
@@ -1440,6 +1473,7 @@ struct VLCVodPlayerView: View {
     private func startPlayback() {
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[VLC] URL sanitization failed for: \(urlString)")
+            onPlaybackFailed?()
             return
         }
         let targetStartPosition = max(startPosition, 0)
@@ -1451,11 +1485,12 @@ struct VLCVodPlayerView: View {
             guard !Task.isCancelled else { return }
             controller.play(
                 url: url,
+                httpHeaders: httpHeaders,
                 startPosition: targetStartPosition,
                 isLive: false,
                 onProgressChanged: onProgressChanged,
                 onPlaybackEnded: onPlaybackEnded,
-                onPlaybackFailed: nil
+                onPlaybackFailed: onPlaybackFailed
             )
         }
     }
@@ -2784,9 +2819,12 @@ final class VLCPlayerController: ObservableObject {
 
 struct VLCVodPlayerView: View {
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var isFullscreen: Bool = false
@@ -2796,9 +2834,12 @@ struct VLCVodPlayerView: View {
     var body: some View {
         AVPlayerContentView(
             urlString: urlString,
+            httpHeaders: httpHeaders,
             startPosition: startPosition,
             onProgressChanged: onProgressChanged,
+            onPlaybackStarted: onPlaybackStarted,
             onPlaybackEnded: onPlaybackEnded,
+            onPlaybackFailed: onPlaybackFailed,
             onToggleFullScreen: onToggleFullScreen,
             onVideoOrientationChanged: onVideoOrientationChanged,
             isFullscreen: isFullscreen,

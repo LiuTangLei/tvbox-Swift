@@ -20,6 +20,117 @@ struct BridgeAbiInfo: Decodable {
     let disabledExtractors: [String]?
 }
 
+struct BridgePlayback: Hashable {
+    let url: String
+    let headers: [String: String]
+}
+
+enum PlaybackHTTPHeaders {
+    static func normalized(_ headers: [String: String]?) -> [String: String] {
+        guard let headers else { return [:] }
+        var normalized: [String: String] = [:]
+        for (key, value) in headers {
+            let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let headerValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !headerValue.isEmpty, !shouldSkip(name) else { continue }
+            normalized[name] = headerValue
+        }
+        return normalized
+    }
+
+    static func cacheKey(_ headers: [String: String]) -> String {
+        normalized(headers)
+            .map { ($0.key.lowercased(), $0.value) }
+            .sorted { $0.0 < $1.0 }
+            .map { "\($0.0):\($0.1)" }
+            .joined(separator: "\n")
+    }
+
+    private static func shouldSkip(_ key: String) -> Bool {
+        switch key.lowercased() {
+        case "connection", "content-length", "host", "transfer-encoding":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+enum BridgeServerEndpoint {
+    static func normalized(_ rawValue: String) -> String {
+        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "" }
+        if value.hasPrefix("//") {
+            value = "https:" + value
+        } else if !hasExplicitScheme(value) {
+            value = "\(preferredScheme(for: value))://\(value)"
+        }
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    static func display(_ rawValue: String) -> String {
+        let value = normalized(rawValue)
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme,
+              let host = components.host,
+              !host.isEmpty else {
+            return value
+        }
+        var text = "\(scheme)://\(host)"
+        if let port = components.port, !isDefaultPort(port, for: scheme) {
+            text += ":\(port)"
+        }
+        let path = components.percentEncodedPath
+        if !path.isEmpty, path != "/" {
+            text += path
+        }
+        return text
+    }
+
+    private static func hasExplicitScheme(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*://"#, options: .regularExpression) != nil
+    }
+
+    private static func preferredScheme(for value: String) -> String {
+        isLocalEndpoint(value) ? "http" : "https"
+    }
+
+    private static func isLocalEndpoint(_ value: String) -> Bool {
+        let host = hostCandidate(from: value).lowercased()
+        guard !host.isEmpty else { return false }
+        if host == "localhost" || host == "::1" { return true }
+        if host.hasSuffix(".local") || !host.contains(".") { return true }
+        if host.hasPrefix("fc") || host.hasPrefix("fd") || host.hasPrefix("fe80:") { return true }
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        let first = parts[0]
+        let second = parts[1]
+        return first == 10
+            || first == 127
+            || first == 169 && second == 254
+            || first == 192 && second == 168
+            || first == 172 && (16...31).contains(second)
+    }
+
+    private static func hostCandidate(from value: String) -> String {
+        let endpoint = value.split(whereSeparator: { "/?#".contains($0) }).first.map(String.init) ?? value
+        if endpoint.hasPrefix("["),
+           let end = endpoint.firstIndex(of: "]") {
+            return String(endpoint[endpoint.index(after: endpoint.startIndex)..<end])
+        }
+        let pieces = endpoint.split(separator: ":", omittingEmptySubsequences: false)
+        if pieces.count == 2, pieces[1].allSatisfy(\.isNumber) {
+            return String(pieces[0])
+        }
+        return endpoint
+    }
+
+    private static func isDefaultPort(_ port: Int, for scheme: String) -> Bool {
+        (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
+    }
+}
+
 struct BridgeTransientOverlay: Decodable, Hashable {
     let type: String?
     let message: String
@@ -30,6 +141,7 @@ struct BridgePlayResponse: Decodable {
     let ok: Bool?
     let mode: String?
     let url: String?
+    let headers: [String: String]?
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
@@ -40,7 +152,7 @@ struct BridgePlayResponse: Decodable {
     let toast: BridgeTransientOverlay?
 
     var containsJarUiSnapshot: Bool {
-        mode == "androidJarUi" || image?.isEmpty == false || elements?.isEmpty == false
+        image?.isEmpty == false || elements?.isEmpty == false
     }
 }
 
@@ -61,7 +173,7 @@ struct BridgeActionResponse: Decodable {
     let toast: BridgeTransientOverlay?
 
     var containsJarUiSnapshot: Bool {
-        mode == "androidJarUi" || image?.isEmpty == false || elements?.isEmpty == false
+        image?.isEmpty == false || elements?.isEmpty == false
     }
 }
 
@@ -261,8 +373,9 @@ final class BridgeClient {
     }
     
     var baseURLString: String {
-        UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        BridgeServerEndpoint.normalized(
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? ""
+        )
     }
 
     func updateConfigContext(configUrl: String, spider: String?) {
@@ -322,13 +435,13 @@ final class BridgeClient {
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/detail", body: IdRequest(id: vodId))
     }
     
-    func search(source: SourceBean, keyword: String, page: Int = 1) async throws -> String {
+    func search(source: SourceBean, keyword: String, page: Int = 1, quick: Bool = false) async throws -> String {
         try await registerSourceForRequest(source)
-        let payload = SearchRequest(keyword: keyword, page: page, quick: source.isQuickSearchEnabled)
+        let payload = SearchRequest(keyword: keyword, page: page, quick: quick)
         return try await raw(path: "/api/v1/site/\(escapePath(source.key))/search", body: payload)
     }
     
-    func play(source: SourceBean, flag: String, id: String) async throws -> String {
+    func play(source: SourceBean, flag: String, id: String) async throws -> BridgePlayback {
         try await registerSourceForRequest(source)
         let payload = PlayRequest(flag: flag, id: id)
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
@@ -337,16 +450,16 @@ final class BridgeClient {
         if response.containsJarUiSnapshot {
             throw BridgeError.jarUiRequired(BridgeJarUiResponse(playResponse: response))
         }
+        if response.code == "token_required", let prompt = response.prompt {
+            throw BridgeError.tokenRequired(prompt)
+        }
         if response.ok == false {
-            if response.code == "token_required", let prompt = response.prompt {
-                throw BridgeError.tokenRequired(prompt)
-            }
             throw BridgeError.unsupportedPlayback(response.message ?? response.code ?? "Bridge 暂不支持该播放结果")
         }
         guard response.mode == "direct", let url = response.url, !url.isEmpty else {
             throw BridgeError.unsupportedPlayback("Bridge 未返回可直接播放地址")
         }
-        return url
+        return BridgePlayback(url: url, headers: PlaybackHTTPHeaders.normalized(response.headers))
     }
 
     func submitToken(source: SourceBean, prompt: BridgeTokenPrompt, values: [String: String]) async throws {
@@ -420,10 +533,10 @@ final class BridgeClient {
         let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
         let response = try decoder.decode(BridgeActionResponse.self, from: data)
         bridgeClientLogger.info("action response source=\(source.key, privacy: .public) action=\(action, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        if response.code == "token_required", let prompt = response.prompt {
+            throw BridgeError.tokenRequired(prompt)
+        }
         if response.ok == false {
-            if response.code == "token_required", let prompt = response.prompt {
-                throw BridgeError.tokenRequired(prompt)
-            }
             throw BridgeError.server(response.message ?? response.code ?? "Bridge action 执行失败")
         }
         return response
@@ -451,12 +564,74 @@ final class BridgeClient {
             request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
             request.httpBody = try asciiEscapedJSONData(body)
         }
-        bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public)")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw BridgeError.server("HTTP \(http.statusCode)") }
-        bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
-        return data
+        let retryable = canRetryRequest(method: method, path: path)
+        let maxAttempts = retryable ? 3 : 1
+        let endpoint = BridgeServerEndpoint.display(baseURLString)
+        var lastError: Error?
+
+        for attempt in 1...maxAttempts {
+            bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public) attempt=\(attempt, privacy: .public)")
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
+                if (200...299).contains(http.statusCode) {
+                    bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) attempt=\(attempt, privacy: .public)")
+                    return data
+                }
+                if isTransientGatewayStatus(http.statusCode), attempt < maxAttempts {
+                    bridgeClientLogger.warning("transient bridge gateway status=\(http.statusCode, privacy: .public) path=\(path, privacy: .public) attempt=\(attempt, privacy: .public)")
+                    try await sleepBeforeRetry(attempt: attempt)
+                    continue
+                }
+                throw BridgeError.server("HTTP \(http.statusCode) \(path) @ \(endpoint)")
+            } catch {
+                lastError = error
+                guard attempt < maxAttempts, retryable, shouldRetryNetworkError(error) else { throw error }
+                bridgeClientLogger.warning("transient bridge network error path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                try await sleepBeforeRetry(attempt: attempt)
+            }
+        }
+
+        if let lastError { throw lastError }
+        throw BridgeError.invalidResponse
+    }
+
+    private func canRetryRequest(method: String, path: String) -> Bool {
+        if method.uppercased() == "GET" { return true }
+        let lowercasedPath = path.lowercased()
+        return lowercasedPath == "/api/v1/config/register"
+            || lowercasedPath.hasSuffix("/home")
+            || lowercasedPath.hasSuffix("/category")
+            || lowercasedPath.hasSuffix("/detail")
+            || lowercasedPath.hasSuffix("/search")
+            || lowercasedPath.hasSuffix("/uistatus")
+    }
+
+    private func isTransientGatewayStatus(_ statusCode: Int) -> Bool {
+        statusCode == 502 || statusCode == 503 || statusCode == 504
+    }
+
+    private func shouldRetryNetworkError(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut,
+             .networkConnectionLost,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .secureConnectionFailed,
+             .badServerResponse:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func sleepBeforeRetry(attempt: Int) async throws {
+        let delayNanoseconds = UInt64(attempt) * 300_000_000
+        try await Task.sleep(nanoseconds: delayNanoseconds)
     }
 
     private func asciiEscapedJSONData<T: Encodable>(_ body: T) throws -> Data {
@@ -499,7 +674,7 @@ final class BridgeClient {
     }
     
     private func normalizedBaseURL() -> String {
-        var value = baseURLString
+        var value = BridgeServerEndpoint.normalized(baseURLString)
         while value.hasSuffix("/") { value.removeLast() }
         return value
     }

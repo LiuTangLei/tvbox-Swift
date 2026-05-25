@@ -32,9 +32,12 @@ struct DetailView: View {
                 if !showFullScreen, !isFullScreenDismissing, viewModel.isPlaying, let url = viewModel.playUrl {
                     PlayerView(
                         urlString: url,
+                        httpHeaders: viewModel.playHeaders,
                         startPosition: viewModel.currentPlaybackSeconds(),
                         onProgressChanged: handlePlaybackProgress,
+                        onPlaybackStarted: handlePlaybackStarted,
                         onPlaybackEnded: playNextEpisodeIfNeeded,
+                        onPlaybackFailed: handlePlaybackFailure,
                         onToggleFullScreen: {
                             openFullScreenPlayer()
                         },
@@ -93,7 +96,7 @@ struct DetailView: View {
             .padding(.bottom, 40)
         }
         .background(AppTheme.primaryGradient)
-        .navigationTitle(video.name)
+        .navigationTitle(viewModel.vodInfo?.name ?? viewModel.activeVideo?.name ?? video.name)
         #if os(macOS)
         .toolbar((showFullScreen || pendingMacWindowFullScreen) ? .hidden : .visible, for: .windowToolbar)
         #endif
@@ -121,9 +124,12 @@ struct DetailView: View {
             if showFullScreen, let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     onProgressChanged: handlePlaybackProgress,
+                    onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onPlaybackFailed: handlePlaybackFailure,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
                     systemController: sharedSystemController,
@@ -156,9 +162,12 @@ struct DetailView: View {
             if let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     onProgressChanged: handlePlaybackProgress,
+                    onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onPlaybackFailed: handlePlaybackFailure,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
                     systemController: sharedSystemController,
@@ -313,7 +322,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var playButton: some View {
-        if !viewModel.isPlaying && viewModel.vodInfo != nil {
+        if !viewModel.isPlaying && !viewModel.currentEpisodes.isEmpty {
             Button {
                 guard !viewModel.isResolvingBridgePlayback else { return }
                 viewModel.selectEpisode(index: 0)
@@ -542,7 +551,9 @@ struct DetailView: View {
 
     private var shouldShowPlaybackStatus: Bool {
         viewModel.isResolvingBridgePlayback
+            || viewModel.isAutoSwitchingPlayback
             || viewModel.bridgeTokenPrompt != nil
+            || !(viewModel.playbackFallbackMessage ?? "").isEmpty
             || !(viewModel.bridgePlaybackMessage ?? "").isEmpty
             || !(viewModel.errorMessage ?? "").isEmpty
     }
@@ -556,6 +567,15 @@ struct DetailView: View {
                         .controlSize(.small)
                         .tint(.white)
                     Text(viewModel.bridgePlaybackMessage ?? "正在获取播放地址...")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+            } else if viewModel.isAutoSwitchingPlayback {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                    Text(viewModel.playbackFallbackMessage ?? "正在自动切换播放源...")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white.opacity(0.9))
                 }
@@ -591,6 +611,15 @@ struct DetailView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            } else if let message = viewModel.playbackFallbackMessage, !message.isEmpty {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundColor(.yellow)
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else if let message = viewModel.bridgePlaybackMessage, !message.isEmpty {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "key.fill")
@@ -616,6 +645,7 @@ struct DetailView: View {
     }
     
     private func saveHistoryForCurrentEpisode(progressOverride: Double? = nil) {
+        let historyVideo = viewModel.activeVideo ?? video
         let episodeName = viewModel.vodInfo?.currentEpisode?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let episodeLabel = episodeName.isEmpty ? "第\(viewModel.selectedEpisodeIndex + 1)集" : episodeName
         let progress = max(progressOverride ?? viewModel.currentPlaybackSeconds(), 0)
@@ -630,7 +660,7 @@ struct DetailView: View {
         
         Task { @MainActor in
             CacheStore.shared.addRecord(
-                video,
+                historyVideo,
                 playNote: playNote,
                 playbackState: playbackState,
                 context: modelContext
@@ -641,6 +671,14 @@ struct DetailView: View {
     private func handlePlaybackProgress(_ seconds: Double, _: Double?) {
         viewModel.updatePlaybackProgress(seconds: seconds)
         persistHistoryIfNeeded(force: false, currentProgress: seconds)
+    }
+
+    private func handlePlaybackStarted() {
+        viewModel.markPlaybackStarted()
+    }
+
+    private func handlePlaybackFailure() {
+        viewModel.handlePlaybackFailure(reason: "播放器报告播放失败")
     }
     
     private func persistHistoryIfNeeded(force: Bool, currentProgress: Double? = nil) {
@@ -1583,9 +1621,12 @@ private func makeBridgeLoginConfiguration() -> WKWebViewConfiguration {
 /// 全屏播放器
 struct FullScreenPlayerView: View {
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
@@ -1605,9 +1646,12 @@ struct FullScreenPlayerView: View {
 
                 PlayerView(
                     urlString: urlString,
+                    httpHeaders: httpHeaders,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
+                    onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
+                    onPlaybackFailed: onPlaybackFailed,
                     onToggleFullScreen: {
                         if let onCloseRequested {
                             onCloseRequested()

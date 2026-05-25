@@ -152,9 +152,12 @@ final class SystemPlayerSessionController: ObservableObject {
 /// 视频播放器组件 - 对应 Android 版 PlayFragment
 struct PlayerView: View {
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var isFullscreen: Bool = false
@@ -193,9 +196,12 @@ struct PlayerView: View {
             case .system:
                 AVPlayerContentView(
                     urlString: urlString,
+                    httpHeaders: httpHeaders,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
+                    onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
+                    onPlaybackFailed: onPlaybackFailed,
                     onToggleFullScreen: onToggleFullScreen,
                     onVideoOrientationChanged: onVideoOrientationChanged,
                     isFullscreen: isFullscreen,
@@ -206,9 +212,12 @@ struct PlayerView: View {
             case .vlc:
                 VLCVodPlayerView(
                     urlString: urlString,
+                    httpHeaders: httpHeaders,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
+                    onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
+                    onPlaybackFailed: onPlaybackFailed,
                     onToggleFullScreen: onToggleFullScreen,
                     onVideoOrientationChanged: onVideoOrientationChanged,
                     isFullscreen: isFullscreen,
@@ -256,9 +265,12 @@ struct AVPlayerContentView: View {
 
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
+    var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var isFullscreen: Bool = false
@@ -268,6 +280,8 @@ struct AVPlayerContentView: View {
     @AppStorage(HawkConfig.PLAY_SPEED) private var savedPlaybackRate = 1.0
     @State private var player: AVPlayer?
     @State private var playbackEndObserver: NSObjectProtocol?
+    @State private var playbackFailedObserver: NSObjectProtocol?
+    @State private var playbackStalledObserver: NSObjectProtocol?
     @State private var timeObserverToken: Any?
 
     // UI 状态
@@ -295,6 +309,8 @@ struct AVPlayerContentView: View {
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
+    @State private var hasReportedPlaybackFailure = false
+    @State private var stalledRecoveryWorkItem: DispatchWorkItem?
 
     @State private var videoZoomScale: CGFloat = 1.0
     @State private var lastReportedVideoOrientation: Bool?
@@ -407,6 +423,11 @@ struct AVPlayerContentView: View {
             setupPlayer()
             wakeUpControls()
         }
+        .onChange(of: httpHeaders) { _, _ in
+            syncRateFromSettings()
+            setupPlayer()
+            wakeUpControls()
+        }
         .onDisappear {
             cleanupPlayer(keepSharedPlayer: sharedController != nil)
             controlsTimer?.invalidate()
@@ -427,12 +448,15 @@ struct AVPlayerContentView: View {
             return
         }
         let targetURLString = url.absoluteString
+        let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
+        let targetPlaybackKey = targetURLString + "\n" + PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
         let preferredRate = normalizedSavedPlaybackRate
         rate = preferredRate
         playbackError = nil
+        hasReportedPlaybackFailure = false
 
         if let sharedController,
-           sharedController.mediaURLString == targetURLString,
+           sharedController.mediaURLString == targetPlaybackKey,
            let sharedPlayer = sharedController.player {
             cleanupPlayer(keepSharedPlayer: true)
             // 强制重新关联 AVPlayerItem，修复从全屏退出后 VideoPlayer 黑屏问题。
@@ -462,8 +486,10 @@ struct AVPlayerContentView: View {
         // 清理旧播放器
         cleanupPlayer()
 
-        // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
-        let asset = AVURLAsset(url: url)
+        let assetOptions: [String: Any]? = normalizedHeaders.isEmpty
+            ? nil
+            : ["AVURLAssetHTTPHeaderFieldsKey": normalizedHeaders]
+        let asset = AVURLAsset(url: url, options: assetOptions)
         asset.resourceLoader.setDelegate(nil, queue: nil)
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = 0
@@ -471,7 +497,7 @@ struct AVPlayerContentView: View {
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.defaultRate = preferredRate
         if let sharedController {
-            sharedController.setPlayer(newPlayer, urlString: targetURLString)
+            sharedController.setPlayer(newPlayer, urlString: targetPlaybackKey)
         }
 
         player = newPlayer
@@ -497,7 +523,10 @@ struct AVPlayerContentView: View {
         var observations: [NSKeyValueObservation] = [
             player.observe(\.timeControlStatus, options: [.new]) { p, _ in
                 let status = p.timeControlStatus
-                DispatchQueue.main.async { isPlaying = status == .playing }
+                DispatchQueue.main.async {
+                    isPlaying = status == .playing
+                    if status == .playing { onPlaybackStarted?() }
+                }
             },
             player.observe(\.reasonForWaitingToPlay, options: [.new]) { p, _ in
                 let reason = p.reasonForWaitingToPlay
@@ -525,12 +554,12 @@ struct AVPlayerContentView: View {
                 if observedItem.status == .failed {
                     let errorDesc = observedItem.error?.localizedDescription ?? "未知错误"
                     DispatchQueue.main.async {
-                        isPreparing = false
-                        playbackError = errorDesc
+                        self.reportPlaybackFailure(errorDesc)
                     }
                 } else if observedItem.status == .readyToPlay {
                     DispatchQueue.main.async {
                         playbackError = nil
+                        hasReportedPlaybackFailure = false
                         reportVideoOrientation(for: observedItem.presentationSize)
                         refreshMediaTracks(for: player)
                     }
@@ -542,12 +571,14 @@ struct AVPlayerContentView: View {
                     reportVideoOrientation(for: presentationSize)
                 }
             })
+            observePlaybackFailure(for: item, player: player)
         }
         playerObservers = observations
         observePlaybackProgress(for: player)
         observePlaybackEnd(for: player)
         refreshMediaTracks(for: player)
         isPlaying = player.timeControlStatus == .playing
+        if isPlaying { onPlaybackStarted?() }
         isPreparing = player.reasonForWaitingToPlay != nil
         volume = Double(player.volume)
         rate = normalizedSavedPlaybackRate
@@ -562,6 +593,16 @@ struct AVPlayerContentView: View {
             NotificationCenter.default.removeObserver(observer)
             playbackEndObserver = nil
         }
+        if let observer = playbackFailedObserver {
+            NotificationCenter.default.removeObserver(observer)
+            playbackFailedObserver = nil
+        }
+        if let observer = playbackStalledObserver {
+            NotificationCenter.default.removeObserver(observer)
+            playbackStalledObserver = nil
+        }
+        stalledRecoveryWorkItem?.cancel()
+        stalledRecoveryWorkItem = nil
         playerObservers.forEach { $0.invalidate() }
         playerObservers.removeAll()
     }
@@ -666,6 +707,48 @@ struct AVPlayerContentView: View {
         ) { _ in
             onPlaybackEnded?()
         }
+    }
+
+    private func observePlaybackFailure(for item: AVPlayerItem, player: AVPlayer) {
+        playbackFailedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            self.reportPlaybackFailure(error?.localizedDescription ?? "播放中断")
+        }
+
+        playbackStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { _ in
+            self.scheduleStalledRecoveryCheck(for: player)
+        }
+    }
+
+    private func scheduleStalledRecoveryCheck(for player: AVPlayer) {
+        stalledRecoveryWorkItem?.cancel()
+        let baseline = player.currentTime().seconds
+        let workItem = DispatchWorkItem {
+            guard self.player === player else { return }
+            let current = player.currentTime().seconds
+            let advanced = current.isFinite && baseline.isFinite ? current - baseline : 0
+            if advanced < 0.5 && player.timeControlStatus != .playing {
+                self.reportPlaybackFailure("播放卡住")
+            }
+        }
+        stalledRecoveryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: workItem)
+    }
+
+    private func reportPlaybackFailure(_ message: String) {
+        guard !hasReportedPlaybackFailure else { return }
+        hasReportedPlaybackFailure = true
+        isPreparing = false
+        playbackError = message
+        onPlaybackFailed?()
     }
 
     private func observePlaybackProgress(for player: AVPlayer) {
