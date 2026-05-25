@@ -112,12 +112,14 @@ struct DetailView: View {
             viewModel.commitPlaybackProgressSnapshot()
             persistHistoryIfNeeded(force: true)
             showFullScreen = false
-            sharedSystemController.stop()
-            sharedVLCController.stop()
+            stopSharedPlayers()
             #if os(macOS)
             pendingMacWindowFullScreen = false
             appState.exitPlayerFullScreen()
             #endif
+        }
+        .onChange(of: viewModel.isPlaying) { _, isPlaying in
+            if !isPlaying { stopSharedPlayers() }
         }
         #if os(macOS)
         .overlay {
@@ -239,7 +241,7 @@ struct DetailView: View {
         VStack(spacing: 16) {
             // Poster centered, height capped to 30% of screen
             let posterHeight = UIScreen.main.bounds.height * 0.30
-            CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+            CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
                 image.resizable().aspectRatio(2/3, contentMode: .fit)
             } placeholder: {
                 Color.white.opacity(0.05)
@@ -278,7 +280,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var videoPoster: some View {
-        CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+        CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
             image.resizable().aspectRatio(2/3, contentMode: .fill)
         } placeholder: {
             ZStack {
@@ -678,7 +680,13 @@ struct DetailView: View {
     }
 
     private func handlePlaybackFailure() {
+        stopSharedPlayers()
         viewModel.handlePlaybackFailure(reason: "播放器报告播放失败")
+    }
+
+    private func stopSharedPlayers() {
+        sharedSystemController.stop()
+        sharedVLCController.stop()
     }
     
     private func persistHistoryIfNeeded(force: Bool, currentProgress: Double? = nil) {

@@ -165,6 +165,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var currentMediaBufferMode: VLCBufferMode = .defaultMode
     private var currentMediaHeaderKey = ""
     private var onProgressChanged: ((Double, Double?) -> Void)?
+    private var onPlaybackStarted: (() -> Void)?
     private var onPlaybackEnded: (() -> Void)?
     private var onPlaybackFailed: (() -> Void)?
     private let progressUpdateIntervalVod: TimeInterval = 0.5
@@ -225,6 +226,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         startPosition: Double,
         isLive: Bool,
         onProgressChanged: ((Double, Double?) -> Void)?,
+        onPlaybackStarted: (() -> Void)?,
         onPlaybackEnded: (() -> Void)?,
         onPlaybackFailed: (() -> Void)?
     ) {
@@ -253,6 +255,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
            currentMediaBufferMode == bufferMode,
            mediaPlayer.media != nil {
             self.onProgressChanged = onProgressChanged
+            self.onPlaybackStarted = onPlaybackStarted
             self.onPlaybackEnded = onPlaybackEnded
             self.onPlaybackFailed = onPlaybackFailed
             self.isLive = isLive
@@ -262,6 +265,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             refreshTrackOptions()
             refreshPlaybackFlags()
             emitProgress()
+            if isPlaying { onPlaybackStarted?() }
             return
         }
 
@@ -271,6 +275,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         cancelPendingVodBufferingConfirmation()
         isInBufferingState = false
         self.onProgressChanged = onProgressChanged
+        self.onPlaybackStarted = onPlaybackStarted
         self.onPlaybackEnded = onPlaybackEnded
         self.onPlaybackFailed = onPlaybackFailed
         self.isLive = isLive
@@ -278,7 +283,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         setPlaybackStatus(preparing: true, playing: false)
         resetProgressState()
 
-        mediaPlayer.stop()
+        replaceMediaPlayerForNewMedia()
+        let player = mediaPlayer
         let media = VLCMedia(url: url)
 
         let cacheConfig = Self.cacheConfig(isLive: isLive, isBridgeProxy: targetIsBridgeProxy, bufferMode: bufferMode)
@@ -322,8 +328,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         media.addOption(enableFrameDrop ? "drop-late-frames" : "no-drop-late-frames")
         media.addOption(enableSkipFrames ? "skip-frames" : "no-skip-frames")
 
-        mediaPlayer.media = media
-        mediaPlayer.play()
+        player.media = media
+        player.play()
         applyPlaybackRate()
         applyVolume()
         applySubtitleAppearance()
@@ -346,6 +352,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         stopMediaPlayer()
         mediaPlayer.media = nil
         onProgressChanged = nil
+        onPlaybackStarted = nil
         onPlaybackEnded = nil
         onPlaybackFailed = nil
         pendingSeekSeconds = nil
@@ -570,27 +577,47 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func stopMediaPlayer() {
+        stopMediaPlayer(mediaPlayer)
+    }
+
+    private func replaceMediaPlayerForNewMedia() {
+        guard let oldPlayer = _mediaPlayer else { return }
+        oldPlayer.delegate = nil
+        oldPlayer.drawable = nil
+        stopMediaPlayer(oldPlayer)
+        _mediaPlayer = nil
+        nonisolated(unsafe) let releasedPlayer = oldPlayer
+        DispatchQueue.global(qos: .utility).async { [releasedPlayer] in
+            _ = releasedPlayer
+        }
+    }
+
+    private func stopMediaPlayer(_ player: VLCMediaPlayer) {
         // 优先走 libvlc 异步 stop，避免菜单切换时主线程被同步 stop 卡住。
-        if let playerPointer = playerInstancePointer(),
+        if let playerPointer = playerInstancePointer(for: player),
            let stopAsync = Self.libVLCStopAsync {
             stopAsync(playerPointer)
             return
         }
         // VLCKit 3.x 没有 async stop API，同步 stop 会阻塞主线程 2-3 秒。
         // 将其放到后台队列执行，避免 UI 卡顿。
-        nonisolated(unsafe) let player = mediaPlayer
+        nonisolated(unsafe) let player = player
         DispatchQueue.global(qos: .userInitiated).async {
             player.stop()
         }
     }
 
     private func playerInstancePointer() -> UnsafeMutableRawPointer? {
+        playerInstancePointer(for: mediaPlayer)
+    }
+
+    private func playerInstancePointer(for player: VLCMediaPlayer) -> UnsafeMutableRawPointer? {
         let selector = Self.playerInstanceSelector
-        guard mediaPlayer.responds(to: selector) else { return nil }
+        guard player.responds(to: selector) else { return nil }
         typealias PlayerInstanceGetter = @convention(c) (AnyObject, Selector) -> UnsafeMutableRawPointer?
-        let imp = mediaPlayer.method(for: selector)
+        let imp = player.method(for: selector)
         let getter = unsafeBitCast(imp, to: PlayerInstanceGetter.self)
-        return getter(mediaPlayer, selector)
+        return getter(player, selector)
     }
 
     private func cancelScheduledRebinds() {
@@ -880,6 +907,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             cancelDelayedPreparingIndicator()
             cancelPendingVodBufferingConfirmation()
             setPlaybackStatus(preparing: false, playing: true)
+            onPlaybackStarted?()
             cancelBufferingFallbackTimer()
             return
         }
@@ -1029,6 +1057,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             startPosition: resumePosition,
             isLive: isLive,
             onProgressChanged: onProgressChanged,
+            onPlaybackStarted: onPlaybackStarted,
             onPlaybackEnded: onPlaybackEnded,
             onPlaybackFailed: onPlaybackFailed
         )
@@ -1110,6 +1139,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         cancelBufferingFallbackTimer()
         applyPlaybackRate()
         applyVolume()
+        onPlaybackStarted?()
         refreshTrackOptions()
         applyPendingSeekIfNeeded()
     }
@@ -1232,8 +1262,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private static func isBridgeProxyURL(_ url: URL) -> Bool {
-        let path = url.path.lowercased()
-        return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
+        BridgeServerEndpoint.isBridgeProxyURL(url)
     }
 
     private func applyHTTPHeaders(_ headers: [String: String], to mediaOptions: inout [String: Any], media: VLCMedia) {
@@ -1489,6 +1518,7 @@ struct VLCVodPlayerView: View {
                 startPosition: targetStartPosition,
                 isLive: false,
                 onProgressChanged: onProgressChanged,
+                onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed
             )
@@ -2305,6 +2335,7 @@ struct VLCLivePlayerView: View {
             startPosition: 0,
             isLive: true,
             onProgressChanged: nil,
+            onPlaybackStarted: nil,
             onPlaybackEnded: nil,
             onPlaybackFailed: onPlaybackFailed
         )

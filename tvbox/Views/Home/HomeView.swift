@@ -327,6 +327,20 @@ struct HomeView: View {
                                 .onAppear {
                                     Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
                                 }
+                            } else if viewModel.shouldOpenSearch(for: video) {
+                                Button {
+                                    appState.openSearch(keyword: video.name)
+                                } label: {
+                                    VodCardView(video: video)
+                                }
+                                #if os(iOS)
+                                .buttonStyle(VodCardPressStyle())
+                                #else
+                                .buttonStyle(.plain)
+                                #endif
+                                .onAppear {
+                                    Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
+                                }
                             } else {
                                 NavigationLink(value: video) {
                                     VodCardView(video: video)

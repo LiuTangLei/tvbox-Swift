@@ -132,6 +132,7 @@ class SettingsViewModel: ObservableObject {
         if !bridgeServerUrl.isEmpty {
             defaults.set(bridgeServerUrl, forKey: HawkConfig.BRIDGE_SERVER_URL)
         }
+        bridgeStatusText = initialBridgeStatusText(defaults: defaults)
         refreshCacheSize()
     }
 
@@ -370,8 +371,10 @@ class SettingsViewModel: ObservableObject {
         defer { isTestingBridge = false }
         do {
             let health = try await BridgeClient.shared.health()
+            UserDefaults.standard.set(normalized, forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
             bridgeStatusText = bridgeStatusDescription(for: health)
         } catch {
+            UserDefaults.standard.removeObject(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
             bridgeStatusText = error.localizedDescription
         }
     }
@@ -404,10 +407,25 @@ class SettingsViewModel: ObservableObject {
 
     @discardableResult
     private func normalizeBridgeServerUrlForStorage() -> String {
+        let defaults = UserDefaults.standard
+        let previous = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
         let normalized = BridgeServerEndpoint.normalized(bridgeServerUrl)
         bridgeServerUrl = normalized
-        UserDefaults.standard.set(normalized, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        defaults.set(normalized, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        if previous != normalized {
+            defaults.removeObject(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
+        }
         return normalized
+    }
+
+    private func initialBridgeStatusText(defaults: UserDefaults) -> String {
+        guard bridgeEnabled else { return "已停用" }
+        guard !bridgeServerUrl.isEmpty else { return "未配置" }
+        let lastVerified = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL) ?? "")
+        if lastVerified == bridgeServerUrl {
+            return "可用 " + BridgeServerEndpoint.display(bridgeServerUrl)
+        }
+        return "待检测"
     }
 
     private func notifyBridgeAvailabilityChanged() {

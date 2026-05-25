@@ -100,6 +100,13 @@ class SearchViewModel: ObservableObject {
         isSearching = false
     }
 
+    func search(keyword newKeyword: String) async {
+        let trimmed = newKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        keyword = trimmed
+        await search()
+    }
+
     /// 在指定源搜索
     func searchInSource(_ source: SourceBean) async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)

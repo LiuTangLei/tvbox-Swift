@@ -260,6 +260,11 @@ class HomeViewModel: ObservableObject {
         return looksLikeBridgeSettingCard(video)
     }
 
+    func shouldOpenSearch(for video: Movie.Video) -> Bool {
+        guard let source = ApiConfig.shared.getSource(key: video.sourceKey) ?? ApiConfig.shared.homeSourceBean else { return false }
+        return source.isIndex && !video.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func performAction(for video: Movie.Video) async {
         let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty || isBridgeActionCard(video) else { return }

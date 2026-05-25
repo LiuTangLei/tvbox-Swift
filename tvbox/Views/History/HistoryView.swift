@@ -97,7 +97,7 @@ struct HistoryView: View {
     private func recordCard(_ item: VodRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(url: URL.posterURL(from: item.vodPic)) { image in
+                CachedAsyncImage(request: ImageRequest.poster(from: item.vodPic)) { image in
                     image.resizable().aspectRatio(2/3, contentMode: .fill)
                 } placeholder: {
                     Rectangle().fill(Color.gray.opacity(0.3))

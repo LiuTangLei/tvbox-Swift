@@ -89,6 +89,8 @@ class DetailViewModel: ObservableObject {
     private var currentSource: SourceBean?
     private var playbackResolveToken = UUID()
     private var pendingBridgePlayback: PendingBridgePlayback?
+    private var bridgeMediaFallbackURL: String?
+    private var isUsingBridgeMediaFallback = false
     private var bridgeCredentialAutoSubmitted: Set<String> = []
     private var failedPlaybackAttempts: Set<String> = []
     private var failedSiteVideoKeys: Set<String> = []
@@ -367,6 +369,7 @@ class DetailViewModel: ObservableObject {
     /// 播放器报告失败、卡住或首帧超时后，按 FongMi 的思路自动尝试其它线路/站点。
     func handlePlaybackFailure(reason: String) {
         guard playUrl != nil || isResolvingBridgePlayback else { return }
+        if startBridgeMediaFallbackIfPossible(trigger: reason) { return }
         startAutomaticPlaybackRecovery(trigger: reason)
     }
     
@@ -396,6 +399,8 @@ class DetailViewModel: ObservableObject {
     
     private func startPlayback(episodeURL: String, flag: String) {
         cancelPlaybackWatchdog()
+        bridgeMediaFallbackURL = nil
+        isUsingBridgeMediaFallback = false
         guard let source = currentSource, source.requiresBridge else {
             playbackResolveToken = UUID()
             isResolvingBridgePlayback = false
@@ -430,6 +435,8 @@ class DetailViewModel: ObservableObject {
                 isResolvingBridgePlayback = false
                 bridgePlaybackMessage = nil
                 playHeaders = playback.headers
+                bridgeMediaFallbackURL = playback.fallbackURL
+                isUsingBridgeMediaFallback = false
                 playUrl = playback.url
                 isPlaying = true
                 schedulePlaybackWatchdog()
@@ -587,6 +594,28 @@ class DetailViewModel: ObservableObject {
         if retryPlayback {
             startPlayback(episodeURL: pending.episodeURL, flag: pending.flag)
         }
+    }
+
+    private func startBridgeMediaFallbackIfPossible(trigger: String) -> Bool {
+        guard currentSource?.requiresBridge == true else { return false }
+        guard !isUsingBridgeMediaFallback else { return false }
+        guard let fallbackURL = bridgeMediaFallbackURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fallbackURL.isEmpty,
+              playUrl != fallbackURL else {
+            return false
+        }
+
+        detailPlaybackLogger.info("bridge media fallback start trigger=\(trigger, privacy: .public)")
+        cancelPlaybackWatchdog()
+        isUsingBridgeMediaFallback = true
+        playHeaders = [:]
+        playUrl = fallbackURL
+        isPlaying = true
+        bridgePlaybackMessage = nil
+        playbackFallbackMessage = "直连播放异常，已切换到 Bridge 代理兜底"
+        resumeSeconds = currentPlaybackSeconds() >= 5 ? currentPlaybackSeconds() : 0
+        schedulePlaybackWatchdog()
+        return true
     }
 
     private func startAutomaticPlaybackRecovery(trigger: String) {

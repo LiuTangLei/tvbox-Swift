@@ -24,7 +24,7 @@ struct VodCardView: View {
         VStack(alignment: .leading, spacing: 10) {
             // 封面图
             ZStack(alignment: .bottomLeading) {
-                CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+                CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
                     image
                         .resizable()
                         .aspectRatio(2/3, contentMode: .fill)

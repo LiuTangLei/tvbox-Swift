@@ -33,6 +33,7 @@ struct HawkConfig {
     static let CONFIG_API_HISTORY = "config_api_history"
     static let BRIDGE_ENABLED = "bridge_enabled"
     static let BRIDGE_SERVER_URL = "bridge_server_url"
+    static let BRIDGE_LAST_VERIFIED_URL = "bridge_last_verified_url"
     static let BRIDGE_SERVER_HISTORY = "bridge_server_history"
 }
 
@@ -193,6 +194,26 @@ extension View {
 extension URL {
     /// 统一解析海报 URL，处理协议缺失和已知防盗链域名
     static func posterURL(from raw: String) -> URL? {
+        ImageRequest.poster(from: raw)?.url
+    }
+}
+
+struct ImageRequest: Hashable {
+    let url: URL
+    let headers: [String: String]
+    private static let headerDirectiveMarkers = ["@Headers=", "@Cookie=", "@Referer=", "@User-Agent="]
+
+    init(url: URL, headers: [String: String] = [:]) {
+        self.url = url
+        self.headers = PlaybackHTTPHeaders.normalized(headers)
+    }
+
+    var cacheKey: String {
+        guard !headers.isEmpty else { return url.absoluteString }
+        return url.absoluteString + "\n" + PlaybackHTTPHeaders.cacheKey(headers)
+    }
+
+    static func poster(from raw: String) -> ImageRequest? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -200,6 +221,9 @@ extension URL {
         if absolute.hasPrefix("//") {
             absolute = "https:\(absolute)"
         }
+
+        let parsed = parseHeaderDirectives(in: absolute)
+        absolute = parsed.urlString
 
         guard let originalURL = URL(string: absolute),
               let host = originalURL.host?.lowercased() else {
@@ -210,10 +234,76 @@ extension URL {
         if host == "img.picbf.com" {
             var components = URLComponents(string: "https://images.weserv.nl/")
             components?.queryItems = [URLQueryItem(name: "url", value: absolute)]
-            return components?.url
+            return components?.url.map { ImageRequest(url: $0) }
         }
 
-        return originalURL
+        return ImageRequest(url: originalURL, headers: parsed.headers)
+    }
+
+    private static func parseHeaderDirectives(in raw: String) -> (urlString: String, headers: [String: String]) {
+        let firstMarker = headerDirectiveMarkers
+            .compactMap { marker -> String.Index? in raw.range(of: marker)?.lowerBound }
+            .min()
+        let urlString = firstMarker.map { String(raw[..<$0]) } ?? raw
+        var headers: [String: String] = [:]
+
+        if let value = directiveValue(in: raw, marker: "@Headers=") {
+            headers.merge(parseHeaderJSON(value), uniquingKeysWith: { _, new in new })
+        }
+        if let value = directiveValue(in: raw, marker: "@Cookie=") {
+            headers["Cookie"] = value
+        }
+        if let value = directiveValue(in: raw, marker: "@Referer=") {
+            headers["Referer"] = value
+        }
+        if let value = directiveValue(in: raw, marker: "@User-Agent=") {
+            headers["User-Agent"] = value
+        }
+
+        return (urlString, headers)
+    }
+
+    private static func directiveValue(in raw: String, marker: String) -> String? {
+        guard let range = raw.range(of: marker) else { return nil }
+        let valueStart = range.upperBound
+        let valueEnd = headerDirectiveMarkers
+            .filter { $0 != marker }
+            .compactMap { raw.range(of: $0, range: valueStart..<raw.endIndex)?.lowerBound }
+            .min() ?? raw.endIndex
+        let value = String(raw[valueStart..<valueEnd])
+        let decoded = value.removingPercentEncoding ?? value
+        let trimmed = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func parseHeaderJSON(_ raw: String) -> [String: String] {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var headers: [String: String] = [:]
+        for (key, value) in object {
+            let headerValue: String?
+            if let value = value as? String {
+                headerValue = value
+            } else if let value = value as? CustomStringConvertible {
+                headerValue = value.description
+            } else {
+                headerValue = nil
+            }
+            guard let headerValue, !headerValue.isEmpty else { continue }
+            headers[canonicalHeaderName(key)] = headerValue
+        }
+        return headers
+    }
+
+    private static func canonicalHeaderName(_ key: String) -> String {
+        switch key.lowercased() {
+        case "user-agent", "ua": return "User-Agent"
+        case "referer", "referrer": return "Referer"
+        case "cookie": return "Cookie"
+        default: return key
+        }
     }
 }
 
@@ -223,7 +313,7 @@ extension URL {
 /// AsyncImage 不支持自定义 header，许多图片服务器需要 Referer/User-Agent 才能正常返回图片
 /// 此组件通过自定义 URLSession 发起请求，解决海报永远加载不出来的问题
 struct CachedAsyncImage<Content: View, Placeholder: View>: View {
-    let url: URL?
+    let request: ImageRequest?
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder
 
@@ -237,7 +327,17 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         @ViewBuilder content: @escaping (Image) -> Content,
         @ViewBuilder placeholder: @escaping () -> Placeholder
     ) {
-        self.url = url
+        self.request = url.map { ImageRequest(url: $0) }
+        self.content = content
+        self.placeholder = placeholder
+    }
+
+    init(
+        request: ImageRequest?,
+        @ViewBuilder content: @escaping (Image) -> Content,
+        @ViewBuilder placeholder: @escaping () -> Placeholder
+    ) {
+        self.request = request
         self.content = content
         self.placeholder = placeholder
     }
@@ -254,7 +354,7 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
                 placeholder()
             }
         }
-        .task(id: url) {
+        .task(id: request) {
             await loadImage()
         }
         .onDisappear {
@@ -264,20 +364,20 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     }
 
     private func loadImage() async {
-        guard let url = url else {
+        guard let request = request else {
             loadedImage = nil
             return
         }
 
-        if let cached = ImageCache.shared.get(for: url) {
+        if let cached = ImageCache.shared.get(for: request.cacheKey) {
             loadedImage = cached
             return
         }
 
         do {
-            let image = try await ImageLoader.shared.load(url: url)
+            let image = try await ImageLoader.shared.load(request: request)
             guard !Task.isCancelled else { return }
-            ImageCache.shared.set(image, for: url)
+            ImageCache.shared.set(image, for: request.cacheKey)
             loadedImage = image
             loadFailed = false
         } catch {
@@ -333,14 +433,21 @@ final class ImageLoader {
     private static let imageRetryDelay: TimeInterval = 1.0
 
     func load(url: URL) async throws -> PlatformImage {
-        var request = URLRequest(url: url)
+        try await load(request: ImageRequest(url: url))
+    }
+
+    func load(request imageRequest: ImageRequest) async throws -> PlatformImage {
+        var request = URLRequest(url: imageRequest.url)
         request.httpMethod = "GET"
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-        if let host = url.host {
-            request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+        var headers = imageRequest.headers
+        if headers["User-Agent"] == nil {
+            headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        if headers["Referer"] == nil, let host = imageRequest.url.host {
+            headers["Referer"] = "https://\(host)/"
+        }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
         }
 
         var lastError: Error = ImageLoadError.invalidData
@@ -433,19 +540,19 @@ enum ImageLoadError: Error {
 final class ImageCache {
     static let shared = ImageCache()
 
-    private let cache = NSCache<NSURL, PlatformImage>()
+    private let cache = NSCache<NSString, PlatformImage>()
 
     private init() {
         cache.countLimit = 120
         cache.totalCostLimit = 40 * 1024 * 1024
     }
 
-    func get(for url: URL) -> PlatformImage? {
-        cache.object(forKey: url as NSURL)
+    func get(for key: String) -> PlatformImage? {
+        cache.object(forKey: key as NSString)
     }
 
-    func set(_ image: PlatformImage, for url: URL) {
-        cache.setObject(image, forKey: url as NSURL, cost: image.memoryCost)
+    func set(_ image: PlatformImage, for key: String) {
+        cache.setObject(image, forKey: key as NSString, cost: image.memoryCost)
     }
 
     func clear() {

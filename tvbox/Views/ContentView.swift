@@ -14,8 +14,6 @@ struct ContentView: View {
     @EnvironmentObject var networkMonitor: NetworkMonitor
     /// 设置页 ViewModel。根视图复用它处理首次配置与多仓库选择。
     @StateObject private var settingsVM = SettingsViewModel()
-    /// 当前主标签索引。
-    @State private var selectedTab = 0
     /// 预留：控制首次配置页显隐（当前逻辑由 `appState.isConfigLoaded` 驱动）。
     @State private var showSetup = false
     /// 首次配置页历史回填目标输入框。
@@ -78,7 +76,7 @@ struct ContentView: View {
     /// 主体导航容器：iOS 使用 TabView，macOS 使用 NavigationSplitView。
     private var mainTabView: some View {
         #if os(iOS)
-        TabView(selection: $selectedTab) {
+        TabView(selection: $appState.selectedMainTab) {
             HomeView()
                 .tabItem {
                     Label("首页", systemImage: "house.fill")
@@ -86,7 +84,7 @@ struct ContentView: View {
                 .tag(0)
             
             LiveView(onExit: {
-                selectedTab = 0
+                appState.selectedMainTab = 0
             })
                 .tabItem {
                     Label("直播", systemImage: "tv.fill")
@@ -106,12 +104,12 @@ struct ContentView: View {
                 .tag(3)
         }
         .tint(.orange)
-        .onChange(of: selectedTab) { _, _ in
+        .onChange(of: appState.selectedMainTab) { _, _ in
             HapticManager.shared.selection()
         }
         #else
         NavigationSplitView(columnVisibility: $appState.splitViewVisibility) {
-            List(selection: $selectedTab) {
+            List(selection: $appState.selectedMainTab) {
                 Label("首页", systemImage: "house.fill")
                     .tag(0)
                 Label("直播", systemImage: "tv.fill")
@@ -128,7 +126,7 @@ struct ContentView: View {
             .navigationTitle("TVBox")
             .listStyle(.sidebar)
         } detail: {
-            switch selectedTab {
+            switch appState.selectedMainTab {
             case 0: HomeView()
             case 1: LiveView()
             case 2: SearchView()

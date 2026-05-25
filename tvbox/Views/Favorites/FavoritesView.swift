@@ -81,7 +81,7 @@ struct FavoritesView: View {
     /// 只展示海报与标题，保持网格信息密度一致。
     private func favoriteCard(_ item: VodCollect) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            CachedAsyncImage(url: URL.posterURL(from: item.vodPic)) { image in
+            CachedAsyncImage(request: ImageRequest.poster(from: item.vodPic)) { image in
                 image.resizable().aspectRatio(2/3, contentMode: .fill)
             } placeholder: {
                 Rectangle().fill(Color.gray.opacity(0.3))

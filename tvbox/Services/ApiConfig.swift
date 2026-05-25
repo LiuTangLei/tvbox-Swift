@@ -752,6 +752,7 @@ class ApiConfig: ObservableObject {
                         searchable: site.searchable?.value ?? 1,
                         filterable: site.filterable?.value ?? 1,
                         quickSearch: site.quickSearch?.value ?? 1,
+                        indexs: site.indexs?.value ?? 0,
                         changeable: site.changeable?.value ?? 1,
                         playerType: site.playerType?.value ?? 0,
                         type: sourceType,
@@ -766,7 +767,7 @@ class ApiConfig: ObservableObject {
             if BridgeClient.shared.isEnabled {
                 Task {
                     try? await BridgeClient.shared.register(
-                        configUrl: apiUrl,
+                        configUrl: "",
                         spider: config.spider,
                         sources: sources.filter { $0.requiresBridge },
                         replace: true

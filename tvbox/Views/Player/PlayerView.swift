@@ -126,9 +126,11 @@ final class SystemPlayerSessionController: ObservableObject {
     fileprivate var mediaURLString: String?
 
     func setPlayer(_ newPlayer: AVPlayer, urlString: String) {
-        if player !== newPlayer {
-            player?.pause()
-            player?.replaceCurrentItem(with: nil)
+        if let previousPlayer = player, previousPlayer !== newPlayer {
+            previousPlayer.pause()
+            DispatchQueue.global(qos: .utility).async {
+                previousPlayer.replaceCurrentItem(with: nil)
+            }
         }
         player = newPlayer
         mediaURLString = urlString
@@ -186,8 +188,7 @@ struct PlayerView: View {
 
     private var shouldUseVLCForBridgeProxy: Bool {
         guard PlayerEngine.isVLCAvailable, let url = URL(string: urlString) else { return false }
-        let path = url.path.lowercased()
-        return path.hasPrefix("/bridge/local/") || path.hasPrefix("/bridge/media/")
+        return BridgeServerEndpoint.isBridgeProxyURL(url)
     }
 
     var body: some View {

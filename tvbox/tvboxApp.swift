@@ -51,6 +51,10 @@ class AppState: ObservableObject {
     @Published var isConfigLoaded = false
     /// 当前首页选中的视频源 key（用于跨页面同步）。
     @Published var currentSourceKey: String = ""
+    /// 当前主标签/侧栏索引。
+    @Published var selectedMainTab: Int = 0
+    /// 外部页面请求搜索页打开的关键词。
+    @Published private(set) var pendingSearchKeyword: String?
     /// 配置加载错误信息，供 UI 展示。
     @Published var configLoadError: String?
     /// 是否正在重试加载配置。
@@ -70,6 +74,23 @@ class AppState: ObservableObject {
     
     init() {
         setupNetworkRestoredAutoRetry()
+    }
+
+    /// 切到搜索页并让搜索页消费关键词执行搜索。
+    func openSearch(keyword: String) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingSearchKeyword = trimmed
+        selectedMainTab = 2
+        #if os(macOS)
+        splitViewVisibility = .all
+        #endif
+    }
+
+    func consumePendingSearchKeyword() -> String? {
+        let keyword = pendingSearchKeyword
+        pendingSearchKeyword = nil
+        return keyword
     }
     
     /// 仅提供点播地址时的快捷加载入口（直播地址默认与点播一致）。

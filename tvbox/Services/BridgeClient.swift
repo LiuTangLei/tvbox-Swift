@@ -23,6 +23,7 @@ struct BridgeAbiInfo: Decodable {
 struct BridgePlayback: Hashable {
     let url: String
     let headers: [String: String]
+    let fallbackURL: String?
 }
 
 enum PlaybackHTTPHeaders {
@@ -129,6 +130,31 @@ enum BridgeServerEndpoint {
     private static func isDefaultPort(_ port: Int, for scheme: String) -> Bool {
         (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
     }
+
+    static func isBridgeProxyURL(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        let bridgeProxyPath = path.hasPrefix("/bridge/local/")
+            || path.hasPrefix("/bridge/media/")
+            || path == "/proxy"
+            || path.hasPrefix("/proxy/")
+        guard bridgeProxyPath else { return false }
+
+        let base = normalized(UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
+        guard let baseURL = URL(string: base), let baseHost = baseURL.host?.lowercased() else {
+            return !path.hasPrefix("/proxy")
+        }
+        guard let host = url.host?.lowercased(), host == baseHost else { return false }
+        return effectivePort(url) == effectivePort(baseURL)
+    }
+
+    private static func effectivePort(_ url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "http": return 80
+        case "https": return 443
+        default: return nil
+        }
+    }
 }
 
 struct BridgeTransientOverlay: Decodable, Hashable {
@@ -141,7 +167,9 @@ struct BridgePlayResponse: Decodable {
     let ok: Bool?
     let mode: String?
     let url: String?
+    let fallbackUrl: String?
     let headers: [String: String]?
+    let proxied: Bool?
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
@@ -359,6 +387,13 @@ final class BridgeClient {
     private let contextQueue = DispatchQueue(label: "com.tvbox.app.bridge-client.context")
     private var contextConfigUrl = ""
     private var contextSpider: String?
+    private var registeredSourceSignatures: [String: RegistrationRecord] = [:]
+    private let registrationCacheTTL: TimeInterval = 300
+
+    private struct RegistrationRecord {
+        let signature: String
+        let expiresAt: TimeInterval
+    }
     
     private init() {
         let config = URLSessionConfiguration.default
@@ -382,6 +417,9 @@ final class BridgeClient {
         let trimmedUrl = configUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSpider = spider?.trimmingCharacters(in: .whitespacesAndNewlines)
         contextQueue.sync {
+            if contextConfigUrl != trimmedUrl || contextSpider != trimmedSpider {
+                registeredSourceSignatures.removeAll()
+            }
             contextConfigUrl = trimmedUrl
             contextSpider = trimmedSpider?.isEmpty == false ? trimmedSpider : nil
         }
@@ -397,7 +435,7 @@ final class BridgeClient {
     func register(configUrl: String? = nil, spider: String? = nil, sources: [SourceBean], replace: Bool = false) async throws {
         guard isEnabled else { throw BridgeError.notConfigured }
         let context = currentConfigContext()
-        let contextUrl = configUrl ?? context.configUrl ?? ""
+        let contextUrl = configUrl ?? (replace ? context.configUrl ?? "" : "")
         let contextSpider = spider ?? context.spider
         let payload = RegisterRequest(
             configUrl: bridgeReachableConfigUrl(contextUrl),
@@ -410,6 +448,7 @@ final class BridgeClient {
         )
         let data = try await request(path: "/api/v1/config/register", method: "POST", body: payload)
         try validateBridgeOK(data)
+        rememberRegisteredSources(sources, configUrl: contextUrl, spider: contextSpider, replace: replace)
     }
 
     private func bridgeReachableConfigUrl(_ urlString: String) -> String? {
@@ -420,33 +459,28 @@ final class BridgeClient {
     }
     
     func home(source: SourceBean) async throws -> String {
-        try await registerSourceForRequest(source)
-        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/home", body: EmptyBody())
+        try await raw(source: source, path: "/api/v1/site/\(escapePath(source.key))/home", body: EmptyBody())
     }
     
     func category(source: SourceBean, sortData: MovieSort.SortData, page: Int, filters: [String: String]?) async throws -> String {
-        try await registerSourceForRequest(source)
         let payload = CategoryRequest(categoryId: sortData.id, page: page, filters: filters ?? [:])
-        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/category", body: payload)
+        return try await raw(source: source, path: "/api/v1/site/\(escapePath(source.key))/category", body: payload)
     }
     
     func detail(source: SourceBean, vodId: String) async throws -> String {
-        try await registerSourceForRequest(source)
-        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/detail", body: IdRequest(id: vodId))
+        try await raw(source: source, path: "/api/v1/site/\(escapePath(source.key))/detail", body: IdRequest(id: vodId))
     }
     
     func search(source: SourceBean, keyword: String, page: Int = 1, quick: Bool = false) async throws -> String {
-        try await registerSourceForRequest(source)
         let payload = SearchRequest(keyword: keyword, page: page, quick: quick)
-        return try await raw(path: "/api/v1/site/\(escapePath(source.key))/search", body: payload)
+        return try await raw(source: source, path: "/api/v1/site/\(escapePath(source.key))/search", body: payload)
     }
     
     func play(source: SourceBean, flag: String, id: String) async throws -> BridgePlayback {
-        try await registerSourceForRequest(source)
         let payload = PlayRequest(flag: flag, id: id)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
         let response = try decoder.decode(BridgePlayResponse.self, from: data)
-        bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) proxied=\(response.proxied == true, privacy: .public) hasFallback=\((response.fallbackUrl?.isEmpty == false), privacy: .public) code=\(response.code ?? "", privacy: .public)")
         if response.containsJarUiSnapshot {
             throw BridgeError.jarUiRequired(BridgeJarUiResponse(playResponse: response))
         }
@@ -459,14 +493,18 @@ final class BridgeClient {
         guard response.mode == "direct", let url = response.url, !url.isEmpty else {
             throw BridgeError.unsupportedPlayback("Bridge 未返回可直接播放地址")
         }
-        return BridgePlayback(url: url, headers: PlaybackHTTPHeaders.normalized(response.headers))
+        let fallbackURL = response.fallbackUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return BridgePlayback(
+            url: url,
+            headers: PlaybackHTTPHeaders.normalized(response.headers),
+            fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil
+        )
     }
 
     func submitToken(source: SourceBean, prompt: BridgeTokenPrompt, values: [String: String]) async throws {
-        try await registerSourceForRequest(source)
         let token = values["token"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let payload = TokenSubmitRequest(provider: prompt.provider, token: token, values: values)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/token", method: "POST", body: payload)
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/token", method: "POST", body: payload)
         try validateBridgeOK(data)
         BridgeCredentialStore.shared.save(provider: prompt.provider, values: values)
         bridgeClientLogger.info("token submitted source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public)")
@@ -484,9 +522,8 @@ final class BridgeClient {
     }
 
     func openJarUi(source: SourceBean, prompt: BridgeTokenPrompt) async throws -> BridgeJarUiResponse {
-        try await registerSourceForRequest(source)
         let payload = JarUiOpenRequest(action: prompt.action ?? prompt.retry?.action, flag: prompt.retry?.flag, id: prompt.retry?.id)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiOpen", method: "POST", body: payload)
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/uiOpen", method: "POST", body: payload)
         let response = try decoder.decode(BridgeJarUiResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 打开失败") }
         bridgeClientLogger.info("jar ui open source=\(source.key, privacy: .public) provider=\(prompt.provider, privacy: .public) ok=\(response.ok == true, privacy: .public)")
@@ -498,7 +535,7 @@ final class BridgeClient {
     }
 
     func jarUiStatus(source: SourceBean) async throws -> BridgeJarUiStatusResponse {
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiStatus", method: "POST", body: JarUiStatusRequest(includeUi: true))
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/uiStatus", method: "POST", body: JarUiStatusRequest(includeUi: true))
         let response = try decoder.decode(BridgeJarUiStatusResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 状态检测失败") }
         bridgeClientLogger.info("jar ui status source=\(source.key, privacy: .public) status=\(response.status ?? "", privacy: .public) done=\(response.done == true, privacy: .public)")
@@ -510,7 +547,7 @@ final class BridgeClient {
     }
 
     func closeJarUi(source: SourceBean) async throws {
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiClose", method: "POST", body: EmptyBody())
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/uiClose", method: "POST", body: EmptyBody())
         try validateBridgeOK(data)
     }
 
@@ -520,17 +557,16 @@ final class BridgeClient {
 
     func jarUiAction(source: SourceBean, action: BridgeJarUiAction) async throws -> BridgeJarUiResponse {
         let payload = JarUiActionRequest(action: action.action, elementId: action.elementId, text: action.text, x: action.x, y: action.y)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/uiAction", method: "POST", body: payload)
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/uiAction", method: "POST", body: payload)
         let response = try decoder.decode(BridgeJarUiResponse.self, from: data)
         guard response.ok != false else { throw BridgeError.server(response.message ?? response.code ?? "Bridge Jar UI 操作失败") }
         return response
     }
 
     func action(source: SourceBean, video: Movie.Video) async throws -> BridgeActionResponse {
-        try await registerSourceForRequest(source)
         let action = video.action.trimmingCharacters(in: .whitespacesAndNewlines)
         let payload = ActionRequest(action: action, id: video.id, name: video.name, note: video.note)
-        let data = try await request(path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
+        let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/action", method: "POST", body: payload)
         let response = try decoder.decode(BridgeActionResponse.self, from: data)
         bridgeClientLogger.info("action response source=\(source.key, privacy: .public) action=\(action, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) code=\(response.code ?? "", privacy: .public)")
         if response.code == "token_required", let prompt = response.prompt {
@@ -542,15 +578,37 @@ final class BridgeClient {
         return response
     }
 
-    private func registerSourceForRequest(_ source: SourceBean) async throws {
-        try await register(sources: [source], replace: true)
+    private func registerSourceForRequest(_ source: SourceBean, force: Bool = false) async throws {
+        let context = currentConfigContext()
+        let contextUrl = ""
+        let signature = registrationSignature(source: source, configUrl: contextUrl, spider: context.spider)
+        if !force, isRegistrationFresh(sourceKey: source.key, signature: signature) { return }
+        try await register(sources: [source], replace: false)
     }
     
+    private func raw<T: Encodable>(source: SourceBean, path: String, body: T) async throws -> String {
+        let data = try await requestRegistered(source: source, path: path, method: "POST", body: body)
+        try validateBridgeOK(data)
+        guard let text = String(data: data, encoding: .utf8) else { throw BridgeError.invalidResponse }
+        return text
+    }
+
     private func raw<T: Encodable>(path: String, body: T) async throws -> String {
         let data = try await request(path: path, method: "POST", body: body)
         try validateBridgeOK(data)
         guard let text = String(data: data, encoding: .utf8) else { throw BridgeError.invalidResponse }
         return text
+    }
+
+    private func requestRegistered<T: Encodable>(source: SourceBean, path: String, method: String, body: T?) async throws -> Data {
+        try await registerSourceForRequest(source)
+        let data = try await request(path: path, method: method, body: body)
+        guard isSiteNotFoundResponse(data, source: source) else { return data }
+
+        bridgeClientLogger.warning("registered site missing after bridge restart source=\(source.key, privacy: .public); re-registering")
+        forgetRegisteredSource(source.key)
+        try await registerSourceForRequest(source, force: true)
+        return try await request(path: path, method: method, body: body)
     }
     
     private func request<T: Encodable>(path: String, method: String, body: T?) async throws -> Data {
@@ -559,7 +617,9 @@ final class BridgeClient {
         guard let url = URL(string: absolute) else { throw BridgeError.invalidBaseURL(baseURLString) }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = timeoutInterval(for: path)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyExternalBaseHeaders(to: &request)
         if let body {
             request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
             request.httpBody = try asciiEscapedJSONData(body)
@@ -570,24 +630,27 @@ final class BridgeClient {
         var lastError: Error?
 
         for attempt in 1...maxAttempts {
+            let attemptStarted = Date()
             bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public) attempt=\(attempt, privacy: .public)")
             do {
                 let (data, response) = try await session.data(for: request)
+                let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
                 guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
                 if (200...299).contains(http.statusCode) {
-                    bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) attempt=\(attempt, privacy: .public)")
+                    bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
                     return data
                 }
                 if isTransientGatewayStatus(http.statusCode), attempt < maxAttempts {
-                    bridgeClientLogger.warning("transient bridge gateway status=\(http.statusCode, privacy: .public) path=\(path, privacy: .public) attempt=\(attempt, privacy: .public)")
+                    bridgeClientLogger.warning("transient bridge gateway status=\(http.statusCode, privacy: .public) path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
                     try await sleepBeforeRetry(attempt: attempt)
                     continue
                 }
                 throw BridgeError.server("HTTP \(http.statusCode) \(path) @ \(endpoint)")
             } catch {
+                let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
                 lastError = error
                 guard attempt < maxAttempts, retryable, shouldRetryNetworkError(error) else { throw error }
-                bridgeClientLogger.warning("transient bridge network error path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                bridgeClientLogger.warning("transient bridge network error path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 try await sleepBeforeRetry(attempt: attempt)
             }
         }
@@ -605,6 +668,45 @@ final class BridgeClient {
             || lowercasedPath.hasSuffix("/detail")
             || lowercasedPath.hasSuffix("/search")
             || lowercasedPath.hasSuffix("/uistatus")
+    }
+
+    private func timeoutInterval(for path: String) -> TimeInterval {
+        let lowercasedPath = path.lowercased()
+        if lowercasedPath == "/health" || lowercasedPath == "/api/v1/config/register" {
+            return 5
+        }
+        if lowercasedPath.hasSuffix("/play") || lowercasedPath.hasSuffix("/uiopen") {
+            return 35
+        }
+        if lowercasedPath.hasSuffix("/uistatus")
+            || lowercasedPath.hasSuffix("/uiaction")
+            || lowercasedPath.hasSuffix("/uiclose")
+            || lowercasedPath.hasSuffix("/token") {
+            return 12
+        }
+        return 18
+    }
+
+    private func applyExternalBaseHeaders(to request: inout URLRequest) {
+        guard let components = URLComponents(string: normalizedBaseURL()),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = forwardedHostHeader(from: components) else {
+            return
+        }
+        request.setValue(scheme, forHTTPHeaderField: "X-Forwarded-Proto")
+        request.setValue(host, forHTTPHeaderField: "X-Forwarded-Host")
+    }
+
+    private func forwardedHostHeader(from components: URLComponents) -> String? {
+        guard var host = components.host, !host.isEmpty else { return nil }
+        if host.contains(":") && !host.hasPrefix("[") {
+            host = "[\(host)]"
+        }
+        if let port = components.port {
+            host += ":\(port)"
+        }
+        return host
     }
 
     private func isTransientGatewayStatus(_ statusCode: Int) -> Bool {
@@ -666,6 +768,18 @@ final class BridgeClient {
         }
     }
 
+    private func isSiteNotFoundResponse(_ data: Data, source: SourceBean) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ok = object["ok"] as? Bool,
+              ok == false else {
+            return false
+        }
+        let code = object["code"] as? String
+        let message = object["message"] as? String
+        if code == "site_not_found" { return true }
+        return message?.contains("Bridge site not found: \(source.key)") == true
+    }
+
     private func validateProvider(_ provider: String?, expected: String, operation: String) throws {
         guard let provider, !provider.isEmpty else { return }
         guard provider.lowercased() == expected.lowercased() else {
@@ -683,6 +797,56 @@ final class BridgeClient {
         contextQueue.sync {
             (contextConfigUrl.nilIfEmpty, contextSpider)
         }
+    }
+
+    private func isRegistrationFresh(sourceKey: String, signature: String) -> Bool {
+        let now = Date().timeIntervalSinceReferenceDate
+        return contextQueue.sync {
+            guard let record = registeredSourceSignatures[sourceKey] else { return false }
+            return record.signature == signature && record.expiresAt > now
+        }
+    }
+
+    private func forgetRegisteredSource(_ sourceKey: String) {
+        contextQueue.sync {
+            registeredSourceSignatures[sourceKey] = nil
+        }
+    }
+
+    private func rememberRegisteredSources(_ sources: [SourceBean], configUrl: String, spider: String?, replace: Bool) {
+        let now = Date().timeIntervalSinceReferenceDate
+        let expiresAt = now + registrationCacheTTL
+        let records = sources.map { source in
+            (source.key, RegistrationRecord(
+                signature: registrationSignature(source: source, configUrl: configUrl, spider: spider),
+                expiresAt: expiresAt
+            ))
+        }
+        contextQueue.sync {
+            if replace { registeredSourceSignatures.removeAll() }
+            for (key, record) in records {
+                registeredSourceSignatures[key] = record
+            }
+        }
+    }
+
+    private func registrationSignature(source: SourceBean, configUrl: String, spider: String?) -> String {
+        [
+            normalizedBaseURL(),
+            BridgeServerEndpoint.normalized(configUrl),
+            spider ?? "",
+            source.key,
+            source.name,
+            source.api,
+            String(source.type),
+            String(source.searchable),
+            String(source.filterable),
+            String(source.quickSearch),
+            String(source.indexs),
+            String(source.playerType),
+            source.ext ?? "",
+            source.jar ?? ""
+        ].joined(separator: "\u{1F}")
     }
     
     private func escapePath(_ value: String) -> String {
@@ -731,6 +895,7 @@ private struct BridgeSiteRequest: Encodable {
     let searchable: Int
     let filterable: Int
     let quickSearch: Int
+    let indexs: Int
     let playerType: Int
     let type: Int
     let ext: String?
@@ -743,6 +908,7 @@ private struct BridgeSiteRequest: Encodable {
         searchable = source.searchable
         filterable = source.filterable
         quickSearch = source.quickSearch
+        indexs = source.indexs
         playerType = source.playerType
         type = source.type
         ext = source.ext

@@ -556,7 +556,11 @@ class SourceService {
         let candidates = sources.enumerated().filter { _, source in
             source.isAvailableForPlayback && (source.requiresBridge || source.isHttpApi)
         }
-        let maxConcurrentSearches = 20
+        let bridgeCandidates = candidates.map(\.1).filter { $0.requiresBridge }
+        if !bridgeCandidates.isEmpty {
+            try? await bridge.register(sources: bridgeCandidates, replace: false)
+        }
+        let maxConcurrentSearches = bridgeCandidates.isEmpty ? 20 : 10
 
         return await withTaskGroup(of: (Int, SourceBean, [Movie.Video]).self) { group in
             var nextCandidate = 0

@@ -4,6 +4,8 @@ import SwiftUI
 struct SearchView: View {
     /// 搜索状态与结果管理。
     @StateObject private var viewModel = SearchViewModel()
+    @EnvironmentObject private var appState: AppState
+    @State private var navigationPath = NavigationPath()
 
     #if os(iOS)
     /// iOS 卡片网格参数。
@@ -18,7 +20,7 @@ struct SearchView: View {
     #endif
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
                 // 搜索栏
                 searchBar
@@ -52,6 +54,18 @@ struct SearchView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+        }
+        .onAppear(perform: consumePendingSearchKeyword)
+        .onChange(of: appState.pendingSearchKeyword) { _, _ in
+            consumePendingSearchKeyword()
+        }
+    }
+
+    private func consumePendingSearchKeyword() {
+        Task { @MainActor in
+            guard let keyword = appState.consumePendingSearchKeyword() else { return }
+            navigationPath = NavigationPath()
+            await viewModel.search(keyword: keyword)
         }
     }
 
@@ -333,7 +347,7 @@ struct SearchView: View {
 
     private func folderRow(_ video: Movie.Video) -> some View {
         HStack(spacing: 12) {
-            CachedAsyncImage(url: URL.posterURL(from: video.pic)) { image in
+            CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
