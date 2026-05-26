@@ -162,6 +162,7 @@ struct PlayerView: View {
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var onVideoSizeChanged: ((CGSize) -> Void)? = nil
     var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
@@ -205,6 +206,7 @@ struct PlayerView: View {
                     onPlaybackFailed: onPlaybackFailed,
                     onToggleFullScreen: onToggleFullScreen,
                     onVideoOrientationChanged: onVideoOrientationChanged,
+                    onVideoSizeChanged: onVideoSizeChanged,
                     isFullscreen: isFullscreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
@@ -221,6 +223,7 @@ struct PlayerView: View {
                     onPlaybackFailed: onPlaybackFailed,
                     onToggleFullScreen: onToggleFullScreen,
                     onVideoOrientationChanged: onVideoOrientationChanged,
+                    onVideoSizeChanged: onVideoSizeChanged,
                     isFullscreen: isFullscreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
@@ -274,6 +277,7 @@ struct AVPlayerContentView: View {
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var onVideoSizeChanged: ((CGSize) -> Void)? = nil
     var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
@@ -315,6 +319,7 @@ struct AVPlayerContentView: View {
 
     @State private var videoZoomScale: CGFloat = 1.0
     @State private var lastReportedVideoOrientation: Bool?
+    @State private var lastReportedVideoSize: CGSize = .zero
 
     var body: some View {
         ZStack {
@@ -612,6 +617,7 @@ struct AVPlayerContentView: View {
         let currentPlayer = player
         detachPlayerObservers()
         lastReportedVideoOrientation = nil
+        lastReportedVideoSize = .zero
         if !keepSharedPlayer {
             resetMediaTracks()
         }
@@ -635,6 +641,7 @@ struct AVPlayerContentView: View {
     }
 
     private func reportVideoOrientation(for size: CGSize) {
+        reportVideoSizeIfNeeded(size)
         let normalizedOrientation: Bool?
         if size.width > size.height, size.height > 0 {
             normalizedOrientation = true
@@ -647,6 +654,13 @@ struct AVPlayerContentView: View {
         guard normalizedOrientation != lastReportedVideoOrientation else { return }
         lastReportedVideoOrientation = normalizedOrientation
         onVideoOrientationChanged?(normalizedOrientation)
+    }
+
+    private func reportVideoSizeIfNeeded(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        guard abs(size.width - lastReportedVideoSize.width) > 1 || abs(size.height - lastReportedVideoSize.height) > 1 else { return }
+        lastReportedVideoSize = size
+        onVideoSizeChanged?(size)
     }
 
     private func startPlayback(for player: AVPlayer) {
@@ -941,7 +955,11 @@ struct AVPlayerContentView: View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
         #else
-        let controlWidth = containerWidth * 0.7
+        let availableControlWidth = max(containerWidth - 24, 0)
+        let controlWidth = min(
+            availableControlWidth,
+            max(containerWidth * 0.84, min(availableControlWidth, 760))
+        )
         #endif
 
         return VStack(spacing: 0) {

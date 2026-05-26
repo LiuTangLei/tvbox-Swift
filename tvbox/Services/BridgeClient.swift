@@ -24,6 +24,7 @@ struct BridgePlayback: Hashable {
     let url: String
     let headers: [String: String]
     let fallbackURL: String?
+    let proxied: Bool
 }
 
 enum PlaybackHTTPHeaders {
@@ -388,7 +389,7 @@ final class BridgeClient {
     private var contextConfigUrl = ""
     private var contextSpider: String?
     private var registeredSourceSignatures: [String: RegistrationRecord] = [:]
-    private let registrationCacheTTL: TimeInterval = 300
+    private let registrationCacheTTL: TimeInterval = 3600
 
     private struct RegistrationRecord {
         let signature: String
@@ -399,6 +400,9 @@ final class BridgeClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 40
+        config.httpMaximumConnectionsPerHost = 8
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
     }
     
@@ -497,7 +501,8 @@ final class BridgeClient {
         return BridgePlayback(
             url: url,
             headers: PlaybackHTTPHeaders.normalized(response.headers),
-            fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil
+            fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil,
+            proxied: response.proxied == true
         )
     }
 

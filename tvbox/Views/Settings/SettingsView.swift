@@ -29,6 +29,7 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
     @StateObject private var apiConfig = ApiConfig.shared
     @EnvironmentObject var appState: AppState
+    @Environment(\.modelContext) private var modelContext
     @State private var activeApiInputType: ApiInputType?
     @State private var showAbout = false
     @State private var sourceSearchText = ""
@@ -147,7 +148,7 @@ struct SettingsView: View {
                     // 缓存
                     SectionCard(title: "缓存") {
                         SettingsRow(icon: "trash", title: "清除缓存", value: viewModel.cacheSizeString) {
-                            viewModel.clearCache()
+                            viewModel.clearCache(context: modelContext)
                         }
                     }
 
@@ -175,8 +176,22 @@ struct SettingsView: View {
             .sheet(item: $activeApiInputType) { inputType in
                 apiInputSheet(for: inputType)
             }
+            .alert("缓存", isPresented: cacheClearAlertBinding) {
+                Button("好", role: .cancel) {
+                    viewModel.cacheClearMessage = nil
+                }
+            } message: {
+                Text(viewModel.cacheClearMessage ?? "")
+            }
         }
         .overlay(pickerOverlay)
+    }
+
+    private var cacheClearAlertBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.cacheClearMessage != nil },
+            set: { if !$0 { viewModel.cacheClearMessage = nil } }
+        )
     }
 
     // MARK: - 选择器 Overlay

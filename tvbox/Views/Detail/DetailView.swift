@@ -24,76 +24,56 @@ struct DetailView: View {
     #endif
     @State private var lastPersistedProgress: Double = 0
     @State private var isCollected = false
+    @State private var inlineVideoAspectRatio: CGFloat = 16 / 9
     
     var body: some View {
-        ScrollView {
+        GeometryReader { proxy in
             VStack(spacing: 0) {
-                // 播放器区域
-                if !showFullScreen, !isFullScreenDismissing, viewModel.isPlaying, let url = viewModel.playUrl {
-                    PlayerView(
-                        urlString: url,
-                        httpHeaders: viewModel.playHeaders,
-                        startPosition: viewModel.currentPlaybackSeconds(),
-                        onProgressChanged: handlePlaybackProgress,
-                        onPlaybackStarted: handlePlaybackStarted,
-                        onPlaybackEnded: playNextEpisodeIfNeeded,
-                        onPlaybackFailed: handlePlaybackFailure,
-                        onToggleFullScreen: {
-                            openFullScreenPlayer()
-                        },
-                        canPlayNext: canPlayNextEpisode,
-                        onPlayNext: playNextEpisodeIfNeeded,
-                        systemController: sharedSystemController,
-                        vlcController: sharedVLCController
-                    )
-                        .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(16/9, contentMode: .fit)
-                        .background(Color.black)
-                        .onTapGesture(count: 2) {
-                            openFullScreenPlayer()
-                        }
-                }
-                
-                // 视频信息
-                videoInfoSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                inlinePlayer(containerSize: proxy.size)
 
-                if shouldShowPlaybackStatus {
-                    playbackStatusSection
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                }
-                
-                // 线路选择
-                if viewModel.flags.count > 1 {
-                    flagSelector
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                }
-                
-                // 清晰度选择
-                if viewModel.hasQualityChoices {
-                    qualitySelector
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                }
-                
-                // 剧集列表
-                if !viewModel.currentEpisodes.isEmpty {
-                    episodeSection
-                        .padding(.top, 16)
-                }
-                
-                // 简介
-                if let info = viewModel.vodInfo, !info.des.isEmpty {
-                    descriptionSection(info.des)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // 视频信息
+                        videoInfoSection
+                            .padding(.horizontal, 20)
+                            .padding(.top, 16)
+
+                        if shouldShowPlaybackStatus {
+                            playbackStatusSection
+                                .padding(.horizontal, 20)
+                                .padding(.top, 16)
+                        }
+
+                        // 线路选择
+                        if viewModel.flags.count > 1 {
+                            flagSelector
+                                .padding(.horizontal, 20)
+                                .padding(.top, 16)
+                        }
+
+                        // 清晰度选择
+                        if viewModel.hasQualityChoices {
+                            qualitySelector
+                                .padding(.horizontal, 20)
+                                .padding(.top, 16)
+                        }
+
+                        // 剧集列表
+                        if !viewModel.currentEpisodes.isEmpty {
+                            episodeSection
+                                .padding(.top, 16)
+                        }
+
+                        // 简介
+                        if let info = viewModel.vodInfo, !info.des.isEmpty {
+                            descriptionSection(info.des)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 16)
+                        }
+                    }
+                    .padding(.bottom, 40)
                 }
             }
-            .padding(.bottom, 40)
         }
         .background(AppTheme.primaryGradient)
         .navigationTitle(viewModel.vodInfo?.name ?? viewModel.activeVideo?.name ?? video.name)
@@ -229,6 +209,72 @@ struct DetailView: View {
                         await viewModel.closePlaybackBridgeJarUi()
                     }
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inlinePlayer(containerSize: CGSize) -> some View {
+        if !showFullScreen, !isFullScreenDismissing, viewModel.isPlaying, let url = viewModel.playUrl {
+            let metrics = inlinePlayerMetrics(for: containerSize)
+            HStack {
+                Spacer(minLength: 0)
+                PlayerView(
+                    urlString: url,
+                    httpHeaders: viewModel.playHeaders,
+                    startPosition: viewModel.currentPlaybackSeconds(),
+                    onProgressChanged: handlePlaybackProgress,
+                    onPlaybackStarted: handlePlaybackStarted,
+                    onPlaybackEnded: playNextEpisodeIfNeeded,
+                    onPlaybackFailed: handlePlaybackFailure,
+                    onToggleFullScreen: {
+                        openFullScreenPlayer()
+                    },
+                    onVideoSizeChanged: updateInlineVideoSize,
+                    canPlayNext: canPlayNextEpisode,
+                    onPlayNext: playNextEpisodeIfNeeded,
+                    systemController: sharedSystemController,
+                    vlcController: sharedVLCController
+                )
+                .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
+                .frame(width: metrics.width, height: metrics.height)
+                .background(Color.black)
+                .clipped()
+                .onTapGesture(count: 2) {
+                    openFullScreenPlayer()
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, metrics.verticalPadding)
+            .background(Color.black.opacity(0.36))
+        }
+    }
+
+    private func inlinePlayerMetrics(for containerSize: CGSize) -> (width: CGFloat, height: CGFloat, verticalPadding: CGFloat) {
+        let availableWidth = max(containerSize.width, 1)
+        let availableHeight = max(containerSize.height, 1)
+        #if os(macOS)
+        let verticalPadding: CGFloat = 10
+        let reservedScrollHeight: CGFloat = 88
+        #else
+        let verticalPadding: CGFloat = 6
+        let reservedScrollHeight: CGFloat = 72
+        #endif
+        let heightLimit = max(1, availableHeight - reservedScrollHeight - verticalPadding * 2)
+        let aspectRatio = max(inlineVideoAspectRatio, 0.1)
+        let height = max(1, min(availableWidth / aspectRatio, heightLimit))
+        let width = max(1, min(availableWidth, height * aspectRatio))
+        return (width, height, verticalPadding)
+    }
+
+    private func updateInlineVideoSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        let ratio = size.width / size.height
+        guard ratio.isFinite, ratio > 0 else { return }
+        if abs(ratio - inlineVideoAspectRatio) > 0.01 {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                inlineVideoAspectRatio = ratio
             }
         }
     }

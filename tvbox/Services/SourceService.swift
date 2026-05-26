@@ -9,6 +9,13 @@ struct VideoPage {
 struct SearchResultGroup: Identifiable {
     let source: SourceBean
     let videos: [Movie.Video]
+    let sourceOrder: Int
+
+    init(source: SourceBean, videos: [Movie.Video], sourceOrder: Int = Int.max) {
+        self.source = source
+        self.videos = videos
+        self.sourceOrder = sourceOrder
+    }
 
     var id: String { source.key }
 }
@@ -551,7 +558,11 @@ class SourceService {
     }
 
     /// 多源并发搜索并保留来源分组，搜索页可和 Android 一样按站点切换。
-    func searchGroups(keyword: String) async -> [SearchResultGroup] {
+    /// `onGroup` 会在每个源完成时立刻回调，用于搜索页渐进展示结果。
+    func searchGroups(
+        keyword: String,
+        onGroup: ((SearchResultGroup) async -> Void)? = nil
+    ) async -> [SearchResultGroup] {
         let sources = await ApiConfig.shared.getSearchableSources()
         let candidates = sources.enumerated().filter { _, source in
             source.isAvailableForPlayback && (source.requiresBridge || source.isHttpApi)
@@ -585,9 +596,14 @@ class SourceService {
             var groups: [(Int, SearchResultGroup)] = []
             while let (index, source, videos) = await group.next() {
                 if !videos.isEmpty {
-                    groups.append((index, SearchResultGroup(source: source, videos: videos)))
+                    let resultGroup = SearchResultGroup(source: source, videos: videos, sourceOrder: index)
+                    groups.append((index, resultGroup))
+                    await onGroup?(resultGroup)
                 }
                 enqueueNextSearch()
+            }
+            if onGroup != nil {
+                return groups.map(\.1)
             }
             return groups.sorted { $0.0 < $1.0 }.map(\.1)
         }

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SwiftData
 
 /// 设置 ViewModel
 @MainActor
@@ -78,6 +79,8 @@ class SettingsViewModel: ObservableObject {
     @Published var isTestingBridge = false
     /// 缓存占用展示文本。
     @Published var cacheSizeString: String = "0 KB"
+    /// 缓存清理结果提示。
+    @Published var cacheClearMessage: String?
 
     /// 快进步长候选项。
     let playTimeStepOptions: [Int] = [5, 10, 15, 30, 60]
@@ -314,11 +317,14 @@ class SettingsViewModel: ObservableObject {
     }
 
     /// 清除所有缓存
-    func clearCache() {
+    func clearCache(context: ModelContext) {
         URLCache.shared.removeAllCachedResponses()
         ImageLoader.shared.clearCache()
         ImageCache.shared.clear()
+        CacheStore.shared.clearCacheItems(context: context)
+        clearTemporaryDirectory()
         refreshCacheSize()
+        cacheClearMessage = "缓存已清除"
     }
 
     /// 设置快进步长
@@ -470,6 +476,20 @@ class SettingsViewModel: ObservableObject {
         let sharedDisk = URLCache.shared.currentDiskUsage
         let imageDisk = ImageLoader.shared.cacheUsage.disk
         cacheSizeString = Self.formatSize(bytes: sharedDisk + imageDisk)
+    }
+
+    private func clearTemporaryDirectory() {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: []
+        ) else { return }
+
+        for url in contents {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     /// 格式化字节大小。

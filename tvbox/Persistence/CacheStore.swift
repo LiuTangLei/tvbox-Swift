@@ -231,6 +231,16 @@ actor CacheStore {
             print("清空历史记录失败: \(error)")
         }
     }
+
+    @MainActor
+    func clearCacheItems(context: ModelContext) {
+        do {
+            try context.delete(model: CacheItem.self)
+            try context.save()
+        } catch {
+            print("清空缓存记录失败: \(error)")
+        }
+    }
     
     @MainActor
     private func fetchRecords(vodId: String, sourceKey: String, context: ModelContext) throws -> [VodRecord] {

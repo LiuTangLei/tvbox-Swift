@@ -26,7 +26,7 @@ struct SearchView: View {
                 searchBar
 
                 // 内容
-                if viewModel.isSearching {
+                if viewModel.isSearching && viewModel.results.isEmpty {
                     Spacer()
                     ProgressView("搜索中...")
                         .tint(.orange)
@@ -94,10 +94,7 @@ struct SearchView: View {
                 if !viewModel.keyword.isEmpty {
                     Button {
                         withAnimation {
-                            viewModel.keyword = ""
-                            viewModel.results = []
-                            viewModel.resultGroups = []
-                            viewModel.resetFolderBrowsing()
+                            viewModel.clearCurrentSearch()
                         }
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -165,6 +162,10 @@ struct SearchView: View {
                     } else {
                         resultGrid(viewModel.visibleResults)
                     }
+
+                    if viewModel.isSearching {
+                        searchingMoreIndicator
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -173,6 +174,27 @@ struct SearchView: View {
         .navigationDestination(for: Movie.Video.self) { video in
             DetailView(video: video)
         }
+    }
+
+    private var searchingMoreIndicator: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.orange)
+            Text("继续搜索更多来源...")
+                .font(.footnote.weight(.medium))
+                .foregroundColor(.white.opacity(0.66))
+            if viewModel.completedSourceCount > 0 {
+                Text("\(viewModel.completedSourceCount) 个来源已有结果")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(.white.opacity(0.55))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.08)))
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
     }
 
     private var sourceFilterBar: some View {

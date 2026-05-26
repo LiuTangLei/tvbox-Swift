@@ -96,9 +96,12 @@ class DetailViewModel: ObservableObject {
     private var failedSiteVideoKeys: Set<String> = []
     private var autoRecoveryTask: Task<Void, Never>?
     private var playbackWatchdogTask: Task<Void, Never>?
+    private var directPlaybackProbeTask: Task<Void, Never>?
     private var playbackWatchdogToken = UUID()
     private var playbackWatchdogBaseline: Double = 0
     private let playbackStartupTimeoutNanoseconds: UInt64 = 14_000_000_000
+    private let bridgeDirectStartupTimeoutNanoseconds: UInt64 = 5_000_000_000
+    private static let directPlaybackProbeTimeout: TimeInterval = 2.4
     
     /// 加载视频详情
     func loadDetail(video: Movie.Video) async {
@@ -202,6 +205,8 @@ class DetailViewModel: ObservableObject {
     }
 
     private func clearLoadedDetail() {
+        cancelPlaybackWatchdog()
+        cancelDirectPlaybackProbe()
         vodInfo = nil
         selectedFlag = ""
         selectedEpisodeIndex = 0
@@ -325,12 +330,14 @@ class DetailViewModel: ObservableObject {
         realtimeProgressSeconds = normalizedSeconds
         if normalizedSeconds - playbackWatchdogBaseline >= 1.0 || (playbackWatchdogBaseline < 1.0 && normalizedSeconds >= 1.0) {
             cancelPlaybackWatchdog()
+            cancelDirectPlaybackProbe()
         }
     }
 
     /// 播放器已进入实际播放状态，避免慢进度/分段流被启动 watchdog 误判。
     func markPlaybackStarted() {
         cancelPlaybackWatchdog()
+        cancelDirectPlaybackProbe()
     }
     
     /// 当前实时进度（不触发 UI 高频刷新）
@@ -399,6 +406,7 @@ class DetailViewModel: ObservableObject {
     
     private func startPlayback(episodeURL: String, flag: String) {
         cancelPlaybackWatchdog()
+        cancelDirectPlaybackProbe()
         bridgeMediaFallbackURL = nil
         isUsingBridgeMediaFallback = false
         guard let source = currentSource, source.requiresBridge else {
@@ -439,6 +447,7 @@ class DetailViewModel: ObservableObject {
                 isUsingBridgeMediaFallback = false
                 playUrl = playback.url
                 isPlaying = true
+                scheduleDirectPlaybackProbeIfNeeded(url: playback.url, headers: playback.headers, fallbackURL: playback.fallbackURL, token: token)
                 schedulePlaybackWatchdog()
                 errorMessage = nil
             } catch {
@@ -607,6 +616,7 @@ class DetailViewModel: ObservableObject {
 
         detailPlaybackLogger.info("bridge media fallback start trigger=\(trigger, privacy: .public)")
         cancelPlaybackWatchdog()
+        cancelDirectPlaybackProbe()
         isUsingBridgeMediaFallback = true
         playHeaders = [:]
         playUrl = fallbackURL
@@ -822,6 +832,7 @@ class DetailViewModel: ObservableObject {
         autoRecoveryTask?.cancel()
         autoRecoveryTask = nil
         cancelPlaybackWatchdog()
+        cancelDirectPlaybackProbe()
         isAutoSwitchingPlayback = false
         playbackFallbackMessage = nil
         if clearAttempts {
@@ -837,7 +848,7 @@ class DetailViewModel: ObservableObject {
         playbackWatchdogToken = token
         playbackWatchdogBaseline = currentPlaybackSeconds()
         let baseline = playbackWatchdogBaseline
-        let timeout = playbackStartupTimeoutNanoseconds
+        let timeout = shouldFastFallbackCurrentPlayback ? bridgeDirectStartupTimeoutNanoseconds : playbackStartupTimeoutNanoseconds
         playbackWatchdogTask = Task { [token, currentURL, baseline, timeout] in
             try? await Task.sleep(nanoseconds: timeout)
             guard !Task.isCancelled else { return }
@@ -857,6 +868,71 @@ class DetailViewModel: ObservableObject {
         playbackWatchdogTask?.cancel()
         playbackWatchdogTask = nil
         playbackWatchdogToken = UUID()
+    }
+
+    private var shouldFastFallbackCurrentPlayback: Bool {
+        currentSource?.requiresBridge == true
+            && !isUsingBridgeMediaFallback
+            && bridgeMediaFallbackURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    private func scheduleDirectPlaybackProbeIfNeeded(url: String, headers: [String: String], fallbackURL: String?, token: UUID) {
+        cancelDirectPlaybackProbe()
+        guard currentSource?.requiresBridge == true else { return }
+        guard fallbackURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
+        guard let parsedURL = URL(string: url), ["http", "https"].contains(parsedURL.scheme?.lowercased() ?? "") else { return }
+        guard !BridgeServerEndpoint.isBridgeProxyURL(parsedURL) else { return }
+
+        directPlaybackProbeTask = Task { [url, headers, token] in
+            let reachable = await Self.canReachDirectPlaybackURL(url, headers: headers)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard self.playbackResolveToken == token,
+                      self.isPlaying,
+                      self.playUrl == url,
+                      !self.isUsingBridgeMediaFallback,
+                      self.currentPlaybackSeconds() < 1 else { return }
+                if !reachable {
+                    _ = self.startBridgeMediaFallbackIfPossible(trigger: "直连探测失败")
+                }
+            }
+        }
+    }
+
+    private func cancelDirectPlaybackProbe() {
+        directPlaybackProbeTask?.cancel()
+        directPlaybackProbeTask = nil
+    }
+
+    private static func canReachDirectPlaybackURL(_ urlString: String, headers: [String: String]) async -> Bool {
+        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            return false
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = directPlaybackProbeTimeout
+        configuration.timeoutIntervalForResource = directPlaybackProbeTimeout
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+
+        var request = URLRequest(url: url, timeoutInterval: directPlaybackProbeTimeout)
+        request.httpMethod = "GET"
+        for (key, value) in PlaybackHTTPHeaders.normalized(headers) {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        if !looksLikeHLSURL(url) {
+            request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        }
+
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return true }
+            if (200..<400).contains(http.statusCode) { return true }
+            if [405, 416, 501].contains(http.statusCode) { return true }
+            return false
+        } catch {
+            return false
+        }
     }
 
     private func playbackAttemptKey(sourceKey: String, vodId: String, flag: String, episodeIndex: Int, url: String) -> String {

@@ -29,6 +29,8 @@ class SearchViewModel: ObservableObject {
     @Published var searchHistory: [String] = []
     /// 搜索失败或空结果提示。
     @Published var errorMessage: String?
+    /// 已返回结果的源数量。
+    @Published var completedSourceCount = 0
     /// folder 类型的搜索结果进入后按来源继续浏览分类列表。
     @Published var folderStack: [SearchFolderLevel] = []
     @Published var isFolderLoading = false
@@ -77,6 +79,7 @@ class SearchViewModel: ObservableObject {
         latestSearchRequestId = requestId
 
         isSearching = true
+        completedSourceCount = 0
         errorMessage = nil
         results = []
         resultGroups = []
@@ -86,14 +89,18 @@ class SearchViewModel: ObservableObject {
         // 搜索一旦触发就先落历史，保持行为与移动端常见搜索体验一致。
         addToHistory(trimmed)
 
-        // 走多源并发搜索，返回聚合后的影片列表。
-        let groups = await sourceService.searchGroups(keyword: trimmed)
+        // 走多源并发搜索，每个源完成后先追加到界面，避免一直空等最终结果。
+        let groups = await sourceService.searchGroups(keyword: trimmed) { [weak self] group in
+            await MainActor.run {
+                guard let self, requestId == self.latestSearchRequestId else { return }
+                self.appendSearchGroup(group)
+            }
+        }
         guard requestId == latestSearchRequestId else { return }
-        let videos = groups.flatMap(\.videos)
         self.resultGroups = groups
-        self.results = videos
+        self.results = groups.flatMap(\.videos)
 
-        if videos.isEmpty {
+        if results.isEmpty {
             errorMessage = "未找到相关内容"
         }
 
@@ -107,6 +114,18 @@ class SearchViewModel: ObservableObject {
         await search()
     }
 
+    func clearCurrentSearch() {
+        latestSearchRequestId = UUID()
+        keyword = ""
+        results = []
+        resultGroups = []
+        selectedSourceKey = nil
+        completedSourceCount = 0
+        isSearching = false
+        errorMessage = nil
+        resetFolderBrowsing()
+    }
+
     /// 在指定源搜索
     func searchInSource(_ source: SourceBean) async {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -115,6 +134,7 @@ class SearchViewModel: ObservableObject {
         latestSearchRequestId = requestId
 
         isSearching = true
+        completedSourceCount = 0
         errorMessage = nil
         resultGroups = []
         selectedSourceKey = source.key
@@ -125,6 +145,7 @@ class SearchViewModel: ObservableObject {
             guard requestId == latestSearchRequestId else { return }
             resultGroups = [SearchResultGroup(source: source, videos: videos)]
             self.results = videos
+            completedSourceCount = videos.isEmpty ? 0 : 1
         } catch {
             guard requestId == latestSearchRequestId else { return }
             errorMessage = error.localizedDescription
@@ -168,6 +189,17 @@ class SearchViewModel: ObservableObject {
 
     func showSource(_ sourceKey: String) {
         selectedSourceKey = sourceKey
+    }
+
+    private func appendSearchGroup(_ group: SearchResultGroup) {
+        guard !group.videos.isEmpty else { return }
+        if let index = resultGroups.firstIndex(where: { $0.source.key == group.source.key }) {
+            resultGroups[index] = group
+        } else {
+            resultGroups.append(group)
+        }
+        completedSourceCount = resultGroups.count
+        results = resultGroups.flatMap(\.videos)
     }
 
     func openFolder(_ video: Movie.Video) async {

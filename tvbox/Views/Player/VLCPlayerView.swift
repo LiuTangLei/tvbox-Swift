@@ -118,9 +118,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var selectedAudioTrackID: String?
     @Published var selectedSubtitleTrackID: String?
     @Published var subtitleAppearance = SubtitleAppearance.load()
-    #if os(iOS)
     @Published private(set) var videoSize: CGSize = .zero
-    #endif
     private var playerOptions: [String] {
         Self.stablePlaybackOptions + [
             "--freetype-rel-fontsize=\(subtitleAppearance.vlcRelativeFontSize)",
@@ -359,9 +357,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         setPlaybackStatus(preparing: false, playing: false)
         resetProgressState()
         resetTrackOptions()
-        #if os(iOS)
         videoSize = .zero
-        #endif
         currentMediaURLString = nil
         currentMediaHeaderKey = ""
         currentMediaIsLive = false
@@ -666,13 +662,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if selectedSubtitleTrackID != selectedSubtitleID { selectedSubtitleTrackID = selectedSubtitleID }
     }
 
-    #if os(iOS)
     private func refreshVideoSize() {
         let currentVideoSize = mediaPlayer.videoSize
         guard currentVideoSize != videoSize else { return }
         videoSize = currentVideoSize
     }
-    #endif
 
     private func resetTrackOptions() {
         audioTracks = []
@@ -808,9 +802,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func handlePlayerStateChanged() {
-        #if os(iOS)
         refreshVideoSize()
-        #endif
         switch mediaPlayer.state {
         case .opening, .buffering:
             handleBufferingState()
@@ -872,9 +864,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func emitProgress() {
-        #if os(iOS)
         refreshVideoSize()
-        #endif
         refreshPlaybackFlags()
         monitorVideoOutputRecoveryIfNeeded()
         guard !isLive else { return }
@@ -1310,6 +1300,7 @@ struct VLCVodPlayerView: View {
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var onVideoSizeChanged: ((CGSize) -> Void)? = nil
     var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
@@ -1325,6 +1316,7 @@ struct VLCVodPlayerView: View {
     @State private var osdTimer: Timer?
     @State private var startPlaybackTask: Task<Void, Never>?
     @State private var lastReportedVideoOrientation: Bool?
+    @State private var lastReportedVideoSize: CGSize = .zero
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
 
     private var controller: VLCPlayerController {
@@ -1414,9 +1406,7 @@ struct VLCVodPlayerView: View {
         .onAppear {
             startPlayback()
             wakeUpControls()
-            #if os(iOS)
             reportVideoOrientation(for: controller.videoSize)
-            #endif
         }
         .onChange(of: urlString) { _, _ in
             startPlayback()
@@ -1434,11 +1424,9 @@ struct VLCVodPlayerView: View {
         .onChange(of: controller.isPlaying) { _, isPlaying in
             if isPlaying { onPlaybackStarted?() }
         }
-        #if os(iOS)
         .onReceive(controller.$videoSize) { newSize in
             reportVideoOrientation(for: newSize)
         }
-        #endif
         .onDisappear {
             startPlaybackTask?.cancel()
             startPlaybackTask = nil
@@ -1448,6 +1436,7 @@ struct VLCVodPlayerView: View {
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
             lastReportedVideoOrientation = nil
+            lastReportedVideoSize = .zero
         }
         #if os(iOS)
         .sheet(item: $trackSelectionSheetKind) { kind in
@@ -1485,6 +1474,7 @@ struct VLCVodPlayerView: View {
     }
 
     private func reportVideoOrientation(for size: CGSize) {
+        reportVideoSizeIfNeeded(size)
         let normalizedOrientation: Bool?
         if size.width > size.height, size.height > 0 {
             normalizedOrientation = true
@@ -1497,6 +1487,13 @@ struct VLCVodPlayerView: View {
         guard normalizedOrientation != lastReportedVideoOrientation else { return }
         lastReportedVideoOrientation = normalizedOrientation
         onVideoOrientationChanged?(normalizedOrientation)
+    }
+
+    private func reportVideoSizeIfNeeded(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        guard abs(size.width - lastReportedVideoSize.width) > 1 || abs(size.height - lastReportedVideoSize.height) > 1 else { return }
+        lastReportedVideoSize = size
+        onVideoSizeChanged?(size)
     }
 
     private func startPlayback() {
@@ -1576,7 +1573,11 @@ struct VLCVodPlayerView: View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
         #else
-        let controlWidth = containerWidth * 0.7
+        let availableControlWidth = max(containerWidth - 24, 0)
+        let controlWidth = min(
+            availableControlWidth,
+            max(containerWidth * 0.84, min(availableControlWidth, 760))
+        )
         #endif
 
         return VStack(spacing: 0) {
@@ -2858,6 +2859,7 @@ struct VLCVodPlayerView: View {
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
+    var onVideoSizeChanged: ((CGSize) -> Void)? = nil
     var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
@@ -2873,6 +2875,7 @@ struct VLCVodPlayerView: View {
             onPlaybackFailed: onPlaybackFailed,
             onToggleFullScreen: onToggleFullScreen,
             onVideoOrientationChanged: onVideoOrientationChanged,
+            onVideoSizeChanged: onVideoSizeChanged,
             isFullscreen: isFullscreen,
             canPlayNext: canPlayNext,
             onPlayNext: onPlayNext

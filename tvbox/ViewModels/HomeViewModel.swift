@@ -96,8 +96,8 @@ class HomeViewModel: ObservableObject {
         do {
             let result = try await sourceService.getSort(sourceBean: source)
 
-            // 插入本地"推荐"分类，保持 UI 与 Android 版本习惯一致。
-            var allSorts = [MovieSort.SortData.home()]
+            // 只有接口实际返回推荐内容时才显示本地"推荐"分类。
+            var allSorts: [MovieSort.SortData] = result.homeVideos.isEmpty ? [] : [MovieSort.SortData.home()]
             allSorts.append(contentsOf: result.sorts)
 
             self.sorts = allSorts
