@@ -77,6 +77,7 @@ struct LiveView: View {
                         if let urlString = viewModel.currentChannel?.currentUrl, !urlString.isEmpty {
                             VLCLivePlayerView(
                                 urlString: urlString,
+                                httpHeaders: viewModel.currentChannel?.currentHeaders ?? [:],
                                 activityToken: vlcInteractionToken,
                                 onPlaybackFailed: {
                                     handlePlaybackFailure(trigger: "vlc_error")
@@ -86,7 +87,7 @@ struct LiveView: View {
                                 }
                             )
                             .ignoresSafeArea()
-                            .id("vlc-live-\(urlString)-\(viewModel.currentChannel?.id ?? "")")
+                            .id("vlc-live-\(viewModel.currentChannel?.currentPlaybackIdentifier ?? urlString)-\(viewModel.currentChannel?.id ?? "")")
                         }
                     } else if let player = avPlayer {
                         PlatformVideoPlayer(player: player)
@@ -112,9 +113,9 @@ struct LiveView: View {
                 viewModel.loadChannels()
                 wakeUpCurrentChannelInfo()
             }
-            .onChange(of: viewModel.currentChannel?.currentUrl) { _, newValue in
+            .onChange(of: viewModel.currentChannel?.currentPlaybackIdentifier) { _, _ in
                 if selectedEngine == .system {
-                    playChannel(url: newValue)
+                    playChannel(url: viewModel.currentChannel?.currentUrl)
                 } else {
                     cleanupPlayer()
                 }
@@ -600,9 +601,10 @@ struct LiveView: View {
         cleanupPlayer()
         
         // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
-        let headers: [String: String] = [
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ]
+        var headers = viewModel.currentChannel?.currentHeaders ?? [:]
+        if headers.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
+            headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let playerItem = AVPlayerItem(asset: asset)
         // 直播场景优先实时性，避免过多缓冲导致内存上涨

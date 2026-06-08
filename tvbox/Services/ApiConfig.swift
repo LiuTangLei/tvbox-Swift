@@ -818,20 +818,21 @@ class ApiConfig: ObservableObject {
         loadToken: UUID
     ) async -> [LiveChannelGroup] {
         var mergedGroups: [String: LiveChannelGroup] = [:]
-        var remoteLiveTargets: [(order: Int, url: String)] = []
+        var remoteLiveTargets: [(order: Int, url: String, headers: [String: String])] = []
 
         for (index, live) in lives.enumerated() {
             guard activeLoadToken == loadToken else { return [] }
+            let defaultHeaders = Self.liveDefaultHeaders(live)
 
             // 如果有 url，从远程加载
             if let liveUrl = live.url, !liveUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let resolvedUrl = resolveLiveUrl(liveUrl, baseConfigUrl: apiUrl)
-                remoteLiveTargets.append((order: index, url: resolvedUrl))
+                remoteLiveTargets.append((order: index, url: resolvedUrl, headers: defaultHeaders))
             }
 
             // 如果有内嵌频道
             if let channels = live.channels {
-                let inlineGroups = parseInlineLiveChannels(channels)
+                let inlineGroups = parseInlineLiveChannels(channels, defaultHeaders: defaultHeaders)
                 mergeLiveGroups(inlineGroups, into: &mergedGroups)
             }
         }
@@ -844,7 +845,10 @@ class ApiConfig: ObservableObject {
                 for target in remoteLiveTargets {
                     group.addTask {
                         do {
-                            let content = try await NetworkManager.shared.getString(from: target.url)
+                            let content = try await NetworkManager.shared.getString(
+                                from: target.url,
+                                headers: target.headers.isEmpty ? nil : target.headers
+                            )
                             return (target.order, content)
                         } catch {
                             print("加载直播源失败: \(target.url), error: \(error)")
@@ -862,9 +866,10 @@ class ApiConfig: ObservableObject {
                 return results
             }
 
-            for (_, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
+            for (order, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
                 guard activeLoadToken == loadToken else { return [] }
-                let groups = parseLiveContent(content)
+                let target = remoteLiveTargets.first(where: { $0.order == order })
+                let groups = parseLiveContent(content, defaultHeaders: target?.headers ?? [:])
                 mergeLiveGroups(groups, into: &mergedGroups)
                 liveChannelGroupList = sortedGroups(from: mergedGroups)
             }
@@ -873,8 +878,64 @@ class ApiConfig: ObservableObject {
         return sortedGroups(from: mergedGroups)
     }
 
+    private struct LiveChannelMetadata {
+        var logo: String = ""
+        var tvgId: String = ""
+        var tvgName: String = ""
+        var number: String = ""
+        var epgUrl: String = ""
+        var format: String = ""
+        var catchup: String = ""
+        var catchupSource: String = ""
+        var catchupReplace: String = ""
+        var headers: [String: String] = [:]
+        var urlHeaders: [String: [String: String]] = [:]
+
+        init() {}
+
+        init(
+            logo: String,
+            tvgId: String,
+            tvgName: String,
+            number: String,
+            epgUrl: String,
+            format: String,
+            catchup: String,
+            catchupSource: String,
+            catchupReplace: String,
+            headers: [String: String],
+            urlHeaders: [String: [String: String]]
+        ) {
+            self.logo = logo
+            self.tvgId = tvgId
+            self.tvgName = tvgName
+            self.number = number
+            self.epgUrl = epgUrl
+            self.format = format
+            self.catchup = catchup
+            self.catchupSource = catchupSource
+            self.catchupReplace = catchupReplace
+            self.headers = headers
+            self.urlHeaders = urlHeaders
+        }
+
+        init(_ channel: LiveChannelItem) {
+            logo = channel.logo
+            tvgId = channel.tvgId
+            tvgName = channel.tvgName
+            number = channel.number
+            epgUrl = channel.epgUrl
+            format = channel.format
+            catchup = channel.catchup
+            catchupSource = channel.catchupSource
+            catchupReplace = channel.catchupReplace
+            headers = channel.headers
+            urlHeaders = channel.urlHeaders
+        }
+    }
+
     /// 解析 m3u / txt 格式的直播内容
-    private func parseLiveContent(_ content: String) -> [LiveChannelGroup] {
+    private func parseLiveContent(_ content: String, defaultHeaders: [String: String] = [:]) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         var currentGroupName = "默认"
 
@@ -886,45 +947,91 @@ class ApiConfig: ObservableObject {
         if isM3U {
             var currentName = ""
             var currentGroup = "默认"
+            var currentMetadata = LiveChannelMetadata()
+            var pendingHeaders: [String: String] = [:]
+            var pendingFormat = ""
+            var globalEpgUrl = ""
 
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.hasPrefix("#EXTINF:") {
-                    // 解析频道名和分组
+                guard !trimmed.isEmpty else { continue }
+
+                if trimmed.hasPrefix("#EXTM3U") {
+                    let attributes = Self.parseM3UAttributes(trimmed)
+                    globalEpgUrl = attributes["tvg-url"] ?? attributes["url-tvg"] ?? globalEpgUrl
+                } else if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat) {
+                    continue
+                } else if trimmed.hasPrefix("#EXTINF:") {
+                    let attributes = Self.parseM3UAttributes(trimmed)
                     if let nameRange = trimmed.range(of: ",", options: .backwards) {
                         currentName = String(trimmed[nameRange.upperBound...]).trimmingCharacters(in: .whitespaces)
                     }
-                    currentGroup = "默认"
-                    if let groupMatch = trimmed.range(of: "group-title=\"") {
-                        let afterGroup = trimmed[groupMatch.upperBound...]
-                        if let endQuote = afterGroup.firstIndex(of: "\"") {
-                            currentGroup = String(afterGroup[..<endQuote])
-                        }
+                    if currentName.isEmpty {
+                        currentName = attributes["tvg-name"] ?? attributes["name"] ?? ""
                     }
-                } else if Self.isLiveStreamUrl(trimmed) {
+                    currentGroup = attributes["group-title"] ?? "默认"
+                    currentMetadata = LiveChannelMetadata(
+                        logo: attributes["tvg-logo"] ?? "",
+                        tvgId: attributes["tvg-id"] ?? "",
+                        tvgName: attributes["tvg-name"] ?? "",
+                        number: attributes["tvg-chno"] ?? "",
+                        epgUrl: attributes["tvg-url"] ?? attributes["url-tvg"] ?? globalEpgUrl,
+                        format: "",
+                        catchup: attributes["catchup"] ?? "",
+                        catchupSource: attributes["catchup-source"] ?? "",
+                        catchupReplace: attributes["catchup-replace"] ?? "",
+                        headers: [:],
+                        urlHeaders: [:]
+                    )
+                    if let userAgent = attributes["http-user-agent"]?.nilIfBlank {
+                        currentMetadata.headers["User-Agent"] = userAgent
+                    }
+                } else if Self.isLiveStreamLine(trimmed) {
                     if !currentName.isEmpty {
+                        let parsed = Self.parseLiveStreamLine(trimmed)
+                        guard let streamURL = parsed.url, Self.isLiveStreamUrl(streamURL) else { continue }
+                        var metadata = currentMetadata
+                        metadata.format = pendingFormat.nilIfBlank ?? metadata.format
+                        let extinfHeaders = metadata.headers
+                        metadata.headers = defaultHeaders
+                        metadata.headers.merge(extinfHeaders, uniquingKeysWith: { _, new in new })
+                        metadata.headers.merge(pendingHeaders, uniquingKeysWith: { _, new in new })
+                        if !parsed.headers.isEmpty {
+                            metadata.urlHeaders[LiveChannelItem.normalizeURLKey(streamURL)] = parsed.headers
+                        }
                         appendChannel(
                             named: currentName,
-                            urls: [trimmed],
-                            logo: "",
+                            urls: [streamURL],
+                            metadata: metadata,
                             to: currentGroup,
                             groups: &groups
                         )
                         currentName = ""
+                        currentMetadata = LiveChannelMetadata()
+                        pendingHeaders = [:]
+                        pendingFormat = ""
                     }
                 }
             }
         } else {
+            var pendingHeaders: [String: String] = [:]
+            var pendingFormat = ""
             // TXT 格式: 分组名,#genre#  或  频道名,url
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmed.isEmpty else { continue }
+
+                if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat) {
+                    continue
+                }
 
                 if trimmed.hasSuffix(",#genre#") || trimmed.hasSuffix("，#genre#") {
                     currentGroupName = trimmed
                         .replacingOccurrences(of: ",#genre#", with: "")
                         .replacingOccurrences(of: "，#genre#", with: "")
                         .trimmingCharacters(in: .whitespaces)
+                    pendingHeaders = [:]
+                    pendingFormat = ""
                     continue
                 }
 
@@ -933,11 +1040,26 @@ class ApiConfig: ObservableObject {
                     let name = parts[0].trimmingCharacters(in: .whitespaces)
                     let url = parts[1...].joined(separator: ",").trimmingCharacters(in: .whitespaces)
 
-                    if !name.isEmpty && Self.isLiveStreamUrl(url) {
+                    var parsedStreams: [(url: String, headers: [String: String])] = []
+                    for rawStream in url.components(separatedBy: "#") {
+                        let parsed = Self.parseLiveStreamLine(rawStream)
+                        if let streamURL = parsed.url, Self.isLiveStreamUrl(streamURL) {
+                            parsedStreams.append((url: streamURL, headers: parsed.headers))
+                        }
+                    }
+                    let urls = parsedStreams.map { $0.url }
+                    if !name.isEmpty && !urls.isEmpty {
+                        var metadata = LiveChannelMetadata()
+                        metadata.headers = defaultHeaders
+                        metadata.headers.merge(pendingHeaders, uniquingKeysWith: { _, new in new })
+                        metadata.format = pendingFormat
+                        for stream in parsedStreams where !stream.headers.isEmpty {
+                            metadata.urlHeaders[LiveChannelItem.normalizeURLKey(stream.url)] = stream.headers
+                        }
                         appendChannel(
                             named: name,
-                            urls: [url],
-                            logo: "",
+                            urls: urls,
+                            metadata: metadata,
                             to: currentGroupName,
                             groups: &groups
                         )
@@ -949,13 +1071,19 @@ class ApiConfig: ObservableObject {
         return sortedGroups(from: groups)
     }
 
-    private func parseInlineLiveChannels(_ channels: [AppConfigData.LiveConfig.LiveChannelConfig]) -> [LiveChannelGroup] {
+    private func parseInlineLiveChannels(
+        _ channels: [AppConfigData.LiveConfig.LiveChannelConfig],
+        defaultHeaders: [String: String] = [:]
+    ) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         for channel in channels {
+            var metadata = LiveChannelMetadata()
+            metadata.logo = channel.logo ?? ""
+            metadata.headers = defaultHeaders
             appendChannel(
                 named: channel.name ?? "",
                 urls: channel.urls ?? [],
-                logo: channel.logo ?? "",
+                metadata: metadata,
                 to: channel.group ?? "其他",
                 groups: &groups
             )
@@ -969,7 +1097,7 @@ class ApiConfig: ObservableObject {
                 appendChannel(
                     named: channel.channelName,
                     urls: channel.channelUrls,
-                    logo: channel.logo,
+                    metadata: LiveChannelMetadata(channel),
                     to: group.groupName,
                     groups: &groups
                 )
@@ -980,7 +1108,7 @@ class ApiConfig: ObservableObject {
     private func appendChannel(
         named channelName: String,
         urls: [String],
-        logo: String,
+        metadata: LiveChannelMetadata,
         to groupName: String,
         groups: inout [String: LiveChannelGroup]
     ) {
@@ -1012,19 +1140,198 @@ class ApiConfig: ObservableObject {
                     existingUrls.insert(normalizedUrl)
                 }
             }
-            let trimmedLogo = logo.trimmingCharacters(in: .whitespacesAndNewlines)
-            if existing.logo.isEmpty && !trimmedLogo.isEmpty {
-                existing.logo = trimmedLogo
-            }
+            Self.applyLiveMetadata(metadata, to: &existing)
             group.channels[existingIndex] = existing
         } else {
             var item = LiveChannelItem(channelName: normalizedName, channelIndex: group.channels.count)
             item.channelUrls = validUrls
-            item.logo = logo.trimmingCharacters(in: .whitespacesAndNewlines)
+            Self.applyLiveMetadata(metadata, to: &item)
             group.channels.append(item)
         }
 
         groups[normalizedGroupName] = group
+    }
+
+    private static func applyLiveMetadata(_ metadata: LiveChannelMetadata, to channel: inout LiveChannelItem) {
+        if channel.logo.isEmpty, let value = metadata.logo.nilIfBlank { channel.logo = value }
+        if channel.tvgId.isEmpty, let value = metadata.tvgId.nilIfBlank { channel.tvgId = value }
+        if channel.tvgName.isEmpty, let value = metadata.tvgName.nilIfBlank { channel.tvgName = value }
+        if channel.number.isEmpty, let value = metadata.number.nilIfBlank { channel.number = value }
+        if channel.epgUrl.isEmpty, let value = metadata.epgUrl.nilIfBlank { channel.epgUrl = value }
+        if channel.format.isEmpty, let value = metadata.format.nilIfBlank { channel.format = value }
+        if channel.catchup.isEmpty, let value = metadata.catchup.nilIfBlank { channel.catchup = value }
+        if channel.catchupSource.isEmpty, let value = metadata.catchupSource.nilIfBlank { channel.catchupSource = value }
+        if channel.catchupReplace.isEmpty, let value = metadata.catchupReplace.nilIfBlank { channel.catchupReplace = value }
+
+        channel.headers.merge(normalizedLiveHeaders(metadata.headers), uniquingKeysWith: { _, new in new })
+        for (url, headers) in metadata.urlHeaders {
+            let key = LiveChannelItem.normalizeURLKey(url)
+            guard !key.isEmpty else { continue }
+            var merged = channel.urlHeaders[key] ?? [:]
+            merged.merge(normalizedLiveHeaders(headers), uniquingKeysWith: { _, new in new })
+            channel.urlHeaders[key] = merged
+        }
+    }
+
+    private static func isLiveStreamLine(_ line: String) -> Bool {
+        parseLiveStreamLine(line).url.map(isLiveStreamUrl) == true
+    }
+
+    private static func parseLiveStreamLine(_ line: String) -> (url: String?, headers: [String: String]) {
+        let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let url = parts.first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let headers = parts.count > 1 ? parseHeaderPairs(String(parts[1])) : [:]
+        return (url?.isEmpty == false ? url : nil, headers)
+    }
+
+    @discardableResult
+    private static func applyLiveDirective(
+        _ line: String,
+        headers: inout [String: String],
+        format: inout String
+    ) -> Bool {
+        let lowercased = line.lowercased()
+        if lowercased.hasPrefix("#exthttp:") {
+            let payload = String(line.dropFirst("#EXTHTTP:".count))
+            headers.merge(parseHeaderPayload(payload), uniquingKeysWith: { _, new in new })
+            return true
+        }
+        if lowercased.hasPrefix("#extvlcopt:http-user-agent") {
+            setHeader("User-Agent", valueAfter(line, marker: "="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("#extvlcopt:http-origin") {
+            setHeader("Origin", valueAfter(line, marker: "="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("#extvlcopt:http-referrer")
+            || lowercased.hasPrefix("#extvlcopt:http-referer") {
+            setHeader("Referer", valueAfter(line, marker: "="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.manifest_type") {
+            format = normalizedLiveFormat(valueAfter(line, marker: "=") ?? "")
+            return true
+        }
+        if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.stream_headers")
+            || lowercased.hasPrefix("#kodiprop:inputstream.adaptive.common_headers") {
+            headers.merge(parseHeaderPairs(valueAfter(line, marker: "=") ?? ""), uniquingKeysWith: { _, new in new })
+            return true
+        }
+        if lowercased.hasPrefix("ua") {
+            setHeader("User-Agent", valueAfter(line, marker: "user-agent=") ?? valueAfter(line, marker: "ua="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("origin") {
+            setHeader("Origin", valueAfter(line, marker: "origin="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("referer") || lowercased.hasPrefix("referrer") {
+            setHeader("Referer", valueAfter(line, marker: "referer=") ?? valueAfter(line, marker: "referrer="), in: &headers)
+            return true
+        }
+        if lowercased.hasPrefix("header") {
+            headers.merge(parseHeaderPayload(valueAfter(line, marker: "header=") ?? ""), uniquingKeysWith: { _, new in new })
+            return true
+        }
+        if lowercased.hasPrefix("format") {
+            format = normalizedLiveFormat(valueAfter(line, marker: "format=") ?? "")
+            return true
+        }
+        return false
+    }
+
+    private static func parseM3UAttributes(_ line: String) -> [String: String] {
+        var attributes: [String: String] = [:]
+        let pattern = #"([A-Za-z0-9_-]+)="([^"]*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return attributes }
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        for match in regex.matches(in: line, range: range) {
+            guard match.numberOfRanges == 3,
+                  let keyRange = Range(match.range(at: 1), in: line),
+                  let valueRange = Range(match.range(at: 2), in: line) else { continue }
+            attributes[String(line[keyRange]).lowercased()] = String(line[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return attributes
+    }
+
+    private static func parseHeaderPayload(_ payload: String) -> [String: String] {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [:] }
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return normalizedLiveHeaders(
+                object.reduce(into: [String: String]()) { result, item in
+                    result[item.key] = "\(item.value)"
+                }
+            )
+        }
+        return parseHeaderPairs(trimmed)
+    }
+
+    private static func parseHeaderPairs(_ payload: String) -> [String: String] {
+        var headers: [String: String] = [:]
+        let normalized = payload.replacingOccurrences(of: "|", with: "&")
+        for part in normalized.split(separator: "&") {
+            let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else { continue }
+            let key = strippedDirectiveValue(String(pair[0]))
+            let value = strippedDirectiveValue(String(pair[1]))
+            guard !key.isEmpty, !value.isEmpty else { continue }
+            if key == "drmScheme" || key == "drmLicense" { continue }
+            headers[key] = value
+        }
+        return normalizedLiveHeaders(headers)
+    }
+
+    private static func normalizedLiveHeaders(_ headers: [String: String]) -> [String: String] {
+        headers.reduce(into: [String: String]()) { result, item in
+            let key = item.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, !value.isEmpty else { return }
+            result[key] = value
+        }
+    }
+
+    private static func setHeader(_ key: String, _ value: String?, in headers: inout [String: String]) {
+        guard let value = value?.nilIfBlank else { return }
+        headers[key] = value
+    }
+
+    private static func valueAfter(_ line: String, marker: String) -> String? {
+        guard let range = line.range(of: marker, options: [.caseInsensitive]) else { return nil }
+        return strippedDirectiveValue(String(line[range.upperBound...]))
+    }
+
+    private static func strippedDirectiveValue(_ value: String) -> String {
+        var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.hasPrefix("\"") || result.hasPrefix("'") {
+            result.removeFirst()
+        }
+        while result.hasSuffix("\"") || result.hasSuffix("'") {
+            result.removeLast()
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedLiveFormat(_ value: String) -> String {
+        let trimmed = strippedDirectiveValue(value)
+        switch trimmed.lowercased() {
+        case "hls", "m3u8":
+            return "application/x-mpegURL"
+        case "mpd", "dash":
+            return "application/dash+xml"
+        default:
+            return trimmed
+        }
+    }
+
+    private static func liveDefaultHeaders(_ live: AppConfigData.LiveConfig) -> [String: String] {
+        var headers: [String: String] = [:]
+        if let userAgent = live.ua?.nilIfBlank {
+            headers["User-Agent"] = userAgent
+        }
+        return headers
     }
 
     private func sortedGroups(from groups: [String: LiveChannelGroup]) -> [LiveChannelGroup] {

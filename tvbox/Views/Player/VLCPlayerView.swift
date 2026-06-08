@@ -2272,6 +2272,7 @@ struct VLCVodPlayerView: View {
 
 struct VLCLivePlayerView: View {
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var activityToken: Int = 0
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
@@ -2377,6 +2378,10 @@ struct VLCLivePlayerView: View {
             startPlayback()
             wakeUpControls()
         }
+        .onChange(of: httpHeaders) { _, _ in
+            startPlayback()
+            wakeUpControls()
+        }
         .onChange(of: activityToken) { _, _ in
             wakeUpControls()
         }
@@ -2450,6 +2455,7 @@ struct VLCLivePlayerView: View {
         }
         controller.play(
             url: url,
+            httpHeaders: httpHeaders,
             startPosition: 0,
             isLive: true,
             onProgressChanged: nil,
@@ -3005,6 +3011,7 @@ struct VLCVodPlayerView: View {
 
 struct VLCLivePlayerView: View {
     let urlString: String
+    var httpHeaders: [String: String] = [:]
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
 
