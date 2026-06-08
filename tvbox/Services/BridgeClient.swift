@@ -25,6 +25,26 @@ struct BridgePlayback: Hashable {
     let headers: [String: String]
     let fallbackURL: String?
     let proxied: Bool
+    let format: String?
+    let parse: Int?
+    let flag: String?
+    let jxFrom: String?
+    let expiresAt: TimeInterval?
+    let subtitles: [BridgePlaybackSubtitle]
+    let danmakus: [BridgePlaybackDanmaku]
+}
+
+struct BridgePlaybackSubtitle: Decodable, Hashable {
+    let url: String?
+    let name: String?
+    let lang: String?
+    let format: String?
+    let flag: Int?
+}
+
+struct BridgePlaybackDanmaku: Decodable, Hashable {
+    let name: String?
+    let url: String?
 }
 
 enum PlaybackHTTPHeaders {
@@ -171,6 +191,13 @@ struct BridgePlayResponse: Decodable {
     let fallbackUrl: String?
     let headers: [String: String]?
     let proxied: Bool?
+    let format: String?
+    let parse: Int?
+    let flag: String?
+    let jxFrom: String?
+    let expiresAt: TimeInterval?
+    let subtitles: [BridgePlaybackSubtitle]?
+    let danmakus: [BridgePlaybackDanmaku]?
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
@@ -502,7 +529,14 @@ final class BridgeClient {
             url: url,
             headers: PlaybackHTTPHeaders.normalized(response.headers),
             fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil,
-            proxied: response.proxied == true
+            proxied: response.proxied == true,
+            format: response.format?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+            parse: response.parse,
+            flag: response.flag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+            jxFrom: response.jxFrom?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+            expiresAt: response.expiresAt,
+            subtitles: response.subtitles ?? [],
+            danmakus: response.danmakus ?? []
         )
     }
 
