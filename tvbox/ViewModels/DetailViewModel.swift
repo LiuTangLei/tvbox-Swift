@@ -50,6 +50,8 @@ class DetailViewModel: ObservableObject {
     @Published var playbackFallbackMessage: String?
     /// 当前实际播放地址（可能是原始地址，也可能是清晰度切换后的子流地址）。
     @Published var playUrl: String?
+    /// 播放器重载标识；同一 URL 需要重建播放器时递增。
+    @Published private(set) var playbackReloadToken = UUID()
     /// 当前播放地址需要携带的 HTTP 请求头。
     @Published var playHeaders: [String: String] = [:]
     /// 续播起始位置（秒）。
@@ -101,6 +103,7 @@ class DetailViewModel: ObservableObject {
     private var playbackWatchdogBaseline: Double = 0
     private let playbackStartupTimeoutNanoseconds: UInt64 = 14_000_000_000
     private let bridgeDirectStartupTimeoutNanoseconds: UInt64 = 5_000_000_000
+    private let networkReconnectPlaybackMessage = "网络已切换，正在恢复播放..."
     private static let directPlaybackProbeTimeout: TimeInterval = 2.4
     
     /// 加载视频详情
@@ -320,6 +323,7 @@ class DetailViewModel: ObservableObject {
         resumeSeconds = progress
         realtimeProgressSeconds = progress
         playHeaders = [:]
+        advancePlaybackReloadToken()
         playUrl = targetURL
     }
     
@@ -338,6 +342,9 @@ class DetailViewModel: ObservableObject {
     func markPlaybackStarted() {
         cancelPlaybackWatchdog()
         cancelDirectPlaybackProbe()
+        if playbackFallbackMessage == networkReconnectPlaybackMessage {
+            playbackFallbackMessage = nil
+        }
     }
     
     /// 当前实时进度（不触发 UI 高频刷新）
@@ -379,6 +386,23 @@ class DetailViewModel: ObservableObject {
         if startBridgeMediaFallbackIfPossible(trigger: reason) { return }
         startAutomaticPlaybackRecovery(trigger: reason)
     }
+
+    /// 网络接口切换后，保留当前进度并重新打开当前剧集。
+    func reconnectCurrentPlaybackAfterNetworkPathChange() {
+        guard isPlaying,
+              !isResolvingBridgePlayback,
+              !isAutoSwitchingPlayback,
+              let episode = vodInfo?.currentEpisode else {
+            return
+        }
+        let progress = max(currentPlaybackSeconds(), 0)
+        resumeSeconds = progress.isFinite && progress >= 3 ? progress : 0
+        realtimeProgressSeconds = resumeSeconds
+        playbackFallbackMessage = networkReconnectPlaybackMessage
+        errorMessage = nil
+        bridgePlaybackMessage = nil
+        startPlayback(episodeURL: episode.url, flag: selectedFlag)
+    }
     
     /// 当前剧集列表
     var currentEpisodes: [VodInfo.Episode] {
@@ -416,6 +440,7 @@ class DetailViewModel: ObservableObject {
             bridgeTokenPrompt = nil
             isBridgeTokenPromptPresented = false
             playHeaders = [:]
+            advancePlaybackReloadToken()
             playUrl = selectedPlayableURL(fallback: episodeURL)
             isPlaying = true
             schedulePlaybackWatchdog()
@@ -445,6 +470,7 @@ class DetailViewModel: ObservableObject {
                 playHeaders = playback.headers
                 bridgeMediaFallbackURL = playback.fallbackURL
                 isUsingBridgeMediaFallback = false
+                advancePlaybackReloadToken()
                 playUrl = playback.url
                 isPlaying = true
                 scheduleDirectPlaybackProbeIfNeeded(url: playback.url, headers: playback.headers, fallbackURL: playback.fallbackURL, token: token)
@@ -619,6 +645,7 @@ class DetailViewModel: ObservableObject {
         cancelDirectPlaybackProbe()
         isUsingBridgeMediaFallback = true
         playHeaders = [:]
+        advancePlaybackReloadToken()
         playUrl = fallbackURL
         isPlaying = true
         bridgePlaybackMessage = nil
@@ -839,6 +866,10 @@ class DetailViewModel: ObservableObject {
             failedPlaybackAttempts.removeAll()
             failedSiteVideoKeys.removeAll()
         }
+    }
+
+    private func advancePlaybackReloadToken() {
+        playbackReloadToken = UUID()
     }
 
     private func schedulePlaybackWatchdog() {

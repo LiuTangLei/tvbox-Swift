@@ -7,6 +7,13 @@ import Combine
 @MainActor
 final class NetworkMonitor: ObservableObject {
     static let shared = NetworkMonitor()
+
+    enum ConnectionType: String {
+        case wifi = "Wi-Fi"
+        case cellular = "蜂窝"
+        case wiredEthernet = "有线"
+        case unknown = "未知"
+    }
     
     /// 当前是否有可用网络连接。
     @Published private(set) var isConnected: Bool = true
@@ -15,17 +22,13 @@ final class NetworkMonitor: ObservableObject {
     
     /// 网络从断开恢复到连接时发送信号，用于触发自动重试。
     let networkRestoredPublisher = PassthroughSubject<Void, Never>()
-    
-    enum ConnectionType: String {
-        case wifi = "Wi-Fi"
-        case cellular = "蜂窝"
-        case wiredEthernet = "有线"
-        case unknown = "未知"
-    }
+    /// 可用网络路径发生变化时发送信号，例如蜂窝/有线切到 Wi-Fi。
+    let networkPathChangedPublisher = PassthroughSubject<Void, Never>()
     
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.tvbox.networkmonitor", qos: .utility)
     private var wasDisconnected = false
+    private var hasReceivedPathUpdate = false
     
     private init() {
         startMonitoring()
@@ -37,17 +40,28 @@ final class NetworkMonitor: ObservableObject {
                 guard let self else { return }
                 let connected = path.status == .satisfied
                 let previouslyConnected = self.isConnected
+                let previousType = self.connectionType
+                let resolvedType = Self.resolveConnectionType(path)
+                let hadPreviousPath = self.hasReceivedPathUpdate
+                let wasRestored = connected && (!previouslyConnected || self.wasDisconnected)
+                let interfaceChanged = hadPreviousPath
+                    && connected
+                    && previouslyConnected
+                    && previousType != resolvedType
                 
                 self.isConnected = connected
-                self.connectionType = Self.resolveConnectionType(path)
+                self.connectionType = resolvedType
                 
-                if connected && !previouslyConnected {
+                if wasRestored {
                     self.networkRestoredPublisher.send()
                 }
-                
-                if !connected {
-                    self.wasDisconnected = true
+
+                if hadPreviousPath && (wasRestored || interfaceChanged) {
+                    self.networkPathChangedPublisher.send()
                 }
+
+                self.wasDisconnected = !connected
+                self.hasReceivedPathUpdate = true
             }
         }
         monitor.start(queue: monitorQueue)

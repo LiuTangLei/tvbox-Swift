@@ -193,44 +193,7 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        Group {
-            switch selectedEngine {
-            case .system:
-                AVPlayerContentView(
-                    urlString: urlString,
-                    httpHeaders: httpHeaders,
-                    startPosition: startPosition,
-                    onProgressChanged: onProgressChanged,
-                    onPlaybackStarted: onPlaybackStarted,
-                    onPlaybackEnded: onPlaybackEnded,
-                    onPlaybackFailed: onPlaybackFailed,
-                    onToggleFullScreen: onToggleFullScreen,
-                    onVideoOrientationChanged: onVideoOrientationChanged,
-                    onVideoSizeChanged: onVideoSizeChanged,
-                    isFullscreen: isFullscreen,
-                    canPlayNext: canPlayNext,
-                    onPlayNext: onPlayNext,
-                    sharedController: systemController
-                )
-            case .vlc:
-                VLCVodPlayerView(
-                    urlString: urlString,
-                    httpHeaders: httpHeaders,
-                    startPosition: startPosition,
-                    onProgressChanged: onProgressChanged,
-                    onPlaybackStarted: onPlaybackStarted,
-                    onPlaybackEnded: onPlaybackEnded,
-                    onPlaybackFailed: onPlaybackFailed,
-                    onToggleFullScreen: onToggleFullScreen,
-                    onVideoOrientationChanged: onVideoOrientationChanged,
-                    onVideoSizeChanged: onVideoSizeChanged,
-                    isFullscreen: isFullscreen,
-                    canPlayNext: canPlayNext,
-                    onPlayNext: onPlayNext,
-                    sharedController: vlcController
-                )
-            }
-        }
+        playerContent
         .id(selectedEngine.rawValue)
         .onAppear {
             if selectedEngine != .system {
@@ -247,6 +210,46 @@ struct PlayerView: View {
             if newValue != .vlc {
                 vlcController?.stop()
             }
+        }
+    }
+
+    @ViewBuilder
+    private var playerContent: some View {
+        switch selectedEngine {
+        case .system:
+            AVPlayerContentView(
+                urlString: urlString,
+                httpHeaders: httpHeaders,
+                startPosition: startPosition,
+                onProgressChanged: onProgressChanged,
+                onPlaybackStarted: onPlaybackStarted,
+                onPlaybackEnded: onPlaybackEnded,
+                onPlaybackFailed: onPlaybackFailed,
+                onToggleFullScreen: onToggleFullScreen,
+                onVideoOrientationChanged: onVideoOrientationChanged,
+                onVideoSizeChanged: onVideoSizeChanged,
+                isFullscreen: isFullscreen,
+                canPlayNext: canPlayNext,
+                onPlayNext: onPlayNext,
+                sharedController: systemController
+            )
+        case .vlc:
+            VLCVodPlayerView(
+                urlString: urlString,
+                httpHeaders: httpHeaders,
+                startPosition: startPosition,
+                onProgressChanged: onProgressChanged,
+                onPlaybackStarted: onPlaybackStarted,
+                onPlaybackEnded: onPlaybackEnded,
+                onPlaybackFailed: onPlaybackFailed,
+                onToggleFullScreen: onToggleFullScreen,
+                onVideoOrientationChanged: onVideoOrientationChanged,
+                onVideoSizeChanged: onVideoSizeChanged,
+                isFullscreen: isFullscreen,
+                canPlayNext: canPlayNext,
+                onPlayNext: onPlayNext,
+                sharedController: vlcController
+            )
         }
     }
 }
@@ -448,7 +451,7 @@ struct AVPlayerContentView: View {
         .background(Color.black)
     }
 
-    private func setupPlayer() {
+    private func setupPlayer(startPositionOverride: Double? = nil, forceReload: Bool = false) {
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[AVPlayer] URL sanitization failed for: \(urlString)")
             return
@@ -456,12 +459,14 @@ struct AVPlayerContentView: View {
         let targetURLString = url.absoluteString
         let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
         let targetPlaybackKey = targetURLString + "\n" + PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
+        let targetStartPosition = max(startPositionOverride ?? startPosition, 0)
         let preferredRate = normalizedSavedPlaybackRate
         rate = preferredRate
         playbackError = nil
         hasReportedPlaybackFailure = false
 
-        if let sharedController,
+        if !forceReload,
+           let sharedController,
            sharedController.mediaURLString == targetPlaybackKey,
            let sharedPlayer = sharedController.player {
             cleanupPlayer(keepSharedPlayer: true)
@@ -508,7 +513,7 @@ struct AVPlayerContentView: View {
 
         player = newPlayer
         bindPlayerObservers(for: newPlayer)
-        startPlayback(for: newPlayer)
+        startPlayback(for: newPlayer, startPosition: targetStartPosition)
     }
 
     /// 将原始 URL 字符串转换为合法的 URL，处理未编码的特殊字符。
@@ -663,8 +668,8 @@ struct AVPlayerContentView: View {
         onVideoSizeChanged?(size)
     }
 
-    private func startPlayback(for player: AVPlayer) {
-        let target = max(startPosition, 0)
+    private func startPlayback(for player: AVPlayer, startPosition: Double? = nil) {
+        let target = max(startPosition ?? self.startPosition, 0)
 
         if target > 0 {
             let seekTime = CMTime(seconds: target, preferredTimescale: 600)
@@ -679,11 +684,49 @@ struct AVPlayerContentView: View {
 
     private func togglePlayPause() {
         guard let player = player else { return }
-        if player.rate == 0 {
-            playAtPreferredRate(player)
-        } else {
+        if player.timeControlStatus == .playing {
             player.pause()
+        } else if shouldRecreateMediaForManualPlay(player) {
+            restartCurrentMediaFromCurrentPosition()
+        } else {
+            playAtPreferredRate(player)
         }
+    }
+
+    private func shouldRecreateMediaForManualPlay(_ player: AVPlayer) -> Bool {
+        guard player.timeControlStatus != .playing else { return false }
+        if playbackError != nil || hasReportedPlaybackFailure {
+            return true
+        }
+        if player.currentItem?.status == .failed {
+            return true
+        }
+        return player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            && player.reasonForWaitingToPlay == .toMinimizeStalls
+            && player.rate > 0
+    }
+
+    private func restartCurrentMediaFromCurrentPosition() {
+        let resumePosition = currentResumePosition()
+        cleanupPlayer()
+        currentTime = resumePosition
+        draggingSeconds = resumePosition
+        playbackError = nil
+        hasReportedPlaybackFailure = false
+        isPreparing = true
+        isPlaying = false
+        setupPlayer(startPositionOverride: resumePosition, forceReload: true)
+    }
+
+    private func currentResumePosition() -> Double {
+        let playerSeconds = player?.currentTime().seconds
+        if let playerSeconds, playerSeconds.isFinite, playerSeconds >= 0 {
+            return playerSeconds
+        }
+        if currentTime.isFinite, currentTime >= 0 {
+            return currentTime
+        }
+        return max(startPosition, 0)
     }
 
     private func togglePlayPauseWithOSD() {

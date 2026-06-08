@@ -162,6 +162,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var currentMediaDecodeMode: VideoDecodeMode = .auto
     private var currentMediaBufferMode: VLCBufferMode = .defaultMode
     private var currentMediaHeaderKey = ""
+    private var currentMediaHeaders: [String: String] = [:]
     private var onProgressChanged: ((Double, Double?) -> Void)?
     private var onPlaybackStarted: (() -> Void)?
     private var onPlaybackEnded: (() -> Void)?
@@ -226,7 +227,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         onProgressChanged: ((Double, Double?) -> Void)?,
         onPlaybackStarted: (() -> Void)?,
         onPlaybackEnded: (() -> Void)?,
-        onPlaybackFailed: (() -> Void)?
+        onPlaybackFailed: (() -> Void)?,
+        forceReload: Bool = false
     ) {
         let targetURLString = url.absoluteString
         let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
@@ -245,7 +247,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         )
 
         // 同一路径/同场景（点播或直播）时复用当前实例，避免切全屏触发重新加载
-        if currentMediaURLString == targetURLString,
+        if !forceReload,
+           currentMediaURLString == targetURLString,
            currentMediaHeaderKey == targetHeaderKey,
            currentMediaIsLive == isLive,
            currentMediaIsBridgeProxy == targetIsBridgeProxy,
@@ -340,6 +343,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaIsBridgeProxy = targetIsBridgeProxy
         currentMediaDecodeMode = effectiveDecodeMode
         currentMediaBufferMode = bufferMode
+        currentMediaHeaders = normalizedHeaders
     }
 
     func stop() {
@@ -364,6 +368,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaIsBridgeProxy = false
         currentMediaDecodeMode = .auto
         currentMediaBufferMode = .defaultMode
+        currentMediaHeaders = [:]
         guard let player = _mediaPlayer else { return }
         // 立即静音（audio.volume 是轻量属性设置，不会 dispatch_sync）
         player.audio?.volume = 0
@@ -380,10 +385,44 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func togglePlayback() {
         if isPlaying {
             mediaPlayer.pause()
+        } else if shouldRecreateMediaForManualPlay() {
+            restartCurrentMediaFromCurrentPosition()
         } else {
             mediaPlayer.play()
             applyPlaybackRate()
         }
+    }
+
+    private func shouldRecreateMediaForManualPlay() -> Bool {
+        guard currentMediaURLString != nil, mediaPlayer.media != nil else { return false }
+        switch mediaPlayer.state {
+        case .error, .stopped, .ended:
+            return true
+        case .opening, .buffering:
+            return isInBufferingState && !mediaPlayer.isPlaying
+        default:
+            return false
+        }
+    }
+
+    private func restartCurrentMediaFromCurrentPosition() {
+        guard let urlString = currentMediaURLString, let url = URL(string: urlString) else {
+            mediaPlayer.play()
+            applyPlaybackRate()
+            return
+        }
+        let resumePosition = currentMediaIsLive ? 0 : max(currentSeconds(), currentTimeSeconds)
+        play(
+            url: url,
+            httpHeaders: currentMediaHeaders,
+            startPosition: resumePosition,
+            isLive: currentMediaIsLive,
+            onProgressChanged: onProgressChanged,
+            onPlaybackStarted: onPlaybackStarted,
+            onPlaybackEnded: onPlaybackEnded,
+            onPlaybackFailed: onPlaybackFailed,
+            forceReload: true
+        )
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -2863,6 +2902,7 @@ struct VLCVodPlayerView: View {
     var isFullscreen: Bool = false
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var sharedController: VLCPlayerController? = nil
 
     var body: some View {
         AVPlayerContentView(

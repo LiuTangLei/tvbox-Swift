@@ -23,6 +23,7 @@ struct DetailView: View {
     @State private var pendingMacWindowFullScreen = false
     #endif
     @State private var lastPersistedProgress: Double = 0
+    @State private var lastNetworkPlaybackReconnectAt = Date.distantPast
     @State private var isCollected = false
     @State private var inlineVideoAspectRatio: CGFloat = 16 / 9
     
@@ -101,6 +102,9 @@ struct DetailView: View {
         .onChange(of: viewModel.isPlaying) { _, isPlaying in
             if !isPlaying { stopSharedPlayers() }
         }
+        .onReceive(NetworkMonitor.shared.networkPathChangedPublisher) { _ in
+            handleNetworkPathChangedForPlayback()
+        }
         #if os(macOS)
         .overlay {
             if showFullScreen, let url = viewModel.playUrl {
@@ -108,6 +112,7 @@ struct DetailView: View {
                     urlString: url,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
+                    playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
@@ -146,6 +151,7 @@ struct DetailView: View {
                     urlString: url,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
+                    playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
@@ -236,7 +242,7 @@ struct DetailView: View {
                     systemController: sharedSystemController,
                     vlcController: sharedVLCController
                 )
-                .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
+                .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)-\(viewModel.playbackReloadToken)")
                 .frame(width: metrics.width, height: metrics.height)
                 .background(Color.black)
                 .clipped()
@@ -728,6 +734,16 @@ struct DetailView: View {
     private func handlePlaybackFailure() {
         stopSharedPlayers()
         viewModel.handlePlaybackFailure(reason: "播放器报告播放失败")
+    }
+
+    private func handleNetworkPathChangedForPlayback() {
+        guard viewModel.isPlaying, viewModel.playUrl != nil else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastNetworkPlaybackReconnectAt) >= 1.5 else { return }
+        lastNetworkPlaybackReconnectAt = now
+        viewModel.commitPlaybackProgressSnapshot()
+        stopSharedPlayers()
+        viewModel.reconnectCurrentPlaybackAfterNetworkPathChange()
     }
 
     private func stopSharedPlayers() {
@@ -1677,6 +1693,7 @@ struct FullScreenPlayerView: View {
     let urlString: String
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    let playbackReloadToken: UUID
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
@@ -1724,6 +1741,7 @@ struct FullScreenPlayerView: View {
                     systemController: systemController,
                     vlcController: vlcController
                 )
+                .id("\(urlString)-\(playbackReloadToken)")
                 .frame(
                     width: shouldRotatePlayerContent ? proxy.size.height : proxy.size.width,
                     height: shouldRotatePlayerContent ? proxy.size.width : proxy.size.height
