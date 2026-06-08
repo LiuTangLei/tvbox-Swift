@@ -54,6 +54,8 @@ class DetailViewModel: ObservableObject {
     @Published private(set) var playbackReloadToken = UUID()
     /// 当前播放地址需要携带的 HTTP 请求头。
     @Published var playHeaders: [String: String] = [:]
+    /// 当前完整播放条目；兼容 Android PlaySpec 的元数据承载。
+    @Published private(set) var currentPlayback: PlayableItem?
     /// 续播起始位置（秒）。
     @Published var resumeSeconds: Double = 0
     /// 当前可选清晰度列表。
@@ -196,7 +198,8 @@ class DetailViewModel: ObservableObject {
         self.bridgePlaybackMessage = nil
         self.bridgeTokenPrompt = nil
         self.isBridgeTokenPromptPresented = false
-        self.playHeaders = [:]
+        self.isPlaying = false
+        applyPlayback(nil)
         self.bridgeCredentialAutoSubmitted.removeAll()
         if source.requiresBridge {
             resetQualityState()
@@ -217,8 +220,7 @@ class DetailViewModel: ObservableObject {
         bridgePlaybackMessage = nil
         bridgeTokenPrompt = nil
         isBridgeTokenPromptPresented = false
-        playHeaders = [:]
-        playUrl = nil
+        applyPlayback(nil)
         isPlaying = false
         resetQualityState()
     }
@@ -322,9 +324,10 @@ class DetailViewModel: ObservableObject {
         let progress = max(currentPlaybackSeconds(), 0)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
-        playHeaders = [:]
+        let playback = currentPlayback?.replacingStream(url: targetURL, headers: [:], origin: .direct)
+            ?? directPlayableItem(url: targetURL, episodeURL: qualityBaseEpisodeURL, flag: selectedFlag)
         advancePlaybackReloadToken()
-        playUrl = targetURL
+        applyPlayback(playback)
     }
     
     /// 播放器时间回调
@@ -427,6 +430,50 @@ class DetailViewModel: ObservableObject {
         }
         return fallback
     }
+
+    private func applyPlayback(_ playback: PlayableItem?) {
+        currentPlayback = playback
+        playUrl = playback?.url
+        playHeaders = playback?.headers ?? [:]
+    }
+
+    private func directPlayableItem(url: String, episodeURL: String, flag: String) -> PlayableItem {
+        PlayableItem(
+            url: url,
+            sourceKey: currentSource?.key,
+            flag: flag,
+            episodeId: episodeURL,
+            origin: .direct
+        )
+    }
+
+    private func bridgePlayableItem(
+        from playback: BridgePlayback,
+        source: SourceBean,
+        episodeURL: String,
+        flag: String
+    ) -> PlayableItem {
+        PlayableItem(
+            url: playback.url,
+            headers: playback.headers,
+            format: playback.format,
+            parse: playback.parse,
+            sourceKey: source.key,
+            flag: playback.flag ?? flag,
+            episodeId: episodeURL,
+            fallbackURL: playback.fallbackURL,
+            proxied: playback.proxied,
+            jxFrom: playback.jxFrom,
+            expiresAt: playback.expiresAt,
+            subtitles: playback.subtitles.compactMap {
+                PlayableSubtitle(url: $0.url, name: $0.name, lang: $0.lang, format: $0.format, flag: $0.flag)
+            },
+            danmakus: playback.danmakus.compactMap {
+                PlayableDanmaku(name: $0.name, url: $0.url)
+            },
+            origin: .bridge
+        )
+    }
     
     private func startPlayback(episodeURL: String, flag: String) {
         cancelPlaybackWatchdog()
@@ -439,9 +486,8 @@ class DetailViewModel: ObservableObject {
             bridgePlaybackMessage = nil
             bridgeTokenPrompt = nil
             isBridgeTokenPromptPresented = false
-            playHeaders = [:]
             advancePlaybackReloadToken()
-            playUrl = selectedPlayableURL(fallback: episodeURL)
+            applyPlayback(directPlayableItem(url: selectedPlayableURL(fallback: episodeURL), episodeURL: episodeURL, flag: flag))
             isPlaying = true
             schedulePlaybackWatchdog()
             return
@@ -451,8 +497,7 @@ class DetailViewModel: ObservableObject {
         isPlaying = false
         isResolvingBridgePlayback = true
         bridgePlaybackMessage = "正在获取播放地址..."
-        playUrl = nil
-        playHeaders = [:]
+        applyPlayback(nil)
         bridgeTokenPrompt = nil
         isBridgeTokenPromptPresented = false
         bridgeJarUiResponse = nil
@@ -467,11 +512,10 @@ class DetailViewModel: ObservableObject {
                 detailPlaybackLogger.info("bridge play resolved source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
                 isResolvingBridgePlayback = false
                 bridgePlaybackMessage = nil
-                playHeaders = playback.headers
                 bridgeMediaFallbackURL = playback.fallbackURL
                 isUsingBridgeMediaFallback = false
                 advancePlaybackReloadToken()
-                playUrl = playback.url
+                applyPlayback(bridgePlayableItem(from: playback, source: source, episodeURL: episodeURL, flag: flag))
                 isPlaying = true
                 scheduleDirectPlaybackProbeIfNeeded(url: playback.url, headers: playback.headers, fallbackURL: playback.fallbackURL, token: token)
                 schedulePlaybackWatchdog()
@@ -492,8 +536,7 @@ class DetailViewModel: ObservableObject {
                     }
                     pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
                     isPlaying = false
-                    playHeaders = [:]
-                    playUrl = nil
+                    applyPlayback(nil)
                     bridgePlaybackMessage = prompt.message
                     bridgeTokenErrorMessage = nil
                     errorMessage = nil
@@ -505,8 +548,7 @@ class DetailViewModel: ObservableObject {
                     detailPlaybackLogger.info("bridge jar ui required source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
                     pendingBridgePlayback = PendingBridgePlayback(source: source, episodeURL: episodeURL, flag: flag)
                     isPlaying = false
-                    playHeaders = [:]
-                    playUrl = nil
+                    applyPlayback(nil)
                     bridgePlaybackMessage = response.message ?? "请在 macOS 上操作 Android Jar 弹窗"
                     bridgeTokenErrorMessage = nil
                     errorMessage = nil
@@ -644,9 +686,16 @@ class DetailViewModel: ObservableObject {
         cancelPlaybackWatchdog()
         cancelDirectPlaybackProbe()
         isUsingBridgeMediaFallback = true
-        playHeaders = [:]
+        let fallbackPlayback = currentPlayback?.replacingStream(url: fallbackURL, headers: [:], origin: .bridgeFallback)
+            ?? PlayableItem(
+                url: fallbackURL,
+                sourceKey: currentSource?.key,
+                flag: selectedFlag,
+                episodeId: vodInfo?.currentEpisode?.url,
+                origin: .bridgeFallback
+            )
         advancePlaybackReloadToken()
-        playUrl = fallbackURL
+        applyPlayback(fallbackPlayback)
         isPlaying = true
         bridgePlaybackMessage = nil
         playbackFallbackMessage = "直连播放异常，已切换到 Bridge 代理兜底"
@@ -673,8 +722,7 @@ class DetailViewModel: ObservableObject {
         bridgePlaybackMessage = nil
         isResolvingBridgePlayback = false
         isPlaying = false
-        playUrl = nil
-        playHeaders = [:]
+        applyPlayback(nil)
 
         autoRecoveryTask = Task { [trigger] in
             await self.performAutomaticPlaybackRecovery(trigger: trigger)

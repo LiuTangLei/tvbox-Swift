@@ -36,6 +36,7 @@
 		3F69F139D892A91CA7DA6C73 /* ApiConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F94E23C5085A1C8ACB4856 /* ApiConfig.swift */; };
 		45D7A96C98872769AE01C131 /* tvboxApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54D163D4F6A45E9ACA696071 /* tvboxApp.swift */; };
 		485F358B964A4CB6E5AC4E03 /* Movie.swift in Sources */ = {isa = PBXBuildFile; fileRef = D791457269BE952C496ECE55 /* Movie.swift */; };
+		48E76CC8DF7D7D56F3352F43 /* PlayableItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06292036FE20840A77A1572 /* PlayableItem.swift */; };
 		49FCE735A7CD8228369E3824 /* SourceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DFDD8C597739AD4B443C03 /* SourceService.swift */; };
 		4C4402D4594D06EA9D76960A /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A7F257F6B68F93D58E8C032 /* SettingsViewModel.swift */; };
 		4E84E7083C81F5A8E3C8FFD8 /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131429F267F6A418C282831A /* DetailView.swift */; };
@@ -68,6 +69,7 @@
 		969EE3F9ACF8E1A3026CC37F /* DetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8B3DC7E0B9C01A294C47FC /* DetailViewModel.swift */; };
 		97B3904616111CE93232423E /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F26F870D1B587C1292A189 /* HomeView.swift */; };
 		9995EE797BCD482A8D371F26 /* PlayerGestureLayerZoomClampingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5767F0D984BBEFBB9101110 /* PlayerGestureLayerZoomClampingTests.swift */; };
+		99FD0D8A0D5B00369DEDED19 /* PlayableItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06292036FE20840A77A1572 /* PlayableItem.swift */; };
 		9B53D7CD9BD54DE0834D7FC7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3EE159FC0B6328166F56CE36 /* Assets.xcassets */; };
 		9FCA2C5CC08A9369EA53B130 /* LiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21306B53D5CA8BB88593A55D /* LiveViewModel.swift */; };
 		B06E33645C9D8322D7474962 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE52456C613016065CF59F9C /* HistoryView.swift */; };
@@ -161,6 +163,7 @@
 		DDB6B7E1747D5E2C29B54066 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		DE52456C613016065CF59F9C /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		DEDBFF884A656042E3EF74AA /* VLCPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VLCPlayerView.swift; sourceTree = "<group>"; };
+		E06292036FE20840A77A1572 /* PlayableItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayableItem.swift; sourceTree = "<group>"; };
 		E5234A75D14EAE9141633FCA /* tvbox.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = tvbox.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E64444D4CBE0502858CBD7E4 /* tvbox-Tests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "tvbox-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E7491D05031A04661718FF52 /* PlayerGestureLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerGestureLayer.swift; sourceTree = "<group>"; };
@@ -263,6 +266,7 @@
 				CE83E7D21400ACFE3BC6ED38 /* LiveModels.swift */,
 				D791457269BE952C496ECE55 /* Movie.swift */,
 				0212ABEA698460948737CABE /* MovieSort.swift */,
+				E06292036FE20840A77A1572 /* PlayableItem.swift */,
 				B2BF545AAFFFFD0B6F7B33E8 /* PlayerEngine.swift */,
 				617855BC3AE2B293C71A0DA4 /* SourceBean.swift */,
 				AA608E781D094B187D3034FD /* VodInfo.swift */,
@@ -607,6 +611,7 @@
 				68A7BF3D3ECDA73637B644C8 /* MovieSort.swift in Sources */,
 				5931E2182CBA71FD467BC61B /* NetworkManager.swift in Sources */,
 				F01490300EAFDF38F8BD5D46 /* NetworkMonitor.swift in Sources */,
+				99FD0D8A0D5B00369DEDED19 /* PlayableItem.swift in Sources */,
 				2F841DB8CE3BFB7C4F391B52 /* PlayerEngine.swift in Sources */,
 				0CE56FEF7BEDF2D9AF2DD1AD /* PlayerGestureLayer.swift in Sources */,
 				00DC0B0A8D261A9015CE9308 /* PlayerView.swift in Sources */,
@@ -653,6 +658,7 @@
 				7B76864A9BC631F1A86E8104 /* MovieSort.swift in Sources */,
 				5230AE350F993A4792B03F74 /* NetworkManager.swift in Sources */,
 				B86C3ACE754B5F52B70588A9 /* NetworkMonitor.swift in Sources */,
+				48E76CC8DF7D7D56F3352F43 /* PlayableItem.swift in Sources */,
 				100ED189186C10410BE683C5 /* PlayerEngine.swift in Sources */,
 				19FCB4D2A58F2CA96183E67A /* PlayerGestureLayer.swift in Sources */,
 				F6E863F58C52916EAB766B60 /* PlayerView.swift in Sources */,

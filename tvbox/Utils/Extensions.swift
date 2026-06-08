@@ -43,6 +43,11 @@ extension Notification.Name {
 
 /// 通用 Swift 扩展
 extension String {
+    var nilIfBlank: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// 移除 HTML 标签
     var stripHTML: String {
         replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)

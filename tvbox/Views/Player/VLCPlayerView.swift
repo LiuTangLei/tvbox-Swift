@@ -1331,6 +1331,7 @@ struct VLCVodPlayerView: View {
     }
 
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
@@ -1455,6 +1456,10 @@ struct VLCVodPlayerView: View {
             startPlayback()
             wakeUpControls()
         }
+        .onChange(of: playback) { _, _ in
+            startPlayback()
+            wakeUpControls()
+        }
         .onChange(of: controller.currentTimeSeconds) { _, newValue in
             if !isDraggingProgress {
                 draggingSeconds = newValue
@@ -1484,6 +1489,11 @@ struct VLCVodPlayerView: View {
         #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
+    }
+
+    private var effectiveHTTPHeaders: [String: String] {
+        guard let playback, !playback.headers.isEmpty else { return httpHeaders }
+        return playback.headers
     }
 
     private func wakeUpControls() {
@@ -1550,7 +1560,7 @@ struct VLCVodPlayerView: View {
             guard !Task.isCancelled else { return }
             controller.play(
                 url: url,
-                httpHeaders: httpHeaders,
+                httpHeaders: effectiveHTTPHeaders,
                 startPosition: targetStartPosition,
                 isLive: false,
                 onProgressChanged: onProgressChanged,
@@ -2890,6 +2900,7 @@ final class VLCPlayerController: ObservableObject {
 
 struct VLCVodPlayerView: View {
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
@@ -2907,6 +2918,7 @@ struct VLCVodPlayerView: View {
     var body: some View {
         AVPlayerContentView(
             urlString: urlString,
+            playback: playback,
             httpHeaders: httpHeaders,
             startPosition: startPosition,
             onProgressChanged: onProgressChanged,

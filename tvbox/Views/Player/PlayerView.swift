@@ -154,6 +154,7 @@ final class SystemPlayerSessionController: ObservableObject {
 /// 视频播放器组件 - 对应 Android 版 PlayFragment
 struct PlayerView: View {
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
@@ -219,6 +220,7 @@ struct PlayerView: View {
         case .system:
             AVPlayerContentView(
                 urlString: urlString,
+                playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
@@ -236,6 +238,7 @@ struct PlayerView: View {
         case .vlc:
             VLCVodPlayerView(
                 urlString: urlString,
+                playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
@@ -272,6 +275,7 @@ struct AVPlayerContentView: View {
 
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
@@ -437,6 +441,11 @@ struct AVPlayerContentView: View {
             setupPlayer()
             wakeUpControls()
         }
+        .onChange(of: playback) { _, _ in
+            syncRateFromSettings()
+            setupPlayer()
+            wakeUpControls()
+        }
         .onDisappear {
             cleanupPlayer(keepSharedPlayer: sharedController != nil)
             controlsTimer?.invalidate()
@@ -451,13 +460,18 @@ struct AVPlayerContentView: View {
         .background(Color.black)
     }
 
+    private var effectiveHTTPHeaders: [String: String] {
+        guard let playback, !playback.headers.isEmpty else { return httpHeaders }
+        return playback.headers
+    }
+
     private func setupPlayer(startPositionOverride: Double? = nil, forceReload: Bool = false) {
         guard let url = Self.sanitizedURL(from: urlString) else {
             print("[AVPlayer] URL sanitization failed for: \(urlString)")
             return
         }
         let targetURLString = url.absoluteString
-        let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
+        let normalizedHeaders = PlaybackHTTPHeaders.normalized(effectiveHTTPHeaders)
         let targetPlaybackKey = targetURLString + "\n" + PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
         let targetStartPosition = max(startPositionOverride ?? startPosition, 0)
         let preferredRate = normalizedSavedPlaybackRate
@@ -1853,13 +1867,6 @@ final class NetworkTrafficMonitor: ObservableObject {
             return "\(Int(kilobytes.rounded())) KB/s"
         }
         return String(format: "%.1f MB/s", kilobytes / 1024.0)
-    }
-}
-
-private extension String {
-    var nilIfBlank: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

@@ -110,6 +110,7 @@ struct DetailView: View {
             if showFullScreen, let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     playbackReloadToken: viewModel.playbackReloadToken,
@@ -149,6 +150,7 @@ struct DetailView: View {
             if let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     playbackReloadToken: viewModel.playbackReloadToken,
@@ -227,6 +229,7 @@ struct DetailView: View {
                 Spacer(minLength: 0)
                 PlayerView(
                     urlString: url,
+                    playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     onProgressChanged: handlePlaybackProgress,
@@ -1691,6 +1694,7 @@ private func makeBridgeLoginConfiguration() -> WKWebViewConfiguration {
 /// 全屏播放器
 struct FullScreenPlayerView: View {
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     let playbackReloadToken: UUID
@@ -1717,6 +1721,7 @@ struct FullScreenPlayerView: View {
 
                 PlayerView(
                     urlString: urlString,
+                    playback: playback,
                     httpHeaders: httpHeaders,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
