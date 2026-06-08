@@ -173,7 +173,7 @@ struct PlayerView: View {
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
 
     private var selectedEngine: PlayerEngine {
-        if shouldUseVLCForBridgeProxy {
+        if shouldUseVLCForBridgeProxy || shouldUseVLCForExternalSubtitles {
             return .vlc
         }
         let defaults = UserDefaults.standard
@@ -191,6 +191,10 @@ struct PlayerView: View {
     private var shouldUseVLCForBridgeProxy: Bool {
         guard PlayerEngine.isVLCAvailable, let url = URL(string: urlString) else { return false }
         return BridgeServerEndpoint.isBridgeProxyURL(url)
+    }
+
+    private var shouldUseVLCForExternalSubtitles: Bool {
+        PlayerEngine.isVLCAvailable && playback?.subtitles.isEmpty == false
     }
 
     var body: some View {

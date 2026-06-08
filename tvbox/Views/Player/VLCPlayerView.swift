@@ -163,6 +163,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private var currentMediaBufferMode: VLCBufferMode = .defaultMode
     private var currentMediaHeaderKey = ""
     private var currentMediaHeaders: [String: String] = [:]
+    private var currentMediaSubtitleKey = ""
+    private var currentMediaExternalSubtitles: [PlayableSubtitle] = []
     private var onProgressChanged: ((Double, Double?) -> Void)?
     private var onPlaybackStarted: (() -> Void)?
     private var onPlaybackEnded: (() -> Void)?
@@ -222,6 +224,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func play(
         url: URL,
         httpHeaders: [String: String] = [:],
+        externalSubtitles: [PlayableSubtitle] = [],
         startPosition: Double,
         isLive: Bool,
         onProgressChanged: ((Double, Double?) -> Void)?,
@@ -232,9 +235,14 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     ) {
         let targetURLString = url.absoluteString
         let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
+        let normalizedSubtitles = Self.normalizedExternalSubtitles(externalSubtitles)
         let targetHeaderKey = PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
+        let targetSubtitleKey = Self.externalSubtitleCacheKey(normalizedSubtitles)
         let targetIsBridgeProxy = Self.isBridgeProxyURL(url)
-        let isNewMedia = currentMediaURLString != targetURLString || currentMediaHeaderKey != targetHeaderKey || currentMediaIsLive != isLive
+        let isNewMedia = currentMediaURLString != targetURLString
+            || currentMediaHeaderKey != targetHeaderKey
+            || currentMediaSubtitleKey != targetSubtitleKey
+            || currentMediaIsLive != isLive
         if isNewMedia {
             resetPlaybackRecoveryState()
         }
@@ -250,6 +258,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if !forceReload,
            currentMediaURLString == targetURLString,
            currentMediaHeaderKey == targetHeaderKey,
+           currentMediaSubtitleKey == targetSubtitleKey,
            currentMediaIsLive == isLive,
            currentMediaIsBridgeProxy == targetIsBridgeProxy,
            currentMediaDecodeMode == effectiveDecodeMode,
@@ -325,6 +334,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         applyHTTPHeaders(normalizedHeaders, to: &mediaOptions, media: media)
 
         media.addOptions(mediaOptions)
+        applyExternalSubtitles(normalizedSubtitles, to: media)
         // 对布尔型选项使用显式 no- 前缀，避免 0/1 在不同 libvlc 版本下解释不一致。
         media.addOption(enableFrameDrop ? "drop-late-frames" : "no-drop-late-frames")
         media.addOption(enableSkipFrames ? "skip-frames" : "no-skip-frames")
@@ -344,6 +354,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaDecodeMode = effectiveDecodeMode
         currentMediaBufferMode = bufferMode
         currentMediaHeaders = normalizedHeaders
+        currentMediaSubtitleKey = targetSubtitleKey
+        currentMediaExternalSubtitles = normalizedSubtitles
     }
 
     func stop() {
@@ -369,6 +381,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         currentMediaDecodeMode = .auto
         currentMediaBufferMode = .defaultMode
         currentMediaHeaders = [:]
+        currentMediaSubtitleKey = ""
+        currentMediaExternalSubtitles = []
         guard let player = _mediaPlayer else { return }
         // 立即静音（audio.volume 是轻量属性设置，不会 dispatch_sync）
         player.audio?.volume = 0
@@ -415,6 +429,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         play(
             url: url,
             httpHeaders: currentMediaHeaders,
+            externalSubtitles: currentMediaExternalSubtitles,
             startPosition: resumePosition,
             isLive: currentMediaIsLive,
             onProgressChanged: onProgressChanged,
@@ -1083,6 +1098,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         let resumePosition = isLive ? 0 : max(currentSeconds(), 0)
         play(
             url: url,
+            httpHeaders: currentMediaHeaders,
+            externalSubtitles: currentMediaExternalSubtitles,
             startPosition: resumePosition,
             isLive: isLive,
             onProgressChanged: onProgressChanged,
@@ -1307,6 +1324,56 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 media.addOption("http-header=\(key): \(value)")
             }
         }
+    }
+
+    private func applyExternalSubtitles(_ subtitles: [PlayableSubtitle], to media: VLCMedia) {
+        for subtitle in subtitles {
+            let urlString = Self.mediaOptionURLString(from: subtitle.url)
+            guard !urlString.isEmpty else { continue }
+            media.addOption("input-slave=\(urlString)")
+        }
+    }
+
+    private static func normalizedExternalSubtitles(_ subtitles: [PlayableSubtitle]) -> [PlayableSubtitle] {
+        var seen: Set<String> = []
+        var normalized: [PlayableSubtitle] = []
+        for subtitle in subtitles {
+            let key = mediaOptionURLString(from: subtitle.url)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            normalized.append(subtitle)
+        }
+        return normalized
+    }
+
+    private static func externalSubtitleCacheKey(_ subtitles: [PlayableSubtitle]) -> String {
+        subtitles
+            .map {
+                [
+                    mediaOptionURLString(from: $0.url),
+                    $0.name ?? "",
+                    $0.lang ?? "",
+                    $0.format ?? "",
+                    $0.flag.map(String.init) ?? ""
+                ].joined(separator: "\u{1F}")
+            }
+            .joined(separator: "\u{1E}")
+    }
+
+    private static func mediaOptionURLString(from rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed).absoluteString
+        }
+        if let url = URL(string: trimmed), url.scheme?.isEmpty == false {
+            return url.absoluteString
+        }
+        if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: encoded),
+           url.scheme?.isEmpty == false {
+            return url.absoluteString
+        }
+        return trimmed
     }
 
     private static func effectiveDecodeMode(configured: VideoDecodeMode, isLive: Bool, isBridgeProxy: Bool) -> VideoDecodeMode {
@@ -1561,6 +1628,7 @@ struct VLCVodPlayerView: View {
             controller.play(
                 url: url,
                 httpHeaders: effectiveHTTPHeaders,
+                externalSubtitles: playback?.subtitles ?? [],
                 startPosition: targetStartPosition,
                 isLive: false,
                 onProgressChanged: onProgressChanged,
