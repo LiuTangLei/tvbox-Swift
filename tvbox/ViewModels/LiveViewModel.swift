@@ -5,6 +5,8 @@ import Combine
 /// 直播 ViewModel
 @MainActor
 class LiveViewModel: ObservableObject {
+    private static let favoriteGroupName = "收藏"
+
     /// 全部频道分组。
     @Published var channelGroups: [LiveChannelGroup] = []
     /// 当前选中分组索引。
@@ -28,8 +30,13 @@ class LiveViewModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     /// 当前 EPG 加载任务，切台时取消，避免旧频道节目单覆盖新频道。
     private var epgLoadTask: Task<Void, Never>?
+    /// 原始直播分组，不包含 Swift 侧合成的收藏分组。
+    private var baseChannelGroups: [LiveChannelGroup] = []
+    /// 按收藏时间倒序存储频道名 key，模拟 Android Keep 的直播收藏合并。
+    private var favoriteChannelKeys: [String] = []
     
     init() {
+        favoriteChannelKeys = Self.loadFavoriteChannelKeys()
         bindLiveChannelGroups()
     }
     
@@ -93,6 +100,28 @@ class LiveViewModel: ObservableObject {
     var currentChannels: [LiveChannelItem] {
         guard selectedGroupIndex < channelGroups.count else { return [] }
         return channelGroups[selectedGroupIndex].channels
+    }
+
+    func isFavorite(_ channel: LiveChannelItem) -> Bool {
+        favoriteChannelKeys.contains(Self.favoriteKey(for: channel))
+    }
+
+    func toggleFavorite(_ channel: LiveChannelItem) {
+        let key = Self.favoriteKey(for: channel)
+        guard !key.isEmpty else { return }
+
+        if let index = favoriteChannelKeys.firstIndex(of: key) {
+            favoriteChannelKeys.remove(at: index)
+        } else {
+            favoriteChannelKeys.removeAll { $0 == key }
+            favoriteChannelKeys.insert(key, at: 0)
+        }
+        Self.saveFavoriteChannelKeys(favoriteChannelKeys)
+
+        let preferredGroupName = selectedGroupIndex < channelGroups.count
+            ? channelGroups[selectedGroupIndex].groupName
+            : nil
+        rebuildChannelGroups(selecting: currentChannel, preferredGroupName: preferredGroupName)
     }
 
     var currentEpg: Epginfo? {
@@ -218,27 +247,44 @@ class LiveViewModel: ObservableObject {
     
     private func applyChannelGroups(_ groups: [LiveChannelGroup]) {
         let previousChannelId = currentChannel?.id
-        channelGroups = groups
+        let previousChannel = currentChannel
+        let preferredGroupName = selectedGroupIndex < channelGroups.count
+            ? channelGroups[selectedGroupIndex].groupName
+            : nil
+        baseChannelGroups = groups
+        channelGroups = groupsWithFavorites(from: groups)
         
-        guard !groups.isEmpty else {
+        guard !channelGroups.isEmpty else {
             selectedGroupIndex = 0
             selectedChannelIndex = 0
             setCurrentChannel(nil)
             return
         }
-        
-        if let previousChannelId,
-           let located = locateChannel(withId: previousChannelId, in: groups) {
+
+        if let previousChannel,
+           let located = locateChannel(
+                matching: previousChannel,
+                in: channelGroups,
+                preferredGroupName: preferredGroupName
+           ) {
             selectedGroupIndex = located.groupIndex
             selectedChannelIndex = located.channelIndex
-            setCurrentChannel(groups[located.groupIndex].channels[located.channelIndex])
+            setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
+            return
+        }
+
+        if let previousChannelId,
+           let located = locateChannel(withId: previousChannelId, in: channelGroups) {
+            selectedGroupIndex = located.groupIndex
+            selectedChannelIndex = located.channelIndex
+            setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
             return
         }
         
-        let clampedGroupIndex = min(max(0, selectedGroupIndex), groups.count - 1)
+        let clampedGroupIndex = min(max(0, selectedGroupIndex), channelGroups.count - 1)
         selectedGroupIndex = clampedGroupIndex
         
-        let channels = groups[clampedGroupIndex].channels
+        let channels = channelGroups[clampedGroupIndex].channels
         guard !channels.isEmpty else {
             selectedChannelIndex = 0
             setCurrentChannel(nil)
@@ -248,6 +294,64 @@ class LiveViewModel: ObservableObject {
         let clampedChannelIndex = min(max(0, selectedChannelIndex), channels.count - 1)
         selectedChannelIndex = clampedChannelIndex
         setCurrentChannel(channels[clampedChannelIndex])
+    }
+
+    private func rebuildChannelGroups(
+        selecting channel: LiveChannelItem?,
+        preferredGroupName: String?
+    ) {
+        channelGroups = groupsWithFavorites(from: baseChannelGroups)
+
+        guard !channelGroups.isEmpty else {
+            selectedGroupIndex = 0
+            selectedChannelIndex = 0
+            setCurrentChannel(nil)
+            return
+        }
+
+        if let channel,
+           let located = locateChannel(
+                matching: channel,
+                in: channelGroups,
+                preferredGroupName: preferredGroupName
+           ) {
+            selectedGroupIndex = located.groupIndex
+            selectedChannelIndex = located.channelIndex
+            setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
+            return
+        }
+
+        selectedGroupIndex = min(max(0, selectedGroupIndex), channelGroups.count - 1)
+        selectedChannelIndex = min(
+            max(0, selectedChannelIndex),
+            max(0, channelGroups[selectedGroupIndex].channels.count - 1)
+        )
+    }
+
+    private func groupsWithFavorites(from groups: [LiveChannelGroup]) -> [LiveChannelGroup] {
+        let reindexedBase = Self.reindexedGroups(groups)
+        let favoriteChannels = favoriteChannelKeys.compactMap { key in
+            reindexedBase
+                .lazy
+                .flatMap(\.channels)
+                .first { Self.favoriteKey(for: $0) == key }
+        }
+
+        guard !favoriteChannels.isEmpty else { return reindexedBase }
+
+        var favoriteGroup = LiveChannelGroup(groupName: Self.favoriteGroupName, groupIndex: 0)
+        favoriteGroup.channels = favoriteChannels.enumerated().map { index, channel in
+            var favoriteChannel = channel
+            favoriteChannel.channelIndex = index
+            return favoriteChannel
+        }
+
+        let shiftedGroups = reindexedBase.enumerated().map { offset, group in
+            var shiftedGroup = group
+            shiftedGroup.groupIndex = offset + 1
+            return shiftedGroup
+        }
+        return [favoriteGroup] + shiftedGroups
     }
     
     private func locateChannel(
@@ -260,6 +364,75 @@ class LiveViewModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func locateChannel(
+        matching channel: LiveChannelItem,
+        in groups: [LiveChannelGroup],
+        preferredGroupName: String?
+    ) -> (groupIndex: Int, channelIndex: Int)? {
+        if let preferredGroupName,
+           let preferredGroupIndex = groups.firstIndex(where: { $0.groupName == preferredGroupName }),
+           let channelIndex = groups[preferredGroupIndex].channels.firstIndex(where: {
+               Self.isSamePlaybackChannel($0, channel)
+           }) {
+            return (preferredGroupIndex, channelIndex)
+        }
+
+        for (groupIndex, group) in groups.enumerated() {
+            if let channelIndex = group.channels.firstIndex(where: {
+                Self.isSamePlaybackChannel($0, channel)
+            }) {
+                return (groupIndex, channelIndex)
+            }
+        }
+        return nil
+    }
+
+    private static func isSamePlaybackChannel(
+        _ lhs: LiveChannelItem,
+        _ rhs: LiveChannelItem
+    ) -> Bool {
+        favoriteKey(for: lhs) == favoriteKey(for: rhs)
+    }
+
+    private static func reindexedGroups(_ groups: [LiveChannelGroup]) -> [LiveChannelGroup] {
+        groups.enumerated().map { groupIndex, group in
+            var reindexedGroup = group
+            reindexedGroup.groupIndex = groupIndex
+            reindexedGroup.channels = group.channels.enumerated().map { channelIndex, channel in
+                var reindexedChannel = channel
+                reindexedChannel.channelIndex = channelIndex
+                return reindexedChannel
+            }
+            return reindexedGroup
+        }
+    }
+
+    private static func favoriteKey(for channel: LiveChannelItem) -> String {
+        channel.channelName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private static func loadFavoriteChannelKeys() -> [String] {
+        let saved = UserDefaults.standard.stringArray(forKey: HawkConfig.LIVE_CHANNEL_FAVORITES) ?? []
+        return uniqueFavoriteKeys(saved)
+    }
+
+    private static func saveFavoriteChannelKeys(_ keys: [String]) {
+        UserDefaults.standard.set(uniqueFavoriteKeys(keys), forKey: HawkConfig.LIVE_CHANNEL_FAVORITES)
+    }
+
+    private static func uniqueFavoriteKeys(_ keys: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for key in keys {
+            let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+            result.append(normalized)
+        }
+        return result
     }
 
     deinit {

@@ -399,6 +399,20 @@ struct LiveView: View {
                 }
                 
                 Spacer()
+
+                Button {
+                    HapticManager.shared.lightImpact()
+                    wakeUpCurrentChannelInfo()
+                    viewModel.toggleFavorite(channel)
+                } label: {
+                    Image(systemName: viewModel.isFavorite(channel) ? "star.fill" : "star")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(viewModel.isFavorite(channel) ? .yellow : .white.opacity(0.65))
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
                 
                 // 线路信息
                 if viewModel.isPlayingCatchup {
@@ -411,54 +425,71 @@ struct LiveView: View {
                         .foregroundColor(.white.opacity(0.6))
                 }
             }
-            
+
             epgStatusLine
 
             // 操作按钮行
-            if channel.sourceNum > 1 || viewModel.isPlayingCatchup {
-                HStack(spacing: 12) {
-                    if viewModel.isPlayingCatchup {
-                        Button {
-                            HapticManager.shared.lightImpact()
-                            wakeUpCurrentChannelInfo()
-                            viewModel.returnToLive()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "dot.radiowaves.left.and.right")
-                                    .font(.system(size: 13))
-                                Text("返回直播")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(Color.white.opacity(0.15))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
-                        .buttonStyle(.plain)
+            HStack(spacing: 12) {
+                Button {
+                    HapticManager.shared.lightImpact()
+                    wakeUpCurrentChannelInfo()
+                    viewModel.toggleFavorite(channel)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewModel.isFavorite(channel) ? "star.fill" : "star")
+                            .font(.system(size: 13))
+                        Text(viewModel.isFavorite(channel) ? "已收藏" : "收藏")
+                            .font(.system(size: 13, weight: .semibold))
                     }
+                    .foregroundColor(viewModel.isFavorite(channel) ? .yellow : .white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background(Color.white.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
 
-                    if channel.sourceNum > 1 {
-                        Button {
-                            HapticManager.shared.mediumImpact()
-                            wakeUpCurrentChannelInfo()
-                            resetFailureTracking(for: viewModel.currentChannel)
-                            viewModel.switchSource()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "shuffle")
-                                    .font(.system(size: 13))
-                                Text("切换线路")
-                                    .font(.system(size: 13, weight: .semibold))
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(AppTheme.accentGradient)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                if viewModel.isPlayingCatchup {
+                    Button {
+                        HapticManager.shared.lightImpact()
+                        wakeUpCurrentChannelInfo()
+                        viewModel.returnToLive()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .font(.system(size: 13))
+                            Text("返回直播")
+                                .font(.system(size: 13, weight: .semibold))
                         }
-                        .buttonStyle(.plain)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(Color.white.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
+                    .buttonStyle(.plain)
+                }
+
+                if channel.sourceNum > 1 {
+                    Button {
+                        HapticManager.shared.mediumImpact()
+                        wakeUpCurrentChannelInfo()
+                        resetFailureTracking(for: viewModel.currentChannel)
+                        viewModel.switchSource()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "shuffle")
+                                .font(.system(size: 13))
+                            Text("切换线路")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(AppTheme.accentGradient)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -495,6 +526,27 @@ struct LiveView: View {
             Spacer()
             
             HStack(spacing: 12) {
+                Button {
+                    wakeUpCurrentChannelInfo()
+                    viewModel.toggleFavorite(channel)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewModel.isFavorite(channel) ? "star.fill" : "star")
+                        Text(viewModel.isFavorite(channel) ? "已收藏" : "收藏")
+                    }
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(viewModel.isFavorite(channel) ? .yellow : .white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Color.white.opacity(0.15))
+                    .clipShape(Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+
                 if viewModel.isPlayingCatchup {
                     Button {
                         wakeUpCurrentChannelInfo()
@@ -759,6 +811,11 @@ struct LiveView: View {
                                 .font(.system(size: 14, weight: viewModel.currentChannel?.channelName == channel.channelName ? .bold : .medium))
                                 .foregroundColor(viewModel.currentChannel?.channelName == channel.channelName ? .orange : .white.opacity(0.8))
                             Spacer()
+                            if viewModel.isFavorite(channel) {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.yellow.opacity(0.85))
+                            }
                             if channel.sourceNum > 1 {
                                 Text("\(channel.sourceNum)")
                                     .font(.system(size: 10))
