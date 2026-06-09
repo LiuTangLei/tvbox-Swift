@@ -14,6 +14,12 @@ struct LiveChannelGroup: Codable, Identifiable, Hashable {
     var channels: [LiveChannelItem] = []
     /// 是否为加密分组（当前实现仅保留字段，未启用密码校验）。
     var isPassword: Bool = false
+    /// 分组密码。非空时默认隐藏，后续可接入解锁 UI。
+    var password: String = ""
+    /// 是否应从普通频道菜单中隐藏。
+    var isHidden: Bool {
+        isPassword && !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     
     init(groupName: String = "", groupIndex: Int = 0) {
         self.groupName = groupName

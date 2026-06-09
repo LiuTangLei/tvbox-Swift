@@ -431,7 +431,7 @@ class LiveViewModel: ObservableObject {
     }
 
     private func groupsWithFavorites(from groups: [LiveChannelGroup]) -> [LiveChannelGroup] {
-        let reindexedBase = Self.reindexedGroups(groups)
+        let reindexedBase = Self.reindexedGroups(groups.filter { !$0.isHidden })
         let favoriteChannels = favoriteChannelKeys.compactMap { key in
             reindexedBase
                 .lazy

@@ -818,17 +818,26 @@ class ApiConfig: ObservableObject {
         loadToken: UUID
     ) async -> [LiveChannelGroup] {
         var mergedGroups: [String: LiveChannelGroup] = [:]
-        var remoteLiveTargets: [(order: Int, url: String, headers: [String: String], epgUrl: String)] = []
+        var remoteLiveTargets: [
+            (order: Int, url: String, headers: [String: String], epgUrl: String, parsePasswordGroups: Bool)
+        ] = []
 
         for (index, live) in lives.enumerated() {
             guard activeLoadToken == loadToken else { return [] }
             let defaultHeaders = Self.liveDefaultHeaders(live)
             let defaultEpgUrl = live.epg?.nilIfBlank ?? ""
+            let parsePasswordGroups = !Self.livePassFlag(live.pass)
 
             // 如果有 url，从远程加载
             if let liveUrl = live.url, !liveUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let resolvedUrl = resolveLiveUrl(liveUrl, baseConfigUrl: apiUrl)
-                remoteLiveTargets.append((order: index, url: resolvedUrl, headers: defaultHeaders, epgUrl: defaultEpgUrl))
+                remoteLiveTargets.append((
+                    order: index,
+                    url: resolvedUrl,
+                    headers: defaultHeaders,
+                    epgUrl: defaultEpgUrl,
+                    parsePasswordGroups: parsePasswordGroups
+                ))
             }
 
             // 如果有内嵌频道
@@ -836,7 +845,8 @@ class ApiConfig: ObservableObject {
                 let inlineGroups = parseInlineLiveChannels(
                     channels,
                     defaultHeaders: defaultHeaders,
-                    defaultEpgUrl: defaultEpgUrl
+                    defaultEpgUrl: defaultEpgUrl,
+                    parsePasswordGroups: parsePasswordGroups
                 )
                 mergeLiveGroups(inlineGroups, into: &mergedGroups)
             }
@@ -877,7 +887,8 @@ class ApiConfig: ObservableObject {
                 let groups = parseLiveContent(
                     content,
                     defaultHeaders: target?.headers ?? [:],
-                    defaultEpgUrl: target?.epgUrl ?? ""
+                    defaultEpgUrl: target?.epgUrl ?? "",
+                    parsePasswordGroups: target?.parsePasswordGroups ?? true
                 )
                 mergeLiveGroups(groups, into: &mergedGroups)
                 liveChannelGroupList = sortedGroups(from: mergedGroups)
@@ -950,6 +961,12 @@ class ApiConfig: ObservableObject {
     private struct LiveStreamOptions {
         var headers: [String: String] = [:]
         var drm: PlayableDRM?
+    }
+
+    private struct LiveGroupAccess {
+        var name: String
+        var password: String
+        var isPassword: Bool
     }
 
     private struct LiveDRMBuilder {
@@ -1075,7 +1092,8 @@ class ApiConfig: ObservableObject {
     private func parseLiveContent(
         _ content: String,
         defaultHeaders: [String: String] = [:],
-        defaultEpgUrl: String = ""
+        defaultEpgUrl: String = "",
+        parsePasswordGroups: Bool = true
     ) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         var currentGroupName = "默认"
@@ -1149,6 +1167,7 @@ class ApiConfig: ObservableObject {
                             urls: [streamURL],
                             metadata: metadata,
                             to: currentGroup,
+                            parsePasswordGroups: parsePasswordGroups,
                             groups: &groups
                         )
                         currentName = ""
@@ -1214,6 +1233,7 @@ class ApiConfig: ObservableObject {
                             urls: urls,
                             metadata: metadata,
                             to: currentGroupName,
+                            parsePasswordGroups: parsePasswordGroups,
                             groups: &groups
                         )
                     }
@@ -1227,7 +1247,8 @@ class ApiConfig: ObservableObject {
     private func parseInlineLiveChannels(
         _ channels: [AppConfigData.LiveConfig.LiveChannelConfig],
         defaultHeaders: [String: String] = [:],
-        defaultEpgUrl: String = ""
+        defaultEpgUrl: String = "",
+        parsePasswordGroups: Bool = true
     ) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         for channel in channels {
@@ -1240,6 +1261,7 @@ class ApiConfig: ObservableObject {
                 urls: channel.urls ?? [],
                 metadata: metadata,
                 to: channel.group ?? "其他",
+                parsePasswordGroups: parsePasswordGroups,
                 groups: &groups
             )
         }
@@ -1254,6 +1276,11 @@ class ApiConfig: ObservableObject {
                     urls: channel.channelUrls,
                     metadata: LiveChannelMetadata(channel),
                     to: group.groupName,
+                    groupAccess: LiveGroupAccess(
+                        name: group.groupName,
+                        password: group.password,
+                        isPassword: group.isPassword
+                    ),
                     groups: &groups
                 )
             }
@@ -1265,6 +1292,8 @@ class ApiConfig: ObservableObject {
         urls: [String],
         metadata: LiveChannelMetadata,
         to groupName: String,
+        groupAccess: LiveGroupAccess? = nil,
+        parsePasswordGroups: Bool = true,
         groups: inout [String: LiveChannelGroup]
     ) {
         let normalizedName = Self.normalizeChannelName(channelName)
@@ -1273,15 +1302,25 @@ class ApiConfig: ObservableObject {
         let validUrls = Self.uniqueLiveUrls(urls)
         guard !validUrls.isEmpty else { return }
 
-        let normalizedGroupName = Self.normalizeGroupName(groupName)
+        let access = groupAccess ?? Self.liveGroupAccess(from: groupName, parsePasswordGroups: parsePasswordGroups)
+        let normalizedGroupName = access.name
         if groups[normalizedGroupName] == nil {
-            groups[normalizedGroupName] = LiveChannelGroup(
+            var group = LiveChannelGroup(
                 groupName: normalizedGroupName,
                 groupIndex: groups.count
             )
+            group.isPassword = access.isPassword
+            group.password = access.password
+            groups[normalizedGroupName] = group
         }
 
         guard var group = groups[normalizedGroupName] else { return }
+        if access.isPassword {
+            group.isPassword = true
+            if group.password.isEmpty {
+                group.password = access.password
+            }
+        }
 
         if let existingIndex = group.channels.firstIndex(where: {
             Self.normalizeChannelName($0.channelName) == normalizedName
@@ -1602,6 +1641,42 @@ class ApiConfig: ObservableObject {
     private static func normalizeGroupName(_ groupName: String) -> String {
         let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "默认" : trimmed
+    }
+
+    private static func liveGroupAccess(
+        from groupName: String,
+        parsePasswordGroups: Bool
+    ) -> LiveGroupAccess {
+        let normalized = normalizeGroupName(groupName)
+        guard parsePasswordGroups,
+              let separator = normalized.firstIndex(of: "_") else {
+            return LiveGroupAccess(name: normalized, password: "", isPassword: false)
+        }
+
+        let name = normalizeGroupName(String(normalized[..<separator]))
+        let password = String(normalized[normalized.index(after: separator)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !password.isEmpty else {
+            return LiveGroupAccess(name: name, password: "", isPassword: false)
+        }
+        return LiveGroupAccess(name: name, password: password, isPassword: true)
+    }
+
+    private static func livePassFlag(_ value: AnyCodableValue?) -> Bool {
+        guard let value else { return false }
+        switch value {
+        case .bool(let bool):
+            return bool
+        case .int(let int):
+            return int != 0
+        case .double(let double):
+            return double != 0
+        case .string(let string):
+            let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return ["1", "true", "yes", "y"].contains(normalized)
+        case .dict, .array, .null:
+            return false
+        }
     }
 
     private static func normalizeChannelName(_ channelName: String) -> String {
