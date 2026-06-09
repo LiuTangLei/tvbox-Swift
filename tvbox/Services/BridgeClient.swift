@@ -26,6 +26,8 @@ struct BridgePlayback: Hashable {
     let fallbackURL: String?
     let proxied: Bool
     let startPosition: TimeInterval?
+    let artwork: String?
+    let descriptionText: String?
     let format: String?
     let parse: Int?
     let flag: String?
@@ -271,6 +273,8 @@ struct BridgePlayResponse: Decodable {
     let headers: [String: String]?
     let proxied: Bool?
     let startPosition: TimeInterval?
+    let artwork: String?
+    let descriptionText: String?
     let format: String?
     let parse: Int?
     let flag: String?
@@ -300,6 +304,9 @@ struct BridgePlayResponse: Decodable {
         case header
         case proxied
         case position
+        case artwork
+        case desc
+        case descriptionText = "description"
         case format
         case parse
         case jx
@@ -338,6 +345,8 @@ struct BridgePlayResponse: Decodable {
         headers = try Self.decodeFirstStringMap(from: container, keys: [.headers, .header])
         proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
         startPosition = try Self.decodeAndroidPositionSeconds(from: container, key: .position)
+        artwork = try Self.decodeFirstString(from: container, keys: [.artwork])
+        descriptionText = try Self.decodeFirstString(from: container, keys: [.desc, .descriptionText])
         format = try container.decodeIfPresent(String.self, forKey: .format)
         parse = try container.decodeIfPresent(Int.self, forKey: .parse)
             ?? container.decodeIfPresent(Int.self, forKey: .jx)
@@ -756,6 +765,8 @@ final class BridgeClient {
             fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil,
             proxied: response.proxied == true,
             startPosition: response.startPosition,
+            artwork: response.artwork?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
+            descriptionText: response.descriptionText?.stripHTML.nilIfBlank,
             format: response.format?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
             parse: response.parse,
             flag: response.flag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,

@@ -98,6 +98,8 @@ struct BridgeDRMDecodingTests {
           "ok": true,
           "url": "https://media.example.com/video.m3u8",
           "position": 90000,
+          "artwork": "https://media.example.com/poster.jpg",
+          "desc": "<p>播放结果简介</p>",
           "jx": 1,
           "header": {
             "User-Agent": "Android TVBox"
@@ -128,6 +130,8 @@ struct BridgeDRMDecodingTests {
 
         #expect(response.isPlayableMode)
         #expect(response.startPosition == 90)
+        #expect(response.artwork == "https://media.example.com/poster.jpg")
+        #expect(response.descriptionText == "<p>播放结果简介</p>")
         #expect(response.parse == 1)
         #expect(response.headers?["User-Agent"] == "Android TVBox")
         #expect(response.subtitles?.first?.url == "https://media.example.com/sub.srt")

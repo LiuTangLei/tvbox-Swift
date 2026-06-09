@@ -296,7 +296,7 @@ struct DetailView: View {
         VStack(spacing: 16) {
             // Poster centered, height capped to 30% of screen
             let posterHeight = UIScreen.main.bounds.height * 0.30
-            CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
+            CachedAsyncImage(request: ImageRequest.poster(from: posterURL)) { image in
                 image.resizable().aspectRatio(2/3, contentMode: .fit)
             } placeholder: {
                 Color.white.opacity(0.05)
@@ -335,7 +335,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var videoPoster: some View {
-        CachedAsyncImage(request: ImageRequest.poster(from: video.pic)) { image in
+        CachedAsyncImage(request: ImageRequest.poster(from: posterURL)) { image in
             image.resizable().aspectRatio(2/3, contentMode: .fill)
         } placeholder: {
             ZStack {
@@ -347,6 +347,12 @@ struct DetailView: View {
         .frame(width: 130)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
         .shadow(color: .black.opacity(0.5), radius: 10, x: 0, y: 5)
+    }
+
+    private var posterURL: String {
+        viewModel.vodInfo?.pic.nilIfBlank
+            ?? viewModel.activeVideo?.pic.nilIfBlank
+            ?? video.pic
     }
 
     @ViewBuilder

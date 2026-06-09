@@ -444,6 +444,24 @@ class DetailViewModel: ObservableObject {
         realtimeProgressSeconds = normalizedSeconds
     }
 
+    private func applyBridgePlaybackMetadata(_ playback: BridgePlayback) {
+        let artwork = playback.artwork?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let description = playback.descriptionText?.stripHTML.nilIfBlank
+        guard artwork != nil || description != nil else { return }
+
+        if var info = vodInfo {
+            if let artwork { info.pic = artwork }
+            if let description { info.des = description }
+            vodInfo = info
+        }
+
+        if var video = activeVideo {
+            if let artwork { video.pic = artwork }
+            if let description { video.des = description }
+            activeVideo = video
+        }
+    }
+
     private func directPlayableItem(url: String, episodeURL: String, flag: String) -> PlayableItem {
         PlayableItem(
             url: url,
@@ -523,6 +541,7 @@ class DetailViewModel: ObservableObject {
                 bridgeMediaFallbackURL = playback.fallbackURL
                 isUsingBridgeMediaFallback = false
                 applyBridgeStartPosition(playback.startPosition)
+                applyBridgePlaybackMetadata(playback)
                 advancePlaybackReloadToken()
                 applyPlayback(bridgePlayableItem(from: playback, source: source, episodeURL: episodeURL, flag: flag))
                 isPlaying = true
