@@ -185,4 +185,60 @@ struct BridgeDRMDecodingTests {
 
         #expect(response.url == "https://parser.example.com/?url=https://origin.example.com/video")
     }
+
+    @Test("Bridge play response decodes Android URL quality array")
+    func bridgePlayResponseDecodesAndroidURLQualityArray() throws {
+        let data = Data("""
+        {
+          "ok": true,
+          "url": [
+            "720p",
+            "https://media.example.com/video-720.m3u8",
+            "1080p",
+            "https://media.example.com/video-1080.m3u8"
+          ]
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(response.url == "https://media.example.com/video-720.m3u8")
+        #expect(response.qualities.compactMap(\.name) == ["720p", "1080p"])
+        #expect(response.qualities.map(\.url) == [
+            "https://media.example.com/video-720.m3u8",
+            "https://media.example.com/video-1080.m3u8"
+        ])
+    }
+
+    @Test("Bridge play response decodes Android URL object position")
+    func bridgePlayResponseDecodesAndroidURLObjectPosition() throws {
+        let data = Data("""
+        {
+          "ok": true,
+          "playUrl": "https://parser.example.com/?url=",
+          "url": {
+            "position": 1,
+            "values": [
+              {
+                "n": "720p",
+                "v": "https://origin.example.com/video-720"
+              },
+              {
+                "n": "1080p",
+                "v": "https://origin.example.com/video-1080"
+              }
+            ]
+          }
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(response.url == "https://parser.example.com/?url=https://origin.example.com/video-1080")
+        #expect(response.qualities.compactMap(\.name) == ["720p", "1080p"])
+        #expect(response.qualities.map(\.url) == [
+            "https://parser.example.com/?url=https://origin.example.com/video-720",
+            "https://parser.example.com/?url=https://origin.example.com/video-1080"
+        ])
+    }
 }

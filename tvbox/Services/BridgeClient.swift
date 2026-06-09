@@ -28,6 +28,7 @@ struct BridgePlayback: Hashable {
     let startPosition: TimeInterval?
     let artwork: String?
     let descriptionText: String?
+    let qualities: [BridgePlaybackQuality]
     let format: String?
     let parse: Int?
     let flag: String?
@@ -36,6 +37,18 @@ struct BridgePlayback: Hashable {
     let subtitles: [BridgePlaybackSubtitle]
     let danmakus: [BridgePlaybackDanmaku]
     let drm: PlayableDRM?
+}
+
+struct BridgePlaybackQuality: Hashable {
+    let name: String?
+    let url: String
+
+    init?(name: String?, url: String?) {
+        let trimmedURL = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedURL.isEmpty else { return nil }
+        self.name = name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.url = trimmedURL
+    }
 }
 
 struct BridgePlaybackSubtitle: Decodable, Hashable {
@@ -265,10 +278,108 @@ struct BridgeTransientOverlay: Decodable, Hashable {
     let durationMs: Int?
 }
 
+private struct BridgePlaybackURLSet: Decodable, Hashable {
+    let url: String?
+    let qualities: [BridgePlaybackQuality]
+
+    private enum CodingKeys: String, CodingKey {
+        case values
+        case position
+    }
+
+    init(url: String?, qualities: [BridgePlaybackQuality]) {
+        self.url = url?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.qualities = qualities
+    }
+
+    init(from decoder: Decoder) throws {
+        if let string = try? decoder.singleValueContainer().decode(String.self) {
+            let quality = BridgePlaybackQuality(name: nil, url: string)
+            self.init(url: string, qualities: quality.map { [$0] } ?? [])
+            return
+        }
+        if let int = try? decoder.singleValueContainer().decode(Int.self) {
+            let string = String(int)
+            self.init(url: string, qualities: [BridgePlaybackQuality(name: nil, url: string)].compactMap { $0 })
+            return
+        }
+        if let double = try? decoder.singleValueContainer().decode(Double.self) {
+            let string = String(double)
+            self.init(url: string, qualities: [BridgePlaybackQuality(name: nil, url: string)].compactMap { $0 })
+            return
+        }
+        if var array = try? decoder.unkeyedContainer() {
+            var values: [String] = []
+            while !array.isAtEnd {
+                if let value = try? array.decode(String.self) {
+                    values.append(value)
+                } else if let value = try? array.decode(Int.self) {
+                    values.append(String(value))
+                } else if let value = try? array.decode(Double.self) {
+                    values.append(String(value))
+                } else {
+                    break
+                }
+            }
+            let qualities = stride(from: 0, to: values.count - 1, by: 2).compactMap { index in
+                BridgePlaybackQuality(name: values[index], url: values[index + 1])
+            }
+            self.init(url: qualities.first?.url, qualities: qualities)
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let values = try container.decodeIfPresent([BridgePlaybackURLValue].self, forKey: .values) ?? []
+        let qualities = values.compactMap { BridgePlaybackQuality(name: $0.name, url: $0.url) }
+        let position = max(try container.decodeIfPresent(Int.self, forKey: .position) ?? 0, 0)
+        let selected = qualities.indices.contains(position) ? qualities[position].url : qualities.first?.url
+        self.init(url: selected, qualities: qualities)
+    }
+
+    func applyingPlayURLPrefix(_ prefix: String?) -> BridgePlaybackURLSet {
+        guard let prefix = prefix?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
+            return self
+        }
+        let prefixedQualities = qualities.compactMap { quality in
+            BridgePlaybackQuality(name: quality.name, url: prefix + quality.url)
+        }
+        return BridgePlaybackURLSet(
+            url: url.map { prefix + $0 },
+            qualities: prefixedQualities
+        )
+    }
+}
+
+private struct BridgePlaybackURLValue: Decodable {
+    let name: String?
+    let url: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case n
+        case name
+        case label
+        case v
+        case url
+        case value
+    }
+
+    init(from decoder: Decoder) throws {
+        if let string = try? decoder.singleValueContainer().decode(String.self) {
+            name = nil
+            url = string
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try BridgePlayResponse.decodeFirstString(from: container, keys: [.n, .name, .label])
+        url = try BridgePlayResponse.decodeFirstString(from: container, keys: [.v, .url, .value])
+    }
+}
+
 struct BridgePlayResponse: Decodable {
     let ok: Bool?
     let mode: String?
     let url: String?
+    let qualities: [BridgePlaybackQuality]
     let fallbackUrl: String?
     let headers: [String: String]?
     let proxied: Bool?
@@ -333,14 +444,15 @@ struct BridgePlayResponse: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
         mode = try container.decodeIfPresent(String.self, forKey: .mode)
-        let rawUrl = try Self.decodeFirstString(from: container, keys: [.url, .realUrl])
         let playUrlPrefix = try Self.decodeFirstString(from: container, keys: [.playUrl])
-        if let playUrlPrefix = playUrlPrefix?.nilIfBlank,
-           let rawUrl = rawUrl?.nilIfBlank {
-            url = playUrlPrefix + rawUrl
+        let urlSet = try Self.decodeFirstURLSet(from: container, keys: [.url, .realUrl])?
+            .applyingPlayURLPrefix(playUrlPrefix)
+        if let normalizedURL = urlSet?.url {
+            url = normalizedURL
         } else {
-            url = rawUrl
+            url = nil
         }
+        qualities = urlSet?.qualities ?? []
         fallbackUrl = try Self.decodeFirstString(from: container, keys: [.fallbackUrl, .fallbackURL])
         headers = try Self.decodeFirstStringMap(from: container, keys: [.headers, .header])
         proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
@@ -366,9 +478,9 @@ struct BridgePlayResponse: Decodable {
         toast = try container.decodeIfPresent(BridgeTransientOverlay.self, forKey: .toast)
     }
 
-    private static func decodeFirstString(
-        from container: KeyedDecodingContainer<CodingKeys>,
-        keys: [CodingKeys]
+    static func decodeFirstString<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        keys: [Key]
     ) throws -> String? {
         for key in keys {
             if let value = try? container.decodeIfPresent(String.self, forKey: key) {
@@ -379,6 +491,18 @@ struct BridgePlayResponse: Decodable {
             }
             if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
                 return String(value)
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFirstURLSet(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> BridgePlaybackURLSet? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(BridgePlaybackURLSet.self, forKey: key) {
+                return value
             }
         }
         return nil
@@ -767,6 +891,7 @@ final class BridgeClient {
             startPosition: response.startPosition,
             artwork: response.artwork?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
             descriptionText: response.descriptionText?.stripHTML.nilIfBlank,
+            qualities: response.qualities,
             format: response.format?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
             parse: response.parse,
             flag: response.flag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,

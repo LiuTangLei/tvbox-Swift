@@ -324,7 +324,12 @@ class DetailViewModel: ObservableObject {
         let progress = max(currentPlaybackSeconds(), 0)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
-        let playback = currentPlayback?.replacingStream(url: targetURL, headers: [:], origin: .direct)
+        let existingPlayback = currentPlayback
+        let playback = existingPlayback?.replacingStream(
+            url: targetURL,
+            headers: existingPlayback?.headers ?? [:],
+            origin: existingPlayback?.origin
+        )
             ?? directPlayableItem(url: targetURL, episodeURL: qualityBaseEpisodeURL, flag: selectedFlag)
         advancePlaybackReloadToken()
         applyPlayback(playback)
@@ -462,6 +467,31 @@ class DetailViewModel: ObservableObject {
         }
     }
 
+    private func applyBridgeQualityOptions(_ playback: BridgePlayback) {
+        qualityResolveTask?.cancel()
+        qualityResolveTask = nil
+        qualityResolveToken = UUID()
+        qualityBaseEpisodeURL = playback.url
+
+        let options = playback.qualities.enumerated().compactMap { offset, quality -> PlaybackQualityOption? in
+            let name = quality.name ?? "清晰度\(offset + 1)"
+            return PlaybackQualityOption(
+                id: "bridge-\(offset)-\(quality.url)",
+                name: name,
+                url: quality.url
+            )
+        }
+
+        guard options.count > 1 else {
+            qualityOptions = []
+            selectedQualityId = PlaybackQualityOption.autoIdentifier
+            return
+        }
+
+        qualityOptions = options
+        selectedQualityId = options.first(where: { $0.url == playback.url })?.id ?? options[0].id
+    }
+
     private func directPlayableItem(url: String, episodeURL: String, flag: String) -> PlayableItem {
         PlayableItem(
             url: url,
@@ -542,6 +572,7 @@ class DetailViewModel: ObservableObject {
                 isUsingBridgeMediaFallback = false
                 applyBridgeStartPosition(playback.startPosition)
                 applyBridgePlaybackMetadata(playback)
+                applyBridgeQualityOptions(playback)
                 advancePlaybackReloadToken()
                 applyPlayback(bridgePlayableItem(from: playback, source: source, episodeURL: episodeURL, flag: flag))
                 isPlaying = true
