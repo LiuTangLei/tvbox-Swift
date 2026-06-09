@@ -8,8 +8,11 @@ struct ChannelOverlayView: View {
     @Binding var selectedGroupIndex: Int
     let currentChannels: [LiveChannelItem]
     let currentChannel: LiveChannelItem?
+    let hasHiddenGroups: Bool
+    let hasUnlockedHiddenGroups: Bool
     let onSelectGroup: (Int) -> Void
     let onSelectChannel: (LiveChannelItem) -> Void
+    let onToggleHiddenGroups: () -> Void
     let onDismiss: () -> Void
 
     @State private var dragOffset: CGFloat = 0
@@ -70,10 +73,32 @@ struct ChannelOverlayView: View {
                 .frame(width: 36, height: 5)
                 .padding(.top, 10)
 
-            Text("频道列表")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.white.opacity(0.9))
-                .padding(.bottom, 8)
+            HStack(spacing: 10) {
+                Spacer()
+
+                Text("频道列表")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+
+                Spacer()
+
+                if hasHiddenGroups {
+                    Button {
+                        HapticManager.shared.lightImpact()
+                        onToggleHiddenGroups()
+                    } label: {
+                        Image(systemName: hasUnlockedHiddenGroups ? "lock.open.fill" : "lock.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(hasUnlockedHiddenGroups ? .orange : .white.opacity(0.8))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity)
         .background(Color.white.opacity(0.05))

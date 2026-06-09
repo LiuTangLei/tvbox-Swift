@@ -79,6 +79,10 @@ class LiveViewModel: ObservableObject {
     @Published var epgErrorMessage: String?
     /// 是否显示频道列表（预留给 TV 遥控交互）。
     @Published var showChannelList = false
+    /// 配置内隐藏分组数量。
+    @Published private(set) var hiddenGroupCount = 0
+    /// 已解锁隐藏分组数量。
+    @Published private(set) var unlockedHiddenGroupCount = 0
     
     /// 订阅配置更新，支持直播频道列表实时刷新。
     private var cancellables: Set<AnyCancellable> = []
@@ -88,6 +92,8 @@ class LiveViewModel: ObservableObject {
     private var baseChannelGroups: [LiveChannelGroup] = []
     /// 按收藏时间倒序存储频道名 key，模拟 Android Keep 的直播收藏合并。
     private var favoriteChannelKeys: [String] = []
+    /// 当前会话已解锁的隐藏分组密码。
+    private var unlockedGroupPasswords: Set<String> = []
     
     init() {
         favoriteChannelKeys = Self.loadFavoriteChannelKeys()
@@ -180,6 +186,47 @@ class LiveViewModel: ObservableObject {
             ? channelGroups[selectedGroupIndex].groupName
             : nil
         rebuildChannelGroups(selecting: currentChannel, preferredGroupName: preferredGroupName)
+    }
+
+    var hasHiddenGroups: Bool {
+        hiddenGroupCount > 0
+    }
+
+    var hasUnlockedHiddenGroups: Bool {
+        unlockedHiddenGroupCount > 0
+    }
+
+    func unlockHiddenGroups(password: String) -> Bool {
+        let password = Self.normalizedPassword(password)
+        guard !password.isEmpty,
+              baseChannelGroups.contains(where: { $0.isHidden && Self.normalizedPassword($0.password) == password }) else {
+            return false
+        }
+
+        unlockedGroupPasswords.insert(password)
+        refreshHiddenGroupState()
+
+        let targetGroupName = baseChannelGroups.first {
+            $0.isHidden && Self.normalizedPassword($0.password) == password
+        }?.groupName
+        rebuildChannelGroups(selecting: currentChannel, preferredGroupName: currentGroupName)
+        if let targetGroupName,
+           let groupIndex = channelGroups.firstIndex(where: { $0.groupName == targetGroupName }),
+           let firstChannel = channelGroups[groupIndex].channels.first {
+            selectedGroupIndex = groupIndex
+            selectedChannelIndex = 0
+            setCurrentChannel(firstChannel)
+        }
+        return true
+    }
+
+    func lockHiddenGroups() {
+        guard !unlockedGroupPasswords.isEmpty else { return }
+        let previousChannel = currentChannel
+        let preferredGroupName = currentGroupName
+        unlockedGroupPasswords.removeAll()
+        refreshHiddenGroupState()
+        rebuildChannelGroups(selecting: previousChannel, preferredGroupName: preferredGroupName)
     }
 
     var currentEpg: Epginfo? {
@@ -346,6 +393,8 @@ class LiveViewModel: ObservableObject {
             ? channelGroups[selectedGroupIndex].groupName
             : nil
         baseChannelGroups = groups
+        pruneUnlockedHiddenGroups()
+        refreshHiddenGroupState()
         channelGroups = groupsWithFavorites(from: groups)
         
         guard !channelGroups.isEmpty else {
@@ -428,10 +477,18 @@ class LiveViewModel: ObservableObject {
             max(0, selectedChannelIndex),
             max(0, channelGroups[selectedGroupIndex].channels.count - 1)
         )
+
+        if let channel = channelGroups[selectedGroupIndex].channels[safe: selectedChannelIndex] {
+            setCurrentChannel(channel)
+        } else {
+            setCurrentChannel(nil)
+        }
     }
 
     private func groupsWithFavorites(from groups: [LiveChannelGroup]) -> [LiveChannelGroup] {
-        let reindexedBase = Self.reindexedGroups(groups.filter { !$0.isHidden })
+        let reindexedBase = Self.reindexedGroups(groups.filter {
+            !$0.isHidden || unlockedGroupPasswords.contains(Self.normalizedPassword($0.password))
+        })
         let favoriteChannels = favoriteChannelKeys.compactMap { key in
             reindexedBase
                 .lazy
@@ -585,6 +642,27 @@ class LiveViewModel: ObservableObject {
 
     private static func normalizedChannelName(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedPassword(_ password: String) -> String {
+        password.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func pruneUnlockedHiddenGroups() {
+        let availablePasswords = Set(
+            baseChannelGroups
+                .filter(\.isHidden)
+                .map { Self.normalizedPassword($0.password) }
+                .filter { !$0.isEmpty }
+        )
+        unlockedGroupPasswords = unlockedGroupPasswords.intersection(availablePasswords)
+    }
+
+    private func refreshHiddenGroupState() {
+        hiddenGroupCount = baseChannelGroups.filter(\.isHidden).count
+        unlockedHiddenGroupCount = baseChannelGroups.filter {
+            $0.isHidden && unlockedGroupPasswords.contains(Self.normalizedPassword($0.password))
+        }.count
     }
 
     private static func loadFavoriteChannelKeys() -> [String] {

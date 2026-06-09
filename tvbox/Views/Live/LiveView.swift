@@ -24,6 +24,12 @@ struct LiveView: View {
     /// iOS 全屏频道覆盖层是否显示。
     @State private var showChannelOverlay = false
     #endif
+    /// 隐藏直播分组解锁面板是否显示。
+    @State private var showLiveGroupUnlockPanel = false
+    /// 隐藏直播分组密码输入。
+    @State private var liveGroupPassword = ""
+    /// 最近一次隐藏分组解锁是否失败。
+    @State private var liveGroupUnlockFailed = false
     /// 当前窗口是否处于全屏。
     @State private var isWindowFullScreen = false
     /// 底部频道信息卡最大宽度。
@@ -133,7 +139,7 @@ struct LiveView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if viewModel.channelGroups.isEmpty {
+            if viewModel.channelGroups.isEmpty && !viewModel.hasHiddenGroups {
                 emptyState
             } else {
                 activePlayerLayer
@@ -227,8 +233,14 @@ struct LiveView: View {
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
             #endif
+
+            if showLiveGroupUnlockPanel {
+                liveGroupUnlockOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: showCurrentChannelInfo)
+        .animation(.easeInOut(duration: 0.18), value: showLiveGroupUnlockPanel)
         #if os(macOS)
         .animation(.easeInOut(duration: 0.2), value: showChannelDrawer)
         #endif
@@ -244,12 +256,15 @@ struct LiveView: View {
                 selectedGroupIndex: $viewModel.selectedGroupIndex,
                 currentChannels: viewModel.currentChannels,
                 currentChannel: viewModel.currentChannel,
+                hasHiddenGroups: viewModel.hasHiddenGroups,
+                hasUnlockedHiddenGroups: viewModel.hasUnlockedHiddenGroups,
                 onSelectGroup: { viewModel.selectGroup($0) },
                 onSelectChannel: { channel in
                     viewModel.selectChannel(channel)
                     HapticManager.shared.mediumImpact()
                     showChannelOverlay = false
                 },
+                onToggleHiddenGroups: handleHiddenGroupLockButton,
                 onDismiss: { showChannelOverlay = false }
             )
             .presentationBackground(.clear)
@@ -277,6 +292,21 @@ struct LiveView: View {
                     .foregroundColor(.white.opacity(0.9))
                 
                 Spacer()
+
+                if viewModel.hasHiddenGroups {
+                    Button {
+                        handleHiddenGroupLockButton()
+                    } label: {
+                        Image(systemName: viewModel.hasUnlockedHiddenGroups ? "lock.open.fill" : "lock.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(viewModel.hasUnlockedHiddenGroups ? .orange : .white.opacity(0.8))
+                            .frame(width: 22, height: 22)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(viewModel.hasUnlockedHiddenGroups ? "锁定隐藏分组" : "解锁隐藏分组")
+                }
                 
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -317,6 +347,104 @@ struct LiveView: View {
         .frame(width: 390)
         .frame(maxHeight: .infinity, alignment: .top)
         .glassCard(cornerRadius: 14)
+    }
+
+    private var liveGroupUnlockOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.38)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    dismissLiveGroupUnlockPanel()
+                }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.orange)
+                    Text("隐藏分组")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.92))
+                    Spacer()
+                    Button {
+                        dismissLiveGroupUnlockPanel()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white.opacity(0.75))
+                            .frame(width: 24, height: 24)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                SecureField("密码", text: $liveGroupPassword)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .frame(height: 40)
+                    .background(Color.black.opacity(0.28))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(
+                                liveGroupUnlockFailed ? Color.red.opacity(0.65) : Color.white.opacity(0.18),
+                                lineWidth: 0.8
+                            )
+                    )
+                    .onSubmit {
+                        submitLiveGroupUnlock()
+                    }
+
+                if liveGroupUnlockFailed {
+                    Text("密码不正确")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.red.opacity(0.9))
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        dismissLiveGroupUnlockPanel()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "xmark")
+                            Text("取消")
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.75))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        submitLiveGroupUnlock()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "lock.open.fill")
+                            Text("解锁")
+                        }
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background(AppTheme.accentGradient)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(liveGroupPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(liveGroupPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+                }
+            }
+            .padding(18)
+            .frame(width: 300)
+            .glassCard(cornerRadius: 14)
+        }
     }
     
     #if os(iOS)
@@ -784,6 +912,40 @@ struct LiveView: View {
         // 任意交互都刷新显示时间，并触发 VLC 子层同步交互状态。
         wakeUpCurrentChannelInfo()
         vlcInteractionToken &+= 1
+    }
+
+    private func handleHiddenGroupLockButton() {
+        reportUserActivity()
+        if viewModel.hasUnlockedHiddenGroups {
+            viewModel.lockHiddenGroups()
+            return
+        }
+        #if os(iOS)
+        showChannelOverlay = false
+        #endif
+        liveGroupPassword = ""
+        liveGroupUnlockFailed = false
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showLiveGroupUnlockPanel = true
+        }
+    }
+
+    private func submitLiveGroupUnlock() {
+        let unlocked = viewModel.unlockHiddenGroups(password: liveGroupPassword)
+        if unlocked {
+            dismissLiveGroupUnlockPanel()
+            wakeUpCurrentChannelInfo()
+        } else {
+            liveGroupUnlockFailed = true
+        }
+    }
+
+    private func dismissLiveGroupUnlockPanel() {
+        liveGroupPassword = ""
+        liveGroupUnlockFailed = false
+        withAnimation(.easeInOut(duration: 0.18)) {
+            showLiveGroupUnlockPanel = false
+        }
     }
     
     // MARK: - 频道分组

@@ -210,19 +210,19 @@ Swift 端状态：
 
 - `ApiConfig.parseLiveContent` 支持 m3u/txt 和内嵌 channels，并已解析 `tvg-url`、`tvg-id`、`tvg-logo`、频道号、UA/header、format、catchup 等常用直播扩展属性。
 - `XMLTVService` 支持 JSON EPG、XMLTV、gzip XMLTV、六小时缓存和昨天/今天/明天日期窗口。
-- `LiveViewModel` 有分组、频道、多线路、EPG 日期切换、回看播放、频道收藏、隐藏分组过滤和最近频道恢复。
+- `LiveViewModel` 有分组、频道、多线路、EPG 日期切换、回看播放、频道收藏、隐藏分组解锁/过滤和最近频道恢复。
 - `LiveView` 有频道抽屉、当前频道信息、节目单列表、回看入口、VLC/AVPlayer 播放和部分失败切线逻辑。
 
 主要缺口：
 
 - 直播 DRM/ClearKey 字段仍未进入播放器能力矩阵。
-- 隐藏/密码分组已能解析并默认隐藏，但还没有解锁 UI；直播源历史和直播主页切换体验不足。
+- 隐藏/密码分组已能解析、默认隐藏并通过密码解锁；直播源历史和直播主页切换体验不足。
 - 直播音轨/字幕轨/解码/比例等高级控制没有完整对齐 Android。
 
 建议拆分：
 
 1. 为直播补 DRM/ClearKey 模型和播放器降级提示。
-2. 实现隐藏/密码分组解锁 UI、直播源历史和主页直播源管理。
+2. 实现直播源历史和主页直播源管理。
 3. 把直播播放也切到 `PlayableItem`，与点播共享 headers/DRM/字幕/format 处理。
 4. 补直播音轨/字幕轨/解码/比例等 Android 高级播放控制。
 
