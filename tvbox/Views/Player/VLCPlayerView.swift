@@ -2272,6 +2272,7 @@ struct VLCVodPlayerView: View {
 
 struct VLCLivePlayerView: View {
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var activityToken: Int = 0
     var onPlaybackFailed: (() -> Void)? = nil
@@ -2382,6 +2383,10 @@ struct VLCLivePlayerView: View {
             startPlayback()
             wakeUpControls()
         }
+        .onChange(of: playback) { _, _ in
+            startPlayback()
+            wakeUpControls()
+        }
         .onChange(of: activityToken) { _, _ in
             wakeUpControls()
         }
@@ -2390,6 +2395,11 @@ struct VLCLivePlayerView: View {
             osdTimer?.invalidate()
             controlsTimer?.invalidate()
         }
+    }
+
+    private var effectiveHTTPHeaders: [String: String] {
+        guard let playback, !playback.headers.isEmpty else { return httpHeaders }
+        return playback.headers
     }
 
     // MARK: - iOS Live Controls Overlay
@@ -2455,7 +2465,8 @@ struct VLCLivePlayerView: View {
         }
         controller.play(
             url: url,
-            httpHeaders: httpHeaders,
+            httpHeaders: effectiveHTTPHeaders,
+            externalSubtitles: playback?.subtitles ?? [],
             startPosition: 0,
             isLive: true,
             onProgressChanged: nil,

@@ -90,7 +90,7 @@ struct LiveView: View {
             }
             .onChange(of: viewModel.currentPlaybackIdentifier) { _, _ in
                 if selectedEngine == .system {
-                    playChannel(url: viewModel.currentPlaybackURL)
+                    playChannel(playback: viewModel.currentPlayback)
                 } else {
                     cleanupPlayer()
                 }
@@ -103,7 +103,7 @@ struct LiveView: View {
             }
             .onChange(of: selectedEngine) { _, _ in
                 if selectedEngine == .system {
-                    playChannel(url: viewModel.currentPlaybackURL)
+                    playChannel(playback: viewModel.currentPlayback)
                 } else {
                     cleanupPlayer()
                 }
@@ -151,10 +151,11 @@ struct LiveView: View {
     @ViewBuilder
     private var activePlayerLayer: some View {
         if selectedEngine == .vlc {
-            if let urlString = viewModel.currentPlaybackURL, !urlString.isEmpty {
+            if let playback = viewModel.currentPlayback, !playback.url.isEmpty {
                 VLCLivePlayerView(
-                    urlString: urlString,
-                    httpHeaders: viewModel.currentPlaybackHeaders,
+                    urlString: playback.url,
+                    playback: playback,
+                    httpHeaders: playback.headers,
                     activityToken: vlcInteractionToken,
                     onPlaybackFailed: {
                         handlePlaybackFailure(trigger: "vlc_error")
@@ -238,9 +239,18 @@ struct LiveView: View {
                 liveGroupUnlockOverlay
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
+
+            if !showLiveGroupUnlockPanel, let message = viewModel.currentDRMPlaybackWarning {
+                drmWarningBanner(message)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 74)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: showCurrentChannelInfo)
         .animation(.easeInOut(duration: 0.18), value: showLiveGroupUnlockPanel)
+        .animation(.easeInOut(duration: 0.18), value: viewModel.currentDRMPlaybackWarning)
         #if os(macOS)
         .animation(.easeInOut(duration: 0.2), value: showChannelDrawer)
         #endif
@@ -445,6 +455,28 @@ struct LiveView: View {
             .frame(width: 300)
             .glassCard(cornerRadius: 14)
         }
+    }
+
+    private func drmWarningBanner(_ message: String) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.orange)
+            Text(message)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.86))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.black.opacity(0.48), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.28), lineWidth: 0.8)
+        )
+        .frame(maxWidth: 520)
+        .allowsHitTesting(false)
     }
     
     #if os(iOS)
@@ -1024,8 +1056,9 @@ struct LiveView: View {
     
     // MARK: - 播放
     
-    private func playChannel(url: String?) {
-        guard let urlStr = url, let url = URL(string: urlStr) else {
+    private func playChannel(playback: PlayableItem?) {
+        guard let playback,
+              let url = URL(string: playback.url) else {
             handlePlaybackFailure(trigger: "invalid_url")
             return
         }
@@ -1033,7 +1066,7 @@ struct LiveView: View {
         cleanupPlayer()
         
         // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
-        var headers = viewModel.currentPlaybackHeaders
+        var headers = playback.headers
         if headers.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
             headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }

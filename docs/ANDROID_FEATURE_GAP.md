@@ -153,11 +153,12 @@ Android 端能力：
 Swift 端状态：
 
 - 已有 AVPlayer/VLC 内核选择、VLC 缓冲策略、软硬解设置、速度/音量、全屏、自动下一集、播放进度保存。
+- 已建立 `PlayableItem`，点播与直播都能用统一对象承接 URL、headers、format、DRM、字幕等播放元数据。
 - `VodPlaybackState` 目前只保存线路、剧集索引和进度。
 
 主要缺口：
 
-- 播放器只接收 URL 字符串，未建立类似 Android `PlaySpec` 的播放请求对象，headers、DRM、字幕、弹幕、format 不能完整传递。
+- 播放器仍未形成完整能力矩阵，DRM、弹幕、部分字幕/format 字段还没有按内核完整消费。
 - 没有音轨/视频轨/字幕轨选择 UI，也没有轨道偏好持久化。
 - 外挂字幕选择、SRT/SSA/ASS/VTT 多格式处理、字幕大小/位置设置不足。
 - 缺少片头片尾跳过、播放比例按影片记忆、速度按影片记忆、倒序播放等历史偏好。
@@ -212,19 +213,19 @@ Swift 端状态：
 - `XMLTVService` 支持 JSON EPG、XMLTV、gzip XMLTV、六小时缓存和昨天/今天/明天日期窗口。
 - `ApiConfig` 支持多直播源列表，并可选择当前主页直播源。
 - `LiveViewModel` 有分组、频道、多线路、EPG 日期切换、回看播放、频道收藏、隐藏分组解锁/过滤和最近频道恢复。
-- `LiveView` 有频道抽屉、当前频道信息、节目单列表、回看入口、VLC/AVPlayer 播放和部分失败切线逻辑。
+- `LiveViewModel` 会把实时直播和回看统一转换为 `PlayableItem`，`LiveView` 有频道抽屉、当前频道信息、节目单列表、回看入口、VLC/AVPlayer 播放、DRM 降级提示和部分失败切线逻辑。
 
 主要缺口：
 
-- 直播 DRM/ClearKey 字段仍未进入播放器能力矩阵。
+- 直播 DRM/ClearKey 字段已进入播放对象和 UI 提示，但还未实现 AVPlayer/VLC 解密播放。
 - 隐藏/密码分组已能解析、默认隐藏并通过密码解锁；主页直播源可切换，直播源历史/多配置管理体验仍不足。
 - 直播音轨/字幕轨/解码/比例等高级控制没有完整对齐 Android。
 
 建议拆分：
 
-1. 为直播补 DRM/ClearKey 模型和播放器降级提示。
+1. 为 AVPlayer/VLC 分别补 DRM/ClearKey 解密能力或更精确的降级路径。
 2. 实现直播源历史和多配置管理。
-3. 把直播播放也切到 `PlayableItem`，与点播共享 headers/DRM/字幕/format 处理。
+3. 继续让直播与点播共享 headers/DRM/字幕/format 的播放器能力矩阵。
 4. 补直播音轨/字幕轨/解码/比例等 Android 高级播放控制。
 
 ### 4.7 局域网服务、Web 控制台与设备同步

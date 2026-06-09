@@ -121,6 +121,20 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
         }
         return merged
     }
+
+    var currentPlayableItem: PlayableItem? {
+        guard let url = currentUrl?.nilIfBlank else { return nil }
+        return PlayableItem(
+            url: url,
+            headers: currentHeaders,
+            format: format,
+            sourceKey: "live",
+            flag: channelName,
+            episodeId: "line-\(sourceIndex)",
+            drm: drm,
+            origin: .direct
+        )
+    }
     
     /// 轮换到下一条线路。
     mutating func nextSource() {
@@ -256,6 +270,19 @@ struct LiveCatchupPlayback: Codable, Identifiable, Hashable {
     var headers: [String: String]
     var epg: Epginfo
     var drm: PlayableDRM?
+
+    func playableItem(channel: LiveChannelItem?) -> PlayableItem {
+        PlayableItem(
+            url: url,
+            headers: headers,
+            format: channel?.format,
+            sourceKey: "live-catchup",
+            flag: channel?.channelName,
+            episodeId: epg.id,
+            drm: drm,
+            origin: .direct
+        )
+    }
 }
 
 private struct LiveCatchupTemplate {

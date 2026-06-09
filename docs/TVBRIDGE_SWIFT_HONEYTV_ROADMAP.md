@@ -61,20 +61,20 @@ Swift 端当前已经接入了 Bridge 的主路径：
 - 首页 action 已能走 Bridge `action`，支持 Token prompt / Jar UI sheet。
 - Swift 有 Android Jar UI sheet，可显示截图、元素 overlay、输入、提交、返回、刷新、轮询完成。
 
-主要短板是：Bridge 播放结果在 Swift 端仍基本压缩成一个 URL 字符串，`headers`、`format`、`subtitles`、`danmakus`、`DRM`、`jxFrom` 等元数据还没有成为播放器输入模型。
+主要短板是：Swift 已有 `PlayableItem` 播放输入模型，但 Bridge/配置返回的 `format`、`subtitles`、`danmakus`、`DRM`、`jxFrom` 等元数据还没有被播放器能力矩阵完整消费。
 
 ## 3. 功能矩阵
 
 | 功能域 | 当前状态 | 是否可通过 TVBridge 补齐 | 主要缺口 | 优先级 |
 | --- | --- | --- | --- | --- |
 | `type=3` Jar/Py/QuickJS 点播源 | 已接首页/分类/详情/搜索/播放/action | 可以 | 真机长期稳定性、异常恢复、批量样本回归 | P0 |
-| Android 解析链、Web 嗅探、特殊协议 | Bridge 端已有 `ParseJob`、`Source.fetch()`、代理外部化 | 可以 | Swift 端缺 `PlayableItem`，未消费 subtitles/danmaku/format 等字段 | P0 |
+| Android 解析链、Web 嗅探、特殊协议 | Bridge 端已有 `ParseJob`、`Source.fetch()`、代理外部化 | 可以 | Swift 端已接 `PlayableItem`，仍未完整消费 subtitles/danmaku/format 等字段 | P0 |
 | 网盘 Token/Cookie 与 Jar UI | 已有 prompt、保存、截图/元素操作 | 可以 | UI 操作容错、授权状态同步、自动重试和过期提示需加强 | P1 |
 | 配置源管理 | Swift 能加载配置和保留 type=3 | 部分可补 | 多配置管理、本地导入、DoH/hosts/proxy/rules/ads/wallpaper 应用不足 | P1 |
 | VOD 浏览与筛选 | 分类、分页、筛选、文件夹已有基础 | 主要在 Swift 端补 | 热门词、源级搜索开关、action 入口一致性、复杂字段展示 | P1 |
 | 播放器 | AVPlayer/VLC 可播 URL，已有内嵌音轨/字幕部分能力 | Bridge 只能给数据，播放器需 Swift 补 | headers/DRM/subtitle/danmaku 入参、外挂字幕、轨道偏好、片头片尾、外部播放器、媒体会话 | P0/P1 |
 | 弹幕与字幕 | 内嵌轨和字幕样式有基础 | Bridge 可返回字段，渲染需 Swift | 弹幕模型/overlay、远程外挂字幕、ASS/SSA/SRT/VTT 管理 | P2 |
-| 直播 | Swift 已有 m3u/txt 分组播放、主页直播源选择、XMLTV EPG、catchup、headers/DRM 元数据、台标/频道号、收藏和隐藏分组解锁 | 需要新增 Bridge live API | DRM 播放支持、直播源历史/多配置管理 | P1/P2 |
+| 直播 | Swift 已有 m3u/txt 分组播放、主页直播源选择、XMLTV EPG、catchup、PlayableItem 输入、headers/DRM 元数据提示、台标/频道号、收藏和隐藏分组解锁 | 需要新增 Bridge live API | DRM 解密播放支持、直播源历史/多配置管理 | P1/P2 |
 | 本地 HTTP 服务/远控 | Android 有 Nano 服务，Swift 无本地 server | 不能只靠 TVBridge | Swift 本地 server、Web 控制台、push/search/control/media/upload/sync | P2 |
 | DLNA/投屏 | Swift 缺失 | 需 Swift 原生或桥接扩展 | DLNA sender/renderer、UPnP 发现、AVTransport 控制 | P3 |
 | 数据同步与备份 | Swift 有 SwiftData 基础历史/收藏 | 主要 Swift 补 | 备份包、恢复、跨设备同步、与 Android/Bridge 数据交换 | P2 |
@@ -91,8 +91,8 @@ Swift 端当前已经接入了 Bridge 的主路径：
 - 完成保活真机测试矩阵：亮屏、按 Home、锁屏 10 分钟、锁屏 1 小时、插电/不插电、Wi-Fi 切换、强制 Doze、重启后自启。
 - 为 TVBridge 增加可视化日志页或导出日志：最近启动原因、watchdog 时间、锁状态、端口、最近 `/health`、最近异常。
 - Swift `BridgeClient` 增加失败分类：未配置、不可达、server 5xx、Bridge 返回业务错误、播放解析超时、Jar UI 等待超时。
-- Swift 播放不再只返回 `String` URL，新增 `PlayableItem`：`url`、`headers`、`format`、`subtitles`、`danmakus`、`drm`、`jxFrom`、`sourceKey`、`flag`、`episodeId`。
-- `DetailViewModel`、`PlayerView`、`VLCPlayerView` 改用 `PlayableItem`，先消费 URL 和 headers/proxy，保留字段向后兼容。
+- Swift 播放统一用 `PlayableItem` 承接：`url`、`headers`、`format`、`subtitles`、`danmakus`、`drm`、`jxFrom`、`sourceKey`、`flag`、`episodeId`。
+- `DetailViewModel`、直播链路、`PlayerView`、`VLCPlayerView` 改用 `PlayableItem`，先消费 URL 和 headers/proxy/字幕，保留字段向后兼容。
 - 建立 5 到 10 个公开配置样本的回归脚本：注册配置、列 sites、home/category/detail/search/play、验证返回 URL 或明确的 token/ui required。
 
 验收标准：在已授予电池白名单和通知权限的 Android 手机上，Swift 连续播放 type=3 源，锁屏 30 分钟后 `/health` 可访问，继续点播不需要手动打开 Android App。
@@ -116,7 +116,7 @@ Swift 端当前已经接入了 Bridge 的主路径：
 目标：从“点播可用”扩展到蜂蜜 TV 的核心日常能力。
 
 - 新增 Bridge live API：直播配置注册、频道列表、`liveContent`、直播代理、headers/DRM/catchup 元数据返回。
-- Swift 直播模型扩展：补 DRM/ClearKey 播放支持、直播源历史和多配置管理。
+- Swift 直播模型扩展：补 DRM/ClearKey 解密播放支持、直播源历史和多配置管理。
 - XMLTV/EPG 服务：继续完善多日缓存策略、日期导航体验和不同源格式兼容性。
 - 字幕管理：远程/本地 SRT、VTT，样式、延迟、编码；ASS/SSA 评估 libass 或降级。
 - 弹幕管理：Bridge 返回 danmaku 字段，Swift 实现弹幕解析和 overlay。

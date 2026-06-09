@@ -166,4 +166,8 @@ struct PlayableDRM: Codable, Hashable {
             .joined(separator: "\n")
         return [scheme ?? "", licenseURL ?? "", forceKey ? "force" : "", headerKey].joined(separator: "\n")
     }
+
+    var displayName: String {
+        scheme?.nilIfBlank ?? "DRM"
+    }
 }

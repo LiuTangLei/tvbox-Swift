@@ -249,30 +249,25 @@ class LiveViewModel: ObservableObject {
         catchupPlayback != nil
     }
 
-    var currentPlaybackURL: String? {
-        catchupPlayback?.url ?? currentChannel?.currentUrl
-    }
-
-    var currentPlaybackHeaders: [String: String] {
-        catchupPlayback?.headers ?? currentChannel?.currentHeaders ?? [:]
+    var currentPlayback: PlayableItem? {
+        if let catchupPlayback {
+            return catchupPlayback.playableItem(channel: currentChannel)
+        }
+        return currentChannel?.currentPlayableItem
     }
 
     var currentPlaybackIdentifier: String {
-        if let catchupPlayback {
-            let headerKey = catchupPlayback.headers
-                .map { ($0.key.lowercased(), $0.value) }
-                .sorted { $0.0 < $1.0 }
-                .map { "\($0.0):\($0.1)" }
-                .joined(separator: "\n")
-            return [
-                "catchup",
-                catchupPlayback.url,
-                headerKey,
-                catchupPlayback.drm?.playbackCacheKey ?? "",
-                catchupPlayback.epg.id
-            ].joined(separator: "\n")
-        }
-        return currentChannel?.currentPlaybackIdentifier ?? ""
+        guard let playback = currentPlayback else { return "" }
+        return [
+            playback.id,
+            playback.format ?? "",
+            playback.drm?.playbackCacheKey ?? ""
+        ].joined(separator: "\n")
+    }
+
+    var currentDRMPlaybackWarning: String? {
+        guard let drm = currentPlayback?.drm else { return nil }
+        return "当前直播包含 \(drm.displayName) DRM，Swift 播放器暂不支持 DRM 解密，可能无法播放。"
     }
 
     func canPlayCatchup(_ epg: Epginfo) -> Bool {
