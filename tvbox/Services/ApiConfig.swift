@@ -22,10 +22,19 @@ class ApiConfig: ObservableObject {
         var id: String { url.lowercased() }
     }
 
+    struct LiveSourceOption: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let index: Int
+        let url: String?
+    }
+
     @Published var sourceBeanList: [SourceBean] = []
     @Published var homeSourceBean: SourceBean?
     @Published var parseBeanList: [ParseBean] = []
     @Published var liveChannelGroupList: [LiveChannelGroup] = []
+    @Published var liveSourceOptions: [LiveSourceOption] = []
+    @Published var homeLiveSourceOption: LiveSourceOption?
     @Published var dohList: [(name: String, url: String)] = []
     @Published var isLoaded: Bool = false
     @Published var configUrl: String = ""
@@ -35,6 +44,8 @@ class ApiConfig: ObservableObject {
     private let network = NetworkManager.shared
     private var activeLoadToken = UUID()
     private var liveParseTask: Task<Void, Never>?
+    private var currentLiveConfig: AppConfigData?
+    private var currentLiveConfigUrl: String?
     private struct RawConfigCacheEntry {
         let content: String
         let fetchedAt: Date
@@ -801,11 +812,15 @@ class ApiConfig: ObservableObject {
         }
 
         if includeLive {
+            currentLiveConfig = config
+            currentLiveConfigUrl = apiUrl
             if let lives = config.lives {
                 let parsedGroups = await parseLives(lives, apiUrl: apiUrl, loadToken: loadToken)
                 guard activeLoadToken == loadToken else { return }
                 liveChannelGroupList = parsedGroups
             } else {
+                liveSourceOptions = []
+                homeLiveSourceOption = nil
                 liveChannelGroupList = []
             }
         }
@@ -817,85 +832,116 @@ class ApiConfig: ObservableObject {
         apiUrl: String,
         loadToken: UUID
     ) async -> [LiveChannelGroup] {
+        let options = Self.liveSourceOptions(from: lives, baseConfigUrl: apiUrl)
+        liveSourceOptions = options
+        guard let selectedOption = preferredLiveSourceOption(in: options),
+              lives.indices.contains(selectedOption.index) else {
+            homeLiveSourceOption = nil
+            return []
+        }
+        homeLiveSourceOption = selectedOption
+
         var mergedGroups: [String: LiveChannelGroup] = [:]
-        var remoteLiveTargets: [
-            (order: Int, url: String, headers: [String: String], epgUrl: String, parsePasswordGroups: Bool)
-        ] = []
 
-        for (index, live) in lives.enumerated() {
-            guard activeLoadToken == loadToken else { return [] }
-            let defaultHeaders = Self.liveDefaultHeaders(live)
-            let defaultEpgUrl = live.epg?.nilIfBlank ?? ""
-            let parsePasswordGroups = !Self.livePassFlag(live.pass)
+        guard activeLoadToken == loadToken else { return [] }
+        let live = lives[selectedOption.index]
+        let defaultHeaders = Self.liveDefaultHeaders(live)
+        let defaultEpgUrl = live.epg?.nilIfBlank ?? ""
+        let parsePasswordGroups = !Self.livePassFlag(live.pass)
 
-            // 如果有 url，从远程加载
-            if let liveUrl = live.url, !liveUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let resolvedUrl = resolveLiveUrl(liveUrl, baseConfigUrl: apiUrl)
-                remoteLiveTargets.append((
-                    order: index,
-                    url: resolvedUrl,
-                    headers: defaultHeaders,
-                    epgUrl: defaultEpgUrl,
-                    parsePasswordGroups: parsePasswordGroups
-                ))
-            }
+        if let channels = live.channels {
+            let inlineGroups = parseInlineLiveChannels(
+                channels,
+                defaultHeaders: defaultHeaders,
+                defaultEpgUrl: defaultEpgUrl,
+                parsePasswordGroups: parsePasswordGroups
+            )
+            mergeLiveGroups(inlineGroups, into: &mergedGroups)
+        }
 
-            // 如果有内嵌频道
-            if let channels = live.channels {
-                let inlineGroups = parseInlineLiveChannels(
-                    channels,
+        if let liveUrl = live.url?.nilIfBlank {
+            let resolvedUrl = resolveLiveUrl(liveUrl, baseConfigUrl: apiUrl)
+            do {
+                let content = try await NetworkManager.shared.getString(
+                    from: resolvedUrl,
+                    headers: defaultHeaders.isEmpty ? nil : defaultHeaders
+                )
+                guard activeLoadToken == loadToken else { return [] }
+                let groups = parseLiveContent(
+                    content,
                     defaultHeaders: defaultHeaders,
                     defaultEpgUrl: defaultEpgUrl,
                     parsePasswordGroups: parsePasswordGroups
                 )
-                mergeLiveGroups(inlineGroups, into: &mergedGroups)
-            }
-        }
-
-        if !remoteLiveTargets.isEmpty {
-            let fetchedContents = await withTaskGroup(
-                of: (Int, String?).self,
-                returning: [(Int, String)].self
-            ) { group in
-                for target in remoteLiveTargets {
-                    group.addTask {
-                        do {
-                            let content = try await NetworkManager.shared.getString(
-                                from: target.url,
-                                headers: target.headers.isEmpty ? nil : target.headers
-                            )
-                            return (target.order, content)
-                        } catch {
-                            print("加载直播源失败: \(target.url), error: \(error)")
-                            return (target.order, nil)
-                        }
-                    }
-                }
-
-                var results: [(Int, String)] = []
-                for await (order, content) in group {
-                    if let content {
-                        results.append((order, content))
-                    }
-                }
-                return results
-            }
-
-            for (order, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
-                guard activeLoadToken == loadToken else { return [] }
-                let target = remoteLiveTargets.first(where: { $0.order == order })
-                let groups = parseLiveContent(
-                    content,
-                    defaultHeaders: target?.headers ?? [:],
-                    defaultEpgUrl: target?.epgUrl ?? "",
-                    parsePasswordGroups: target?.parsePasswordGroups ?? true
-                )
                 mergeLiveGroups(groups, into: &mergedGroups)
                 liveChannelGroupList = sortedGroups(from: mergedGroups)
+            } catch {
+                print("加载直播源失败: \(resolvedUrl), error: \(error)")
             }
         }
 
         return sortedGroups(from: mergedGroups)
+    }
+
+    func setHomeLiveSource(_ option: LiveSourceOption) {
+        guard liveSourceOptions.contains(option) else { return }
+        UserDefaults.standard.set(option.name, forKey: HawkConfig.LIVE_HOME_SOURCE)
+        homeLiveSourceOption = option
+        guard let config = currentLiveConfig,
+              let apiUrl = currentLiveConfigUrl else {
+            return
+        }
+
+        let loadToken = activeLoadToken
+        liveParseTask?.cancel()
+        liveParseTask = Task { [config, apiUrl] in
+            let groups = await parseLives(config.lives ?? [], apiUrl: apiUrl, loadToken: loadToken)
+            guard activeLoadToken == loadToken else { return }
+            liveChannelGroupList = groups
+        }
+    }
+
+    private func preferredLiveSourceOption(in options: [LiveSourceOption]) -> LiveSourceOption? {
+        guard !options.isEmpty else { return nil }
+        if let saved = UserDefaults.standard.string(forKey: HawkConfig.LIVE_HOME_SOURCE),
+           let found = options.first(where: { $0.name == saved }) {
+            return found
+        }
+        if let current = homeLiveSourceOption,
+           let found = options.first(where: { $0.name == current.name }) {
+            return found
+        }
+        return options.first
+    }
+
+    private static func liveSourceOptions(
+        from lives: [AppConfigData.LiveConfig],
+        baseConfigUrl: String
+    ) -> [LiveSourceOption] {
+        lives.enumerated().map { index, live in
+            let name = liveSourceName(for: live, index: index, baseConfigUrl: baseConfigUrl)
+            return LiveSourceOption(
+                id: "\(index)|\(name)",
+                name: name,
+                index: index,
+                url: live.url?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+            )
+        }
+    }
+
+    private static func liveSourceName(
+        for live: AppConfigData.LiveConfig,
+        index: Int,
+        baseConfigUrl: String
+    ) -> String {
+        if let name = live.name?.nilIfBlank { return name }
+        if let url = live.url?.nilIfBlank,
+           let parsedURL = URL(string: url, relativeTo: URL(string: baseConfigUrl))?.absoluteURL {
+            let lastPath = parsedURL.deletingPathExtension().lastPathComponent
+            if !lastPath.isEmpty, lastPath != "/" { return lastPath }
+            if let host = parsedURL.host, !host.isEmpty { return host }
+        }
+        return "直播源 \(index + 1)"
     }
 
     private struct LiveChannelMetadata {

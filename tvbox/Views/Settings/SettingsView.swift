@@ -39,6 +39,7 @@ struct SettingsView: View {
         case none
         case vodPlayer
         case livePlayer
+        case liveSource
         case decode
         case vlcBuffer
         case playTimeStep
@@ -64,6 +65,16 @@ struct SettingsView: View {
                             value: viewModel.liveApiUrl.isEmpty ? "跟随点播接口" : viewModel.liveApiUrl
                         ) {
                             activeApiInputType = .live
+                        }
+                        if apiConfig.liveSourceOptions.count > 1 {
+                            Divider().background(Color.white.opacity(0.1))
+                            SettingsRow(
+                                icon: "dot.radiowaves.left.and.right",
+                                title: "主页直播源",
+                                value: apiConfig.homeLiveSourceOption?.name ?? ""
+                            ) {
+                                showingPicker = .liveSource
+                            }
                         }
                         Divider().background(Color.white.opacity(0.1))
                         if !apiConfig.sourceBeanList.isEmpty {
@@ -221,6 +232,19 @@ struct SettingsView: View {
                 itemTitle: { $0.title },
                 onSelect: { engine in
                     viewModel.setLivePlayerEngine(engine)
+                    showingPicker = .none
+                },
+                onCancel: { showingPicker = .none }
+            )
+        case .liveSource:
+            SelectionModal(
+                title: "选择直播源",
+                icon: "tv.fill",
+                items: apiConfig.liveSourceOptions,
+                selectedItem: apiConfig.homeLiveSourceOption,
+                itemTitle: { $0.name },
+                onSelect: { option in
+                    apiConfig.setHomeLiveSource(option)
                     showingPicker = .none
                 },
                 onCancel: { showingPicker = .none }
