@@ -25,6 +25,7 @@ struct BridgePlayback: Hashable {
     let headers: [String: String]
     let fallbackURL: String?
     let proxied: Bool
+    let startPosition: TimeInterval?
     let format: String?
     let parse: Int?
     let flag: String?
@@ -269,6 +270,7 @@ struct BridgePlayResponse: Decodable {
     let fallbackUrl: String?
     let headers: [String: String]?
     let proxied: Bool?
+    let startPosition: TimeInterval?
     let format: String?
     let parse: Int?
     let flag: String?
@@ -297,6 +299,7 @@ struct BridgePlayResponse: Decodable {
         case headers
         case header
         case proxied
+        case position
         case format
         case parse
         case jx
@@ -334,6 +337,7 @@ struct BridgePlayResponse: Decodable {
         fallbackUrl = try Self.decodeFirstString(from: container, keys: [.fallbackUrl, .fallbackURL])
         headers = try Self.decodeFirstStringMap(from: container, keys: [.headers, .header])
         proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
+        startPosition = try Self.decodeAndroidPositionSeconds(from: container, key: .position)
         format = try container.decodeIfPresent(String.self, forKey: .format)
         parse = try container.decodeIfPresent(Int.self, forKey: .parse)
             ?? container.decodeIfPresent(Int.self, forKey: .jx)
@@ -369,6 +373,23 @@ struct BridgePlayResponse: Decodable {
             }
         }
         return nil
+    }
+
+    private static func decodeAndroidPositionSeconds(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        key: CodingKeys
+    ) throws -> TimeInterval? {
+        let rawPosition: Double?
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+            rawPosition = value
+        } else if let value = try? container.decodeIfPresent(String.self, forKey: key),
+                  let numericValue = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            rawPosition = numericValue
+        } else {
+            rawPosition = nil
+        }
+        guard let rawPosition, rawPosition.isFinite, rawPosition >= 0 else { return nil }
+        return rawPosition / 1000
     }
 
     private static func decodeFirstStringMap(
@@ -734,6 +755,7 @@ final class BridgeClient {
             headers: PlaybackHTTPHeaders.normalized(response.headers),
             fallbackURL: fallbackURL?.isEmpty == false ? fallbackURL : nil,
             proxied: response.proxied == true,
+            startPosition: response.startPosition,
             format: response.format?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
             parse: response.parse,
             flag: response.flag?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,

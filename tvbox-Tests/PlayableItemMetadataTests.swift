@@ -97,6 +97,7 @@ struct BridgeDRMDecodingTests {
         {
           "ok": true,
           "url": "https://media.example.com/video.m3u8",
+          "position": 90000,
           "jx": 1,
           "header": {
             "User-Agent": "Android TVBox"
@@ -126,6 +127,7 @@ struct BridgeDRMDecodingTests {
         let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
 
         #expect(response.isPlayableMode)
+        #expect(response.startPosition == 90)
         #expect(response.parse == 1)
         #expect(response.headers?["User-Agent"] == "Android TVBox")
         #expect(response.subtitles?.first?.url == "https://media.example.com/sub.srt")

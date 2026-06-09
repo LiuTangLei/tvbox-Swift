@@ -437,6 +437,13 @@ class DetailViewModel: ObservableObject {
         playHeaders = playback?.headers ?? [:]
     }
 
+    private func applyBridgeStartPosition(_ startPosition: TimeInterval?) {
+        guard let startPosition, startPosition.isFinite else { return }
+        let normalizedSeconds = max(startPosition, 0)
+        resumeSeconds = normalizedSeconds
+        realtimeProgressSeconds = normalizedSeconds
+    }
+
     private func directPlayableItem(url: String, episodeURL: String, flag: String) -> PlayableItem {
         PlayableItem(
             url: url,
@@ -515,6 +522,7 @@ class DetailViewModel: ObservableObject {
                 bridgePlaybackMessage = nil
                 bridgeMediaFallbackURL = playback.fallbackURL
                 isUsingBridgeMediaFallback = false
+                applyBridgeStartPosition(playback.startPosition)
                 advancePlaybackReloadToken()
                 applyPlayback(bridgePlayableItem(from: playback, source: source, episodeURL: episodeURL, flag: flag))
                 isPlaying = true
