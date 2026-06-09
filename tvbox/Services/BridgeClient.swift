@@ -290,6 +290,8 @@ struct BridgePlayResponse: Decodable {
         case ok
         case mode
         case url
+        case realUrl
+        case playUrl
         case fallbackUrl
         case fallbackURL
         case headers
@@ -308,6 +310,7 @@ struct BridgePlayResponse: Decodable {
         case drm
         case code
         case message
+        case msg
         case prompt
         case image
         case width
@@ -320,7 +323,14 @@ struct BridgePlayResponse: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
         mode = try container.decodeIfPresent(String.self, forKey: .mode)
-        url = try container.decodeIfPresent(String.self, forKey: .url)
+        let rawUrl = try Self.decodeFirstString(from: container, keys: [.url, .realUrl])
+        let playUrlPrefix = try Self.decodeFirstString(from: container, keys: [.playUrl])
+        if let playUrlPrefix = playUrlPrefix?.nilIfBlank,
+           let rawUrl = rawUrl?.nilIfBlank {
+            url = playUrlPrefix + rawUrl
+        } else {
+            url = rawUrl
+        }
         fallbackUrl = try Self.decodeFirstString(from: container, keys: [.fallbackUrl, .fallbackURL])
         headers = try Self.decodeFirstStringMap(from: container, keys: [.headers, .header])
         proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
@@ -333,8 +343,8 @@ struct BridgePlayResponse: Decodable {
         subtitles = try Self.decodeFirstArray(from: container, keys: [.subtitles, .subs])
         danmakus = try Self.decodeFirstArray(from: container, keys: [.danmakus, .danmaku])
         drm = try container.decodeIfPresent(BridgePlaybackDRM.self, forKey: .drm)
-        code = try container.decodeIfPresent(String.self, forKey: .code)
-        message = try container.decodeIfPresent(String.self, forKey: .message)
+        code = try Self.decodeFirstString(from: container, keys: [.code])
+        message = try Self.decodeFirstString(from: container, keys: [.message, .msg])
         prompt = try container.decodeIfPresent(BridgeTokenPrompt.self, forKey: .prompt)
         image = try container.decodeIfPresent(String.self, forKey: .image)
         width = try container.decodeIfPresent(Double.self, forKey: .width)
@@ -348,8 +358,14 @@ struct BridgePlayResponse: Decodable {
         keys: [CodingKeys]
     ) throws -> String? {
         for key in keys {
-            if let value = try container.decodeIfPresent(String.self, forKey: key) {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
                 return value
+            }
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return String(value)
+            }
+            if let value = try? container.decodeIfPresent(Double.self, forKey: key) {
+                return String(value)
             }
         }
         return nil

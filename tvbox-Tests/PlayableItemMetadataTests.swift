@@ -147,4 +147,36 @@ struct BridgeDRMDecodingTests {
 
         #expect(!response.isPlayableMode)
     }
+
+    @Test("Bridge play response accepts Android numeric code and msg")
+    func bridgePlayResponseAcceptsAndroidNumericCodeAndMsg() throws {
+        let data = Data("""
+        {
+          "ok": false,
+          "mode": "message",
+          "code": 1001,
+          "msg": "解析失败"
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(response.code == "1001")
+        #expect(response.message == "解析失败")
+    }
+
+    @Test("Bridge play response combines Android playUrl prefix")
+    func bridgePlayResponseCombinesAndroidPlayUrlPrefix() throws {
+        let data = Data("""
+        {
+          "ok": true,
+          "playUrl": "https://parser.example.com/?url=",
+          "url": "https://origin.example.com/video"
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(response.url == "https://parser.example.com/?url=https://origin.example.com/video")
+    }
 }
