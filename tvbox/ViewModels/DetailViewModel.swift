@@ -471,6 +471,7 @@ class DetailViewModel: ObservableObject {
             danmakus: playback.danmakus.compactMap {
                 PlayableDanmaku(name: $0.name, url: $0.url)
             },
+            drm: playback.drm,
             origin: .bridge
         )
     }

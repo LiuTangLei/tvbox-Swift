@@ -32,6 +32,7 @@ struct BridgePlayback: Hashable {
     let expiresAt: TimeInterval?
     let subtitles: [BridgePlaybackSubtitle]
     let danmakus: [BridgePlaybackDanmaku]
+    let drm: PlayableDRM?
 }
 
 struct BridgePlaybackSubtitle: Decodable, Hashable {
@@ -45,6 +46,83 @@ struct BridgePlaybackSubtitle: Decodable, Hashable {
 struct BridgePlaybackDanmaku: Decodable, Hashable {
     let name: String?
     let url: String?
+}
+
+struct BridgePlaybackDRM: Decodable, Hashable {
+    let key: String?
+    let type: String?
+    let header: [String: String]?
+    let forceKey: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case license
+        case licenseURL
+        case licenseUrl
+        case drmLicense
+        case type
+        case scheme
+        case drmScheme
+        case header
+        case headers
+        case forceKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try Self.decodeFirstString(
+            from: container,
+            keys: [.key, .license, .licenseURL, .licenseUrl, .drmLicense]
+        )
+        type = try Self.decodeFirstString(
+            from: container,
+            keys: [.type, .scheme, .drmScheme]
+        )
+        header = try Self.decodeFirstStringMap(
+            from: container,
+            keys: [.header, .headers]
+        )
+        forceKey = try container.decodeIfPresent(Bool.self, forKey: .forceKey)
+    }
+
+    private static func decodeFirstString(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> String? {
+        for key in keys {
+            if let value = try container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFirstStringMap(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> [String: String]? {
+        for key in keys {
+            if let value = try container.decodeIfPresent([String: String].self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    var playableDRM: PlayableDRM? {
+        let normalizedKey = key?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let normalizedType = type?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        let normalizedHeader = PlaybackHTTPHeaders.normalized(header)
+        guard normalizedKey != nil || normalizedType != nil || !normalizedHeader.isEmpty || forceKey == true else {
+            return nil
+        }
+        return PlayableDRM(
+            scheme: normalizedType,
+            licenseURL: normalizedKey,
+            headers: normalizedHeader,
+            forceKey: forceKey == true
+        )
+    }
 }
 
 enum PlaybackHTTPHeaders {
@@ -198,6 +276,7 @@ struct BridgePlayResponse: Decodable {
     let expiresAt: TimeInterval?
     let subtitles: [BridgePlaybackSubtitle]?
     let danmakus: [BridgePlaybackDanmaku]?
+    let drm: BridgePlaybackDRM?
     let code: String?
     let message: String?
     let prompt: BridgeTokenPrompt?
@@ -511,7 +590,7 @@ final class BridgeClient {
         let payload = PlayRequest(flag: flag, id: id)
         let data = try await requestRegistered(source: source, path: "/api/v1/site/\(escapePath(source.key))/play", method: "POST", body: payload)
         let response = try decoder.decode(BridgePlayResponse.self, from: data)
-        bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) proxied=\(response.proxied == true, privacy: .public) hasFallback=\((response.fallbackUrl?.isEmpty == false), privacy: .public) code=\(response.code ?? "", privacy: .public)")
+        bridgeClientLogger.info("play response source=\(source.key, privacy: .public) ok=\(response.ok == true, privacy: .public) mode=\(response.mode ?? "", privacy: .public) proxied=\(response.proxied == true, privacy: .public) hasFallback=\((response.fallbackUrl?.isEmpty == false), privacy: .public) hasDRM=\((response.drm?.playableDRM != nil), privacy: .public) code=\(response.code ?? "", privacy: .public)")
         if response.containsJarUiSnapshot {
             throw BridgeError.jarUiRequired(BridgeJarUiResponse(playResponse: response))
         }
@@ -536,7 +615,8 @@ final class BridgeClient {
             jxFrom: response.jxFrom?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank,
             expiresAt: response.expiresAt,
             subtitles: response.subtitles ?? [],
-            danmakus: response.danmakus ?? []
+            danmakus: response.danmakus ?? [],
+            drm: response.drm?.playableDRM
         )
     }
 

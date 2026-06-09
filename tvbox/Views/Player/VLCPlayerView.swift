@@ -1447,6 +1447,14 @@ struct VLCVodPlayerView: View {
                 LoadingSpeedOverlay()
             }
 
+            if let message = playback?.drm?.unsupportedPlaybackMessage(mediaName: "视频") {
+                DRMPlaybackWarningBanner(message: message)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 18)
+                    .padding(.horizontal, 16)
+                    .allowsHitTesting(false)
+            }
+
             if let osdIcon = osdIcon {
                 Image(systemName: osdIcon)
                     .font(.system(size: 60, weight: .semibold))

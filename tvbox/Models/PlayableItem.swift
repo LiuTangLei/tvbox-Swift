@@ -170,4 +170,8 @@ struct PlayableDRM: Codable, Hashable {
     var displayName: String {
         scheme?.nilIfBlank ?? "DRM"
     }
+
+    func unsupportedPlaybackMessage(mediaName: String) -> String {
+        "当前\(mediaName)包含 \(displayName) DRM，Swift 播放器暂不支持 DRM 解密，可能无法播放。"
+    }
 }

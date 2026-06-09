@@ -267,7 +267,7 @@ class LiveViewModel: ObservableObject {
 
     var currentDRMPlaybackWarning: String? {
         guard let drm = currentPlayback?.drm else { return nil }
-        return "当前直播包含 \(drm.displayName) DRM，Swift 播放器暂不支持 DRM 解密，可能无法播放。"
+        return drm.unsupportedPlaybackMessage(mediaName: "直播")
     }
 
     func canPlayCatchup(_ epg: Epginfo) -> Bool {

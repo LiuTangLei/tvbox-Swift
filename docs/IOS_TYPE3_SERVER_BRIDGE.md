@@ -140,7 +140,7 @@ type3-bridge-server/
 - `SourceBean.isSupportedInSwift` 改为：`type=0/1/4` 本地支持，`type=3` 在 Bridge 可用时显示为“服务端支持”。
 - `SourceService` 遇到 `type=3` 时调用 Bridge API，不再本地解析。
 - `DetailViewModel` 播放前调用 Bridge `play`，接收直连或代理 URL。
-- `PlayerView` 第一阶段仍可继续用 `urlString`，先把 headers/DRM/字幕等复杂字段留给下一阶段 `PlayableItem`。
+- `DetailViewModel` / `PlayerView` 使用 `PlayableItem` 承接 Bridge 播放结果，已接 URL、headers、format、字幕、弹幕、DRM 元数据，播放器能力按内核逐步消费。
 
 ## 5. 架构流程
 
@@ -323,7 +323,7 @@ iOS 选择剧集 URL
 }
 ```
 
-第一版 iOS 仍以 `urlString` 播放，因此 `acceptHeaders` 可以先为 `false`。如果直连必须依赖 headers，而当前播放器不能稳定传递 headers，服务端应自动降级为 `mode=proxy`。
+Swift 端已用 `PlayableItem` 承接 headers，直连仍要按播放器内核能力判断；如果直连依赖当前内核无法稳定消费的能力，服务端仍应降级为 `mode=proxy` 或返回明确原因。
 
 服务端内部可以直接复用 Android `Result`，但对 iOS 返回时要稳定映射字段：Android 原字段是 `header`、`subs`、`danmaku`、`drm`，Bridge DTO 可以对外命名为 `headers`、`subtitles`、`danmakus`、`drm`，但映射关系必须固定并写测试。
 
@@ -513,12 +513,10 @@ Bridge Server (Android 进程)
 | `tvbox/Services/ApiConfig.swift` | 配置加载时保留 `type=3` 源；把 `SiteConfig.jar` 和顶层 `spider` fallback 写入 Bridge 注册 DTO；Bridge 未配置时 UI 标记不可用，不隐藏数据 |
 | `tvbox/Services/BridgeClient.swift` | 新增轻量客户端，封装 register/home/category/detail/search/play |
 | `tvbox/Services/SourceService.swift` | 遇到 `type=3` 分派到 `BridgeClient`，其它类型保持原逻辑 |
-| `tvbox/ViewModels/DetailViewModel.swift` | 播放 `type=3` 剧集前调用 Bridge `play`，把返回 URL 放进现有 `playUrl` |
+| `tvbox/ViewModels/DetailViewModel.swift` | 播放 `type=3` 剧集前调用 Bridge `play`，把返回 URL、headers、format、字幕、弹幕、DRM 映射进 `PlayableItem` |
 | `tvbox/Views/Settings/SettingsView.swift` | 增加 Bridge Server 地址、测试连接、启用开关 |
 
-暂不强制做 `PlayableItem`，因为这会牵动播放器入参、headers、字幕、DRM 和直播链路。第一版让服务端在需要 headers 时自动代理，iOS 仍播放普通 URL。
-
-第二阶段再把 Bridge 返回的 `headers`、`subtitles`、`danmakus`、`drm` 接入未来的 `PlayableItem`。
+`PlayableItem` 已落地，服务端返回的 `headers`、`subtitles`、`danmakus`、`drm` 会进入 Swift 播放对象。仍需继续补播放器能力矩阵，尤其是 DRM 解密、弹幕渲染和复杂字幕格式。
 
 ## 11. 部署与发现
 
@@ -645,10 +643,10 @@ docker start type3-android-emulator
 - 复用 `PyLoader`（chaquopy），保留 `from com.github.catvod import Proxy` 类桥接。
 - 对 Py/QuickJS 源接入同一套 Bridge API。
 
-### Phase 4：能力回填 iOS
+### Phase 4：能力回填 Swift 播放器
 
-- 引入 `PlayableItem`。
-- iOS 支持 headers、字幕、弹幕、DRM 元数据。
+- 继续扩展 `PlayableItem` 消费路径。
+- Swift 播放器支持 headers、字幕、弹幕、DRM 元数据的完整能力矩阵。
 - Bridge 返回更丰富播放信息；可直连的场景减少代理流量。
 
 ## 14. 优先级建议

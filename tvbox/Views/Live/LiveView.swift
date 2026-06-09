@@ -241,10 +241,11 @@ struct LiveView: View {
             }
 
             if !showLiveGroupUnlockPanel, let message = viewModel.currentDRMPlaybackWarning {
-                drmWarningBanner(message)
+                DRMPlaybackWarningBanner(message: message)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .padding(.top, 74)
                     .padding(.horizontal, 16)
+                    .allowsHitTesting(false)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -457,28 +458,6 @@ struct LiveView: View {
         }
     }
 
-    private func drmWarningBanner(_ message: String) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: "lock.shield.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.orange)
-            Text(message)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.white.opacity(0.86))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Color.black.opacity(0.48), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.orange.opacity(0.28), lineWidth: 0.8)
-        )
-        .frame(maxWidth: 520)
-        .allowsHitTesting(false)
-    }
-    
     #if os(iOS)
     private var liveBackButton: some View {
         Button {
