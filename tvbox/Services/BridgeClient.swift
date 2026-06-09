@@ -286,6 +286,97 @@ struct BridgePlayResponse: Decodable {
     let elements: [BridgeUiElement]?
     let toast: BridgeTransientOverlay?
 
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case mode
+        case url
+        case fallbackUrl
+        case fallbackURL
+        case headers
+        case header
+        case proxied
+        case format
+        case parse
+        case flag
+        case jxFrom
+        case expiresAt
+        case subtitles
+        case subs
+        case danmakus
+        case danmaku
+        case drm
+        case code
+        case message
+        case prompt
+        case image
+        case width
+        case height
+        case elements
+        case toast
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        url = try container.decodeIfPresent(String.self, forKey: .url)
+        fallbackUrl = try Self.decodeFirstString(from: container, keys: [.fallbackUrl, .fallbackURL])
+        headers = try Self.decodeFirstStringMap(from: container, keys: [.headers, .header])
+        proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
+        format = try container.decodeIfPresent(String.self, forKey: .format)
+        parse = try container.decodeIfPresent(Int.self, forKey: .parse)
+        flag = try container.decodeIfPresent(String.self, forKey: .flag)
+        jxFrom = try container.decodeIfPresent(String.self, forKey: .jxFrom)
+        expiresAt = try container.decodeIfPresent(TimeInterval.self, forKey: .expiresAt)
+        subtitles = try Self.decodeFirstArray(from: container, keys: [.subtitles, .subs])
+        danmakus = try Self.decodeFirstArray(from: container, keys: [.danmakus, .danmaku])
+        drm = try container.decodeIfPresent(BridgePlaybackDRM.self, forKey: .drm)
+        code = try container.decodeIfPresent(String.self, forKey: .code)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        prompt = try container.decodeIfPresent(BridgeTokenPrompt.self, forKey: .prompt)
+        image = try container.decodeIfPresent(String.self, forKey: .image)
+        width = try container.decodeIfPresent(Double.self, forKey: .width)
+        height = try container.decodeIfPresent(Double.self, forKey: .height)
+        elements = try container.decodeIfPresent([BridgeUiElement].self, forKey: .elements)
+        toast = try container.decodeIfPresent(BridgeTransientOverlay.self, forKey: .toast)
+    }
+
+    private static func decodeFirstString(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> String? {
+        for key in keys {
+            if let value = try container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFirstStringMap(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> [String: String]? {
+        for key in keys {
+            if let value = try container.decodeIfPresent([String: String].self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func decodeFirstArray<T: Decodable>(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) throws -> [T]? {
+        for key in keys {
+            if let value = try container.decodeIfPresent([T].self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
+
     var containsJarUiSnapshot: Bool {
         image?.isEmpty == false || elements?.isEmpty == false
     }

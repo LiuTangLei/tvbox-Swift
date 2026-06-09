@@ -90,4 +90,44 @@ struct BridgeDRMDecodingTests {
         #expect(drm.licenseURL == "https://license.example.com/clearkey")
         #expect(drm.headers["X-License"] == "ok")
     }
+
+    @Test("Bridge play response accepts Android Result field names")
+    func bridgePlayResponseAcceptsAndroidResultFieldNames() throws {
+        let data = Data("""
+        {
+          "ok": true,
+          "mode": "direct",
+          "url": "https://media.example.com/video.m3u8",
+          "header": {
+            "User-Agent": "Android TVBox"
+          },
+          "subs": [
+            {
+              "url": "https://media.example.com/sub.srt",
+              "name": "Chinese",
+              "lang": "zh",
+              "format": "application/x-subrip",
+              "flag": 1
+            }
+          ],
+          "danmaku": [
+            {
+              "name": "Danmaku",
+              "url": "https://media.example.com/danmaku.xml"
+            }
+          ],
+          "drm": {
+            "key": "https://license.example.com/widevine",
+            "type": "widevine"
+          }
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(response.headers?["User-Agent"] == "Android TVBox")
+        #expect(response.subtitles?.first?.url == "https://media.example.com/sub.srt")
+        #expect(response.danmakus?.first?.url == "https://media.example.com/danmaku.xml")
+        #expect(response.drm?.playableDRM?.scheme == "widevine")
+    }
 }
