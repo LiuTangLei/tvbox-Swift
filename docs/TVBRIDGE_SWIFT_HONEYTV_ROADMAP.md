@@ -74,7 +74,7 @@ Swift 端当前已经接入了 Bridge 的主路径：
 | VOD 浏览与筛选 | 分类、分页、筛选、文件夹已有基础 | 主要在 Swift 端补 | 热门词、源级搜索开关、action 入口一致性、复杂字段展示 | P1 |
 | 播放器 | AVPlayer/VLC 可播 URL，已有内嵌音轨/字幕部分能力 | Bridge 只能给数据，播放器需 Swift 补 | headers/DRM/subtitle/danmaku 入参、外挂字幕、轨道偏好、片头片尾、外部播放器、媒体会话 | P0/P1 |
 | 弹幕与字幕 | 内嵌轨和字幕样式有基础 | Bridge 可返回字段，渲染需 Swift | 弹幕模型/overlay、远程外挂字幕、ASS/SSA/SRT/VTT 管理 | P2 |
-| 直播 | Swift 有基础 m3u/txt 分组和播放 | 需要新增 Bridge live API | XMLTV EPG、catchup、直播 headers/DRM、台标/频道号、收藏/隐藏/密码分组 | P1/P2 |
+| 直播 | Swift 已有 m3u/txt 分组播放、XMLTV EPG、catchup、headers、台标/频道号和收藏 | 需要新增 Bridge live API | 直播 DRM、隐藏/密码分组、直播源历史和主页源管理 | P1/P2 |
 | 本地 HTTP 服务/远控 | Android 有 Nano 服务，Swift 无本地 server | 不能只靠 TVBridge | Swift 本地 server、Web 控制台、push/search/control/media/upload/sync | P2 |
 | DLNA/投屏 | Swift 缺失 | 需 Swift 原生或桥接扩展 | DLNA sender/renderer、UPnP 发现、AVTransport 控制 | P3 |
 | 数据同步与备份 | Swift 有 SwiftData 基础历史/收藏 | 主要 Swift 补 | 备份包、恢复、跨设备同步、与 Android/Bridge 数据交换 | P2 |
@@ -116,8 +116,8 @@ Swift 端当前已经接入了 Bridge 的主路径：
 目标：从“点播可用”扩展到蜂蜜 TV 的核心日常能力。
 
 - 新增 Bridge live API：直播配置注册、频道列表、`liveContent`、直播代理、headers/DRM/catchup 元数据返回。
-- Swift 直播模型扩展：`tvg-id`、`tvg-name`、`tvg-logo`、频道号、headers、DRM、format、catchup、epgUrl。
-- XMLTV/EPG 服务：今日/昨日/明日缓存、当前节目定位、节目单 UI、回看 URL 生成。
+- Swift 直播模型扩展：补 DRM/ClearKey、隐藏/密码分组、直播源历史和主页直播源管理。
+- XMLTV/EPG 服务：继续完善多日缓存策略、日期导航体验和不同源格式兼容性。
 - 字幕管理：远程/本地 SRT、VTT，样式、延迟、编码；ASS/SSA 评估 libass 或降级。
 - 弹幕管理：Bridge 返回 danmaku 字段，Swift 实现弹幕解析和 overlay。
 - Swift 本地 HTTP server：`/device`、`/media`、`/action?do=push/control/search`、`/upload`、历史/收藏同步。

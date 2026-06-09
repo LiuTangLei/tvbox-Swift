@@ -677,7 +677,28 @@ struct LiveView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.top, 9)
+            .padding(.bottom, 7)
+
+            if !viewModel.epgDates.isEmpty {
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { viewModel.selectedEpgDateIndex },
+                        set: { viewModel.selectEpgDate($0) }
+                    )
+                ) {
+                    ForEach(viewModel.epgDates) { date in
+                        Text(date.datePresent)
+                            .tag(date.index)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
 
             if viewModel.epgList.isEmpty {
                 Text(viewModel.isLoading ? "加载中" : "暂无节目单")

@@ -28,7 +28,7 @@ Swift 端已经不是空壳，当前基础能力包括：
 - 源类型：显式支持 `type=0` XML、`type=1` JSON、`type=4` Remote，过滤 `type=3`，见 `tvbox/Models/SourceBean.swift` 与 `tvbox/Services/SourceService.swift`。
 - 点播：有首页分类、分页列表、详情、线路/剧集、HLS master 清晰度解析、播放历史续播和收藏，见 `HomeViewModel.swift`、`DetailViewModel.swift`、`CacheStore.swift`。
 - 搜索：支持多源并发搜索、搜索历史，见 `SearchViewModel.swift`。
-- 直播：能解析基础 m3u/txt 和内嵌频道，支持分组、频道、多线路与 AVPlayer/VLC 播放，见 `LiveModels.swift`、`LiveViewModel.swift`、`LiveView.swift`。
+- 直播：能解析 m3u/txt 和内嵌频道，支持分组、频道、多线路、请求头、XMLTV EPG、回看、频道收藏、最近频道恢复与 AVPlayer/VLC 播放，见 `LiveModels.swift`、`XMLTVService.swift`、`LiveViewModel.swift`、`LiveView.swift`。
 - 播放器：提供系统 AVPlayer 和 VLC 两种内核，VLC 有缓存策略、软硬解设置、播放速度、音量和直播失败回调，见 `PlayerEngine.swift` 与 `VLCPlayerView.swift`。
 - 持久化：用 SwiftData 存收藏、播放历史和通用缓存，见 `CacheStore.swift`。
 - 平台：已有 iOS 与 macOS target，未见 tvOS target，见 `project.yml`。
@@ -42,7 +42,7 @@ Swift 端已经不是空壳，当前基础能力包括：
 | 播放解析与协议提取 | 明显缺失 | WebView 嗅探、解析接口、`.strm`、push/video、Thunder、TVBus、YouTube 提取 | ParseManager、Web 嗅探、特殊协议 extractor、播放请求头/DRM/字幕弹幕模型 | 高 |
 | 播放器高级控制 | 部分可用 | ExoPlayer/Media3 服务、音轨/字幕轨、外挂字幕、DRM、片头片尾、外部播放器、媒体会话 | 轨道选择、外挂字幕、DRM/ClearKey、请求头传递、片头片尾跳过、系统媒体控制 | 高 |
 | 弹幕与字幕体验 | 基础不足 | 弹幕加载/选择/渲染、字幕大小/位置、SRT/SSA/ASS/VTT 文件选择 | Danmaku 层、外挂字幕解析、字幕样式与位置控制 | 中高 |
-| 直播高级能力 | 基础可用 | EPG/XMLTV、回看 catchup、直播头/UA/DRM、频道收藏、密码分组、直播源历史 | EPG 加载展示、回看、频道收藏、扩展属性解析、直播源切换历史 | 高 |
+| 直播高级能力 | 基础可用，EPG/回看/收藏已接入 | EPG/XMLTV、回看 catchup、直播头/UA/DRM、频道收藏、密码分组、直播源历史 | DRM/ClearKey、隐藏/密码分组、直播源历史和主页直播源管理、更多播放控制 | 高 |
 | 局域网服务与远程控制 | 缺失 | 内置 NanoHTTPD，支持推送、搜索、设置、遥控、媒体状态、上传/下载、同步 | 本地 HTTP server、Web 控制台、局域网文件管理、远程推送/遥控 | 高 |
 | DLNA 投屏/接收 | 缺失 | 移动端投屏发送，TV 端 DLNA Renderer 接收 | DLNA/UPnP 发现、投屏发送、接收端 Renderer、AVTransport 控制 | 中高 |
 | 数据同步与备份 | 基础历史/收藏 | Room 多实体、配置/历史/收藏/轨道/设备，自动备份、设备同步 | 备份包、恢复、设备发现同步、轨道/设置/直播收藏持久化 | 高 |
@@ -208,24 +208,23 @@ Android 端能力：
 
 Swift 端状态：
 
-- `ApiConfig.parseLiveContent` 支持基础 m3u/txt 和内嵌 channels。
-- `LiveViewModel` 有分组、频道、多线路和 EPG 预留字段。
-- `LiveView` 有频道抽屉、当前频道信息、VLC/AVPlayer 播放和部分失败切线逻辑。
+- `ApiConfig.parseLiveContent` 支持 m3u/txt 和内嵌 channels，并已解析 `tvg-url`、`tvg-id`、`tvg-logo`、频道号、UA/header、format、catchup 等常用直播扩展属性。
+- `XMLTVService` 支持 JSON EPG、XMLTV、gzip XMLTV、六小时缓存和昨天/今天/明天日期窗口。
+- `LiveViewModel` 有分组、频道、多线路、EPG 日期切换、回看播放、频道收藏和最近频道恢复。
+- `LiveView` 有频道抽屉、当前频道信息、节目单列表、回看入口、VLC/AVPlayer 播放和部分失败切线逻辑。
 
 主要缺口：
 
-- 基础 m3u 可用，但扩展属性解析不足：EPG URL、台标、频道号、UA/header、catchup、DRM、format、origin/referer 未完整进入模型和播放请求。
-- EPG 只预留 `epgList`，没有 XMLTV 加载、日期切换、当前节目定位和展示。
-- 没有回看/catchup 播放。
-- 频道收藏、隐藏分组、密码分组、直播源历史和直播主页切换体验不足。
+- 直播 DRM/ClearKey 字段仍未进入播放器能力矩阵。
+- 隐藏分组、密码分组、直播源历史和直播主页切换体验不足。
 - 直播音轨/字幕轨/解码/比例等高级控制没有完整对齐 Android。
 
 建议拆分：
 
-1. 扩展 `LiveChannelItem`：加入 `tvgId`、`number`、`epgUrl`、`headers`、`drm`、`catchup`、`format`、`logo`。
-2. 实现 `XMLTVService`，拉取并缓存 EPG，优先支持今日节目单。
-3. 实现频道收藏和直播源历史。
-4. 把直播播放也切到 `PlayableItem`，与点播共享 headers/DRM/字幕/format 处理。
+1. 为直播补 DRM/ClearKey 模型和播放器降级提示。
+2. 实现隐藏分组、密码分组、直播源历史和主页直播源管理。
+3. 把直播播放也切到 `PlayableItem`，与点播共享 headers/DRM/字幕/format 处理。
+4. 补直播音轨/字幕轨/解码/比例等 Android 高级播放控制。
 
 ### 4.7 局域网服务、Web 控制台与设备同步
 

@@ -2,6 +2,50 @@ import Foundation
 import SwiftUI
 import Combine
 
+private enum LiveEpgDateOptions {
+    static let defaultIndex = 1
+
+    static func make(
+        selectedIndex: Int = defaultIndex,
+        anchorDate: Date = Date()
+    ) -> [LiveEpgDate] {
+        let clampedSelectedIndex = min(max(0, selectedIndex), 2)
+        let entries: [(label: String, offset: Int)] = [
+            ("昨天", -1),
+            ("今天", 0),
+            ("明天", 1)
+        ]
+        return entries.enumerated().compactMap { index, entry in
+            guard let date = Calendar.current.date(byAdding: .day, value: entry.offset, to: anchorDate) else {
+                return nil
+            }
+            return LiveEpgDate(
+                datePresent: entry.label,
+                date: dayString(from: date),
+                index: index,
+                isSelected: index == clampedSelectedIndex
+            )
+        }
+    }
+
+    static func date(from string: String) -> Date? {
+        dayFormatter.date(from: string)
+    }
+
+    static func dayString(from date: Date) -> String {
+        dayFormatter.string(from: date)
+    }
+
+    private static var dayFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+}
+
 /// 直播 ViewModel
 @MainActor
 class LiveViewModel: ObservableObject {
@@ -23,6 +67,10 @@ class LiveViewModel: ObservableObject {
     @Published var currentChannel: LiveChannelItem?
     /// 当前频道节目单。
     @Published var epgList: [Epginfo] = []
+    /// 可切换的 EPG 日期，默认匹配 Android 版昨天/今天/明天的窗口。
+    @Published var epgDates: [LiveEpgDate] = LiveEpgDateOptions.make()
+    /// 当前节目单日期索引。
+    @Published private(set) var selectedEpgDateIndex: Int = LiveEpgDateOptions.defaultIndex
     /// 当前回看播放覆盖；为空时播放实时直播。
     @Published private(set) var catchupPlayback: LiveCatchupPlayback?
     /// EPG 加载状态。
@@ -48,6 +96,7 @@ class LiveViewModel: ObservableObject {
     
     /// 加载直播频道
     func loadChannels() {
+        refreshEpgDatesIfNeeded()
         applyChannelGroups(ApiConfig.shared.liveChannelGroupList)
     }
     
@@ -134,10 +183,12 @@ class LiveViewModel: ObservableObject {
     }
 
     var currentEpg: Epginfo? {
-        epgList.first(where: \.isLive)
+        guard selectedEpgDateIndex == LiveEpgDateOptions.defaultIndex else { return nil }
+        return epgList.first(where: \.isLive)
     }
 
     var nextEpg: Epginfo? {
+        guard selectedEpgDateIndex == LiveEpgDateOptions.defaultIndex else { return nil }
         if let currentEpg,
            let currentIndex = epgList.firstIndex(of: currentEpg),
            currentIndex + 1 < epgList.count {
@@ -187,6 +238,16 @@ class LiveViewModel: ObservableObject {
     func returnToLive() {
         catchupPlayback = nil
     }
+
+    func selectEpgDate(_ index: Int) {
+        guard index >= 0, index < epgDates.count else { return }
+        guard selectedEpgDateIndex != index else { return }
+        selectedEpgDateIndex = index
+        epgDates = LiveEpgDateOptions.make(selectedIndex: index)
+        if let currentChannel {
+            loadEPG(for: currentChannel)
+        }
+    }
     
     /// 加载 EPG 节目单
     private func loadEPG(for channel: LiveChannelItem) {
@@ -201,24 +262,41 @@ class LiveViewModel: ObservableObject {
 
         isLoading = true
         let channelId = channel.id
+        let requestDateIndex = selectedEpgDateIndex
+        let requestDateString = epgDates[safe: requestDateIndex]?.date ?? LiveEpgDateOptions.dayString(from: Date())
+        let requestDate = LiveEpgDateOptions.date(from: requestDateString) ?? Date()
 
         epgLoadTask = Task { [weak self, channel] in
             do {
-                let programs = try await XMLTVService.shared.loadTodayPrograms(for: channel)
+                let programs = try await XMLTVService.shared.loadPrograms(for: channel, date: requestDate)
                 try Task.checkCancellation()
                 await MainActor.run {
-                    guard let self, self.currentChannel?.id == channelId else { return }
+                    guard let self,
+                          self.currentChannel?.id == channelId,
+                          self.selectedEpgDateIndex == requestDateIndex,
+                          self.epgDates[safe: requestDateIndex]?.date == requestDateString else {
+                        return
+                    }
                     self.epgList = programs
                     self.isLoading = false
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    guard let self, self.currentChannel?.id == channelId else { return }
+                    guard let self,
+                          self.currentChannel?.id == channelId,
+                          self.selectedEpgDateIndex == requestDateIndex else {
+                        return
+                    }
                     self.isLoading = false
                 }
             } catch {
                 await MainActor.run {
-                    guard let self, self.currentChannel?.id == channelId else { return }
+                    guard let self,
+                          self.currentChannel?.id == channelId,
+                          self.selectedEpgDateIndex == requestDateIndex,
+                          self.epgDates[safe: requestDateIndex]?.date == requestDateString else {
+                        return
+                    }
                     self.epgList = []
                     self.epgErrorMessage = error.localizedDescription
                     self.isLoading = false
@@ -547,6 +625,12 @@ class LiveViewModel: ObservableObject {
     private static func saveLastSelection(_ selection: LastChannelSelection) {
         guard let data = try? JSONEncoder().encode(selection) else { return }
         UserDefaults.standard.set(data, forKey: HawkConfig.LIVE_LAST_CHANNEL)
+    }
+
+    private func refreshEpgDatesIfNeeded() {
+        let currentToday = epgDates[safe: LiveEpgDateOptions.defaultIndex]?.date
+        guard currentToday != LiveEpgDateOptions.dayString(from: Date()) else { return }
+        epgDates = LiveEpgDateOptions.make(selectedIndex: selectedEpgDateIndex)
     }
 
     deinit {

@@ -24,7 +24,7 @@ actor XMLTVService {
 
     private var payloadCache: [String: CacheEntry] = [:]
 
-    func loadTodayPrograms(for channel: LiveChannelItem, date: Date = Date()) async throws -> [Epginfo] {
+    func loadPrograms(for channel: LiveChannelItem, date: Date) async throws -> [Epginfo] {
         let candidates = Self.epgCandidates(for: channel, date: date)
         guard !candidates.isEmpty else { return [] }
 
@@ -44,6 +44,10 @@ actor XMLTVService {
 
         if let lastError { throw lastError }
         return []
+    }
+
+    func loadTodayPrograms(for channel: LiveChannelItem, date: Date = Date()) async throws -> [Epginfo] {
+        try await loadPrograms(for: channel, date: date)
     }
 
     private func cachedPayload(for candidate: EPGCandidate) async throws -> String {
