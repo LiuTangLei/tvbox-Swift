@@ -15,6 +15,8 @@ class LiveViewModel: ObservableObject {
     @Published var currentChannel: LiveChannelItem?
     /// 当前频道节目单。
     @Published var epgList: [Epginfo] = []
+    /// 当前回看播放覆盖；为空时播放实时直播。
+    @Published private(set) var catchupPlayback: LiveCatchupPlayback?
     /// EPG 加载状态。
     @Published var isLoading = false
     /// EPG 加载错误，仅用于调试和轻量状态展示。
@@ -82,6 +84,7 @@ class LiveViewModel: ObservableObject {
     
     /// 切换线路
     func switchSource() {
+        catchupPlayback = nil
         // `currentChannel` 为值类型，调用 mutating 方法会触发 @Published 重新发布。
         currentChannel?.nextSource()
     }
@@ -104,6 +107,47 @@ class LiveViewModel: ObservableObject {
         }
         let now = Date().timeIntervalSince1970
         return epgList.first { $0.startTimestamp > now }
+    }
+
+    var isPlayingCatchup: Bool {
+        catchupPlayback != nil
+    }
+
+    var currentPlaybackURL: String? {
+        catchupPlayback?.url ?? currentChannel?.currentUrl
+    }
+
+    var currentPlaybackHeaders: [String: String] {
+        catchupPlayback?.headers ?? currentChannel?.currentHeaders ?? [:]
+    }
+
+    var currentPlaybackIdentifier: String {
+        if let catchupPlayback {
+            let headerKey = catchupPlayback.headers
+                .map { ($0.key.lowercased(), $0.value) }
+                .sorted { $0.0 < $1.0 }
+                .map { "\($0.0):\($0.1)" }
+                .joined(separator: "\n")
+            return ["catchup", catchupPlayback.url, headerKey, catchupPlayback.epg.id].joined(separator: "\n")
+        }
+        return currentChannel?.currentPlaybackIdentifier ?? ""
+    }
+
+    func canPlayCatchup(_ epg: Epginfo) -> Bool {
+        currentChannel?.canPlayCatchup(epg) == true
+    }
+
+    func isPlayingCatchup(_ epg: Epginfo) -> Bool {
+        catchupPlayback?.epg == epg
+    }
+
+    func playCatchup(_ epg: Epginfo) {
+        guard let playback = currentChannel?.catchupPlayback(for: epg) else { return }
+        catchupPlayback = playback
+    }
+
+    func returnToLive() {
+        catchupPlayback = nil
     }
     
     /// 加载 EPG 节目单
@@ -146,6 +190,7 @@ class LiveViewModel: ObservableObject {
     }
 
     private func setCurrentChannel(_ channel: LiveChannelItem?) {
+        catchupPlayback = nil
         currentChannel = channel
         if let channel {
             loadEPG(for: channel)
@@ -157,6 +202,7 @@ class LiveViewModel: ObservableObject {
     private func clearEPG() {
         epgLoadTask?.cancel()
         epgLoadTask = nil
+        catchupPlayback = nil
         epgList = []
         epgErrorMessage = nil
         isLoading = false

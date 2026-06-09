@@ -82,9 +82,9 @@ struct LiveView: View {
                 viewModel.loadChannels()
                 wakeUpCurrentChannelInfo()
             }
-            .onChange(of: viewModel.currentChannel?.currentPlaybackIdentifier) { _, _ in
+            .onChange(of: viewModel.currentPlaybackIdentifier) { _, _ in
                 if selectedEngine == .system {
-                    playChannel(url: viewModel.currentChannel?.currentUrl)
+                    playChannel(url: viewModel.currentPlaybackURL)
                 } else {
                     cleanupPlayer()
                 }
@@ -97,7 +97,7 @@ struct LiveView: View {
             }
             .onChange(of: selectedEngine) { _, _ in
                 if selectedEngine == .system {
-                    playChannel(url: viewModel.currentChannel?.currentUrl)
+                    playChannel(url: viewModel.currentPlaybackURL)
                 } else {
                     cleanupPlayer()
                 }
@@ -145,10 +145,10 @@ struct LiveView: View {
     @ViewBuilder
     private var activePlayerLayer: some View {
         if selectedEngine == .vlc {
-            if let urlString = viewModel.currentChannel?.currentUrl, !urlString.isEmpty {
+            if let urlString = viewModel.currentPlaybackURL, !urlString.isEmpty {
                 VLCLivePlayerView(
                     urlString: urlString,
-                    httpHeaders: viewModel.currentChannel?.currentHeaders ?? [:],
+                    httpHeaders: viewModel.currentPlaybackHeaders,
                     activityToken: vlcInteractionToken,
                     onPlaybackFailed: {
                         handlePlaybackFailure(trigger: "vlc_error")
@@ -158,7 +158,7 @@ struct LiveView: View {
                     }
                 )
                 .ignoresSafeArea()
-                .id("vlc-live-\(viewModel.currentChannel?.currentPlaybackIdentifier ?? urlString)-\(viewModel.currentChannel?.id ?? "")")
+                .id("vlc-live-\(viewModel.currentPlaybackIdentifier)-\(viewModel.currentChannel?.id ?? "")")
             }
         } else if let player = avPlayer {
             PlatformVideoPlayer(player: player)
@@ -401,7 +401,11 @@ struct LiveView: View {
                 Spacer()
                 
                 // 线路信息
-                if channel.sourceNum > 1 {
+                if viewModel.isPlayingCatchup {
+                    Text("回看")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.orange.opacity(0.8))
+                } else if channel.sourceNum > 1 {
                     Text("线路 \(channel.sourceIndex + 1)/\(channel.sourceNum)")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.6))
@@ -411,27 +415,50 @@ struct LiveView: View {
             epgStatusLine
 
             // 操作按钮行
-            if channel.sourceNum > 1 {
+            if channel.sourceNum > 1 || viewModel.isPlayingCatchup {
                 HStack(spacing: 12) {
-                    Button {
-                        HapticManager.shared.mediumImpact()
-                        wakeUpCurrentChannelInfo()
-                        resetFailureTracking(for: viewModel.currentChannel)
-                        viewModel.switchSource()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "shuffle")
-                                .font(.system(size: 13))
-                            Text("切换线路")
-                                .font(.system(size: 13, weight: .semibold))
+                    if viewModel.isPlayingCatchup {
+                        Button {
+                            HapticManager.shared.lightImpact()
+                            wakeUpCurrentChannelInfo()
+                            viewModel.returnToLive()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                    .font(.system(size: 13))
+                                Text("返回直播")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 40)
+                            .background(Color.white.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 40)
-                        .background(AppTheme.accentGradient)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+
+                    if channel.sourceNum > 1 {
+                        Button {
+                            HapticManager.shared.mediumImpact()
+                            wakeUpCurrentChannelInfo()
+                            resetFailureTracking(for: viewModel.currentChannel)
+                            viewModel.switchSource()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "shuffle")
+                                    .font(.system(size: 13))
+                                Text("切换线路")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 40)
+                            .background(AppTheme.accentGradient)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -451,7 +478,12 @@ struct LiveView: View {
                         .foregroundColor(.white)
                 }
                 
-                if channel.sourceNum > 1 {
+                if viewModel.isPlayingCatchup {
+                    Text("正在回看：\(viewModel.catchupPlayback?.epg.title ?? "")")
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange.opacity(0.8))
+                        .lineLimit(1)
+                } else if channel.sourceNum > 1 {
                     Text("正在播放：线路 \(channel.sourceIndex + 1) / \(channel.sourceNum)")
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.6))
@@ -463,6 +495,29 @@ struct LiveView: View {
             Spacer()
             
             HStack(spacing: 12) {
+                if viewModel.isPlayingCatchup {
+                    Button {
+                        wakeUpCurrentChannelInfo()
+                        viewModel.returnToLive()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                            Text("返回直播")
+                        }
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(Color.white.opacity(0.15))
+                        .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 if channel.sourceNum > 1 {
                     Button {
                         wakeUpCurrentChannelInfo()
@@ -515,7 +570,17 @@ struct LiveView: View {
 
     @ViewBuilder
     private var epgStatusLine: some View {
-        if viewModel.isLoading {
+        if let playback = viewModel.catchupPlayback {
+            HStack(spacing: 7) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.orange)
+                Text([playback.epg.timeRange, playback.epg.title].filter { !$0.isEmpty }.joined(separator: "  "))
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white.opacity(0.75))
+        } else if viewModel.isLoading {
             HStack(spacing: 7) {
                 ProgressView()
                     .controlSize(.small)
@@ -581,7 +646,23 @@ struct LiveView: View {
         }
     }
 
+    @ViewBuilder
     private func epgListRow(_ item: Epginfo) -> some View {
+        let canCatchup = viewModel.canPlayCatchup(item)
+        if canCatchup {
+            Button {
+                wakeUpCurrentChannelInfo()
+                viewModel.playCatchup(item)
+            } label: {
+                epgRowContent(item, canCatchup: canCatchup)
+            }
+            .buttonStyle(.plain)
+        } else {
+            epgRowContent(item, canCatchup: canCatchup)
+        }
+    }
+
+    private func epgRowContent(_ item: Epginfo, canCatchup: Bool) -> some View {
         HStack(spacing: 8) {
             Text(item.timeRange)
                 .font(.system(size: 11, weight: item.isLive ? .semibold : .regular))
@@ -594,10 +675,17 @@ struct LiveView: View {
                 .lineLimit(1)
 
             Spacer(minLength: 0)
+
+            if canCatchup {
+                Image(systemName: viewModel.isPlayingCatchup(item) ? "play.fill" : "play.circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(viewModel.isPlayingCatchup(item) ? .orange : .white.opacity(0.45))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(item.isLive ? Color.orange.opacity(0.13) : Color.clear)
+        .contentShape(Rectangle())
     }
     
     private func wakeUpCurrentChannelInfo() {
@@ -705,7 +793,7 @@ struct LiveView: View {
         cleanupPlayer()
         
         // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
-        var headers = viewModel.currentChannel?.currentHeaders ?? [:]
+        var headers = viewModel.currentPlaybackHeaders
         if headers.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
             headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }

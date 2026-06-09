@@ -85,6 +85,25 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
         return [currentUrl ?? "", headerKey, format].joined(separator: "\n")
     }
 
+    func catchupPlayback(for epg: Epginfo) -> LiveCatchupPlayback? {
+        guard let liveURL = currentUrl,
+              let catchupURL = catchupURL(for: epg, liveURL: liveURL) else {
+            return nil
+        }
+
+        var headers = currentHeaders
+        if liveURL.lowercased().hasPrefix("rtsp"),
+           let range = epg.rtspRange {
+            headers["rtsp_range"] = range
+        }
+        return LiveCatchupPlayback(url: catchupURL, headers: headers, epg: epg)
+    }
+
+    func canPlayCatchup(_ epg: Epginfo) -> Bool {
+        guard let liveURL = currentUrl else { return false }
+        return catchupURL(for: epg, liveURL: liveURL) != nil
+    }
+
     func headers(for url: String?) -> [String: String] {
         var merged = headers
         guard let url else { return merged }
@@ -105,6 +124,141 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
     static func normalizeURLKey(_ url: String) -> String {
         url.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func catchupURL(for epg: Epginfo, liveURL: String) -> String? {
+        guard let template = catchupTemplate(for: liveURL),
+              let startDate = epg.startDate,
+              let endDate = epg.endDate else {
+            return nil
+        }
+
+        let resolvedSource = Self.resolveCatchupTokens(
+            in: template.source,
+            startDate: startDate,
+            endDate: endDate
+        )
+        guard !resolvedSource.isEmpty else { return nil }
+        if template.type.caseInsensitiveCompare("default") == .orderedSame { return resolvedSource }
+        return Self.appendCatchupSource(
+            resolvedSource,
+            to: liveURL,
+            replaceRule: template.replace
+        )
+    }
+
+    private func catchupTemplate(for liveURL: String) -> LiveCatchupTemplate? {
+        if let source = catchupSource.nilIfBlank {
+            return LiveCatchupTemplate(
+                type: catchup.nilIfBlank ?? "append",
+                source: source,
+                replace: catchupReplace
+            )
+        }
+        if liveURL.contains("/PLTV/") {
+            return .pltv
+        }
+        return nil
+    }
+
+    private static func appendCatchupSource(
+        _ source: String,
+        to liveURL: String,
+        replaceRule: String
+    ) -> String {
+        var url = liveURL
+        let parts = replaceRule.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count == 2 {
+            url = url.replacingOccurrences(
+                of: String(parts[0]),
+                with: String(parts[1]),
+                options: .regularExpression
+            )
+        }
+
+        var suffix = source
+        if URLComponents(string: url)?.query?.isEmpty == false {
+            suffix = suffix.replacingOccurrences(of: "?", with: "&")
+        }
+        return url + suffix
+    }
+
+    private static func resolveCatchupTokens(
+        in template: String,
+        startDate: Date,
+        endDate: Date
+    ) -> String {
+        let pattern = #"(\$?\{[^}]*\})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return template }
+        let range = NSRange(template.startIndex..<template.endIndex, in: template)
+        var result = ""
+        var cursor = template.startIndex
+
+        for match in regex.matches(in: template, range: range) {
+            guard let matchRange = Range(match.range(at: 1), in: template) else { continue }
+            result += template[cursor..<matchRange.lowerBound]
+            let token = String(template[matchRange])
+            result += formattedCatchupToken(token, startDate: startDate, endDate: endDate)
+            cursor = matchRange.upperBound
+        }
+
+        result += template[cursor..<template.endIndex]
+        return result
+    }
+
+    private static func formattedCatchupToken(
+        _ token: String,
+        startDate: Date,
+        endDate: Date
+    ) -> String {
+        guard let open = token.firstIndex(of: "{"),
+              let close = token.lastIndex(of: "}"),
+              open < close else {
+            return ""
+        }
+
+        let tag = String(token[token.index(after: open)..<close])
+        if tag.hasPrefix("utcend:") { return String(Int(endDate.timeIntervalSince1970)) }
+        if tag.hasPrefix("utc:") { return String(Int(startDate.timeIntervalSince1970)) }
+        if tag.hasPrefix("(b"), let closeParen = tag.firstIndex(of: ")") {
+            let pattern = String(tag[tag.index(after: closeParen)...])
+            return formatCatchupTime(startDate, pattern: pattern)
+        }
+        if tag.hasPrefix("(e"), let closeParen = tag.firstIndex(of: ")") {
+            let pattern = String(tag[tag.index(after: closeParen)...])
+            return formatCatchupTime(endDate, pattern: pattern)
+        }
+        return ""
+    }
+
+    private static func formatCatchupTime(_ date: Date, pattern: String) -> String {
+        if pattern == "timestamp" {
+            return String(Int(date.timeIntervalSince1970))
+        }
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.timeZone = .current
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+}
+
+struct LiveCatchupPlayback: Codable, Identifiable, Hashable {
+    var id: String { "\(url)_\(epg.id)" }
+    var url: String
+    var headers: [String: String]
+    var epg: Epginfo
+}
+
+private struct LiveCatchupTemplate {
+    var type: String
+    var source: String
+    var replace: String
+
+    static let pltv = LiveCatchupTemplate(
+        type: "append",
+        source: "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}",
+        replace: "/PLTV/,/TVOD/"
+    )
 }
 
 /// EPG 节目信息
@@ -143,6 +297,26 @@ struct Epginfo: Codable, Identifiable, Hashable {
         if endTime.isEmpty { return startTime }
         if startTime.isEmpty { return endTime }
         return "\(startTime) - \(endTime)"
+    }
+
+    var startDate: Date? {
+        guard startTimestamp > 0 else { return nil }
+        return Date(timeIntervalSince1970: startTimestamp)
+    }
+
+    var endDate: Date? {
+        guard endTimestamp > 0 else { return nil }
+        return Date(timeIntervalSince1970: endTimestamp)
+    }
+
+    var rtspRange: String? {
+        guard let startDate, let endDate else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return "clock=\(formatter.string(from: startDate))-\(formatter.string(from: endDate))"
     }
 
     init(
