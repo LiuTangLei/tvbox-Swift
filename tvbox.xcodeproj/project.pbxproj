@@ -23,6 +23,7 @@
 		19291FACD401CDE0E6E2963E /* LiveViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21306B53D5CA8BB88593A55D /* LiveViewModel.swift */; };
 		19FCB4D2A58F2CA96183E67A /* PlayerGestureLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7491D05031A04661718FF52 /* PlayerGestureLayer.swift */; };
 		1D0C0D4DD4E22EC319637BDF /* SearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0217E00DE1B92A89B4D7C3 /* SearchViewModel.swift */; };
+		1D1C74CA5736F9535EB114DD /* XMLTVService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B990F78DE6EC5B84C17182BB /* XMLTVService.swift */; };
 		205509C747774AFBAB4F9645 /* VodCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F905D1244D5DE13DBCEE170F /* VodCardView.swift */; };
 		211847D0D4F382678F5EDE96 /* VLCKitSPM in Frameworks */ = {isa = PBXBuildFile; productRef = A8E4ADD9D85C0FCB9811382F /* VLCKitSPM */; };
 		217BB4F40B9348F439749C70 /* VodCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F905D1244D5DE13DBCEE170F /* VodCardView.swift */; };
@@ -30,6 +31,7 @@
 		2AAA54BEC34D9A528B2208ED /* SourceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5DFDD8C597739AD4B443C03 /* SourceService.swift */; };
 		2C85CE605FC864EB479F3CCC /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EE08247136FF788C621DA20 /* DesignSystem.swift */; };
 		2F841DB8CE3BFB7C4F391B52 /* PlayerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2BF545AAFFFFD0B6F7B33E8 /* PlayerEngine.swift */; };
+		2FB323A25254D04F3CF9C694 /* XMLTVService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B990F78DE6EC5B84C17182BB /* XMLTVService.swift */; };
 		32340EF75714EF664DC9512D /* HomeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C92A5E4E28B59BF75D39706 /* HomeViewModel.swift */; };
 		329F390FCD9530CE2B19B397 /* HapticManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF32540F2107786AF4ECD571 /* HapticManager.swift */; };
 		3E399383D92192CDA8840FEB /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB6B7E1747D5E2C29B54066 /* AppConfig.swift */; };
@@ -152,6 +154,7 @@
 		AA608E781D094B187D3034FD /* VodInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VodInfo.swift; sourceTree = "<group>"; };
 		B2BF545AAFFFFD0B6F7B33E8 /* PlayerEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerEngine.swift; sourceTree = "<group>"; };
 		B3D8D6F9D894DBE0594084F9 /* LiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveView.swift; sourceTree = "<group>"; };
+		B990F78DE6EC5B84C17182BB /* XMLTVService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XMLTVService.swift; sourceTree = "<group>"; };
 		B9D5D580A3FABBCD5EE1F9A0 /* EpisodeListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpisodeListView.swift; sourceTree = "<group>"; };
 		BB87D0D74C7CB27B06EBBC4A /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
 		BFD32454522C32D876921A30 /* CacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheStore.swift; sourceTree = "<group>"; };
@@ -218,6 +221,7 @@
 				D1006DD8209F63DC3AC3C718 /* NetworkManager.swift */,
 				7752B731B0A015EB4B85BFB1 /* NetworkMonitor.swift */,
 				D5DFDD8C597739AD4B443C03 /* SourceService.swift */,
+				B990F78DE6EC5B84C17182BB /* XMLTVService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -625,6 +629,7 @@
 				85094ADB7683C758B5F5F835 /* VLCPlayerView.swift in Sources */,
 				205509C747774AFBAB4F9645 /* VodCardView.swift in Sources */,
 				BB36351815C53AC6EACB475A /* VodInfo.swift in Sources */,
+				2FB323A25254D04F3CF9C694 /* XMLTVService.swift in Sources */,
 				BD7E2108F8C884E1DD6EC1B9 /* tvboxApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -672,6 +677,7 @@
 				B271873FE89F02840EAC6975 /* VLCPlayerView.swift in Sources */,
 				217BB4F40B9348F439749C70 /* VodCardView.swift in Sources */,
 				74D54978A79B511FDE79524D /* VodInfo.swift in Sources */,
+				1D1C74CA5736F9535EB114DD /* XMLTVService.swift in Sources */,
 				45D7A96C98872769AE01C131 /* tvboxApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

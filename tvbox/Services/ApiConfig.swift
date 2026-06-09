@@ -818,21 +818,26 @@ class ApiConfig: ObservableObject {
         loadToken: UUID
     ) async -> [LiveChannelGroup] {
         var mergedGroups: [String: LiveChannelGroup] = [:]
-        var remoteLiveTargets: [(order: Int, url: String, headers: [String: String])] = []
+        var remoteLiveTargets: [(order: Int, url: String, headers: [String: String], epgUrl: String)] = []
 
         for (index, live) in lives.enumerated() {
             guard activeLoadToken == loadToken else { return [] }
             let defaultHeaders = Self.liveDefaultHeaders(live)
+            let defaultEpgUrl = live.epg?.nilIfBlank ?? ""
 
             // 如果有 url，从远程加载
             if let liveUrl = live.url, !liveUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let resolvedUrl = resolveLiveUrl(liveUrl, baseConfigUrl: apiUrl)
-                remoteLiveTargets.append((order: index, url: resolvedUrl, headers: defaultHeaders))
+                remoteLiveTargets.append((order: index, url: resolvedUrl, headers: defaultHeaders, epgUrl: defaultEpgUrl))
             }
 
             // 如果有内嵌频道
             if let channels = live.channels {
-                let inlineGroups = parseInlineLiveChannels(channels, defaultHeaders: defaultHeaders)
+                let inlineGroups = parseInlineLiveChannels(
+                    channels,
+                    defaultHeaders: defaultHeaders,
+                    defaultEpgUrl: defaultEpgUrl
+                )
                 mergeLiveGroups(inlineGroups, into: &mergedGroups)
             }
         }
@@ -869,7 +874,11 @@ class ApiConfig: ObservableObject {
             for (order, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
                 guard activeLoadToken == loadToken else { return [] }
                 let target = remoteLiveTargets.first(where: { $0.order == order })
-                let groups = parseLiveContent(content, defaultHeaders: target?.headers ?? [:])
+                let groups = parseLiveContent(
+                    content,
+                    defaultHeaders: target?.headers ?? [:],
+                    defaultEpgUrl: target?.epgUrl ?? ""
+                )
                 mergeLiveGroups(groups, into: &mergedGroups)
                 liveChannelGroupList = sortedGroups(from: mergedGroups)
             }
@@ -935,7 +944,11 @@ class ApiConfig: ObservableObject {
     }
 
     /// 解析 m3u / txt 格式的直播内容
-    private func parseLiveContent(_ content: String, defaultHeaders: [String: String] = [:]) -> [LiveChannelGroup] {
+    private func parseLiveContent(
+        _ content: String,
+        defaultHeaders: [String: String] = [:],
+        defaultEpgUrl: String = ""
+    ) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         var currentGroupName = "默认"
 
@@ -950,7 +963,7 @@ class ApiConfig: ObservableObject {
             var currentMetadata = LiveChannelMetadata()
             var pendingHeaders: [String: String] = [:]
             var pendingFormat = ""
-            var globalEpgUrl = ""
+            var globalEpgUrl = defaultEpgUrl
 
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -1073,12 +1086,14 @@ class ApiConfig: ObservableObject {
 
     private func parseInlineLiveChannels(
         _ channels: [AppConfigData.LiveConfig.LiveChannelConfig],
-        defaultHeaders: [String: String] = [:]
+        defaultHeaders: [String: String] = [:],
+        defaultEpgUrl: String = ""
     ) -> [LiveChannelGroup] {
         var groups: [String: LiveChannelGroup] = [:]
         for channel in channels {
             var metadata = LiveChannelMetadata()
             metadata.logo = channel.logo ?? ""
+            metadata.epgUrl = defaultEpgUrl
             metadata.headers = defaultHeaders
             appendChannel(
                 named: channel.name ?? "",

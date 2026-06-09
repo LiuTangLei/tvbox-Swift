@@ -3012,6 +3012,7 @@ struct VLCVodPlayerView: View {
 struct VLCLivePlayerView: View {
     let urlString: String
     var httpHeaders: [String: String] = [:]
+    var activityToken: Int = 0
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
 

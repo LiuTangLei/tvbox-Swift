@@ -13,15 +13,19 @@ class LiveViewModel: ObservableObject {
     @Published var selectedChannelIndex: Int = 0
     /// 当前播放频道。
     @Published var currentChannel: LiveChannelItem?
-    /// 当前频道节目单（预留）。
+    /// 当前频道节目单。
     @Published var epgList: [Epginfo] = []
-    /// 加载状态（预留，便于后续接入远程 EPG）。
+    /// EPG 加载状态。
     @Published var isLoading = false
+    /// EPG 加载错误，仅用于调试和轻量状态展示。
+    @Published var epgErrorMessage: String?
     /// 是否显示频道列表（预留给 TV 遥控交互）。
     @Published var showChannelList = false
     
     /// 订阅配置更新，支持直播频道列表实时刷新。
     private var cancellables: Set<AnyCancellable> = []
+    /// 当前 EPG 加载任务，切台时取消，避免旧频道节目单覆盖新频道。
+    private var epgLoadTask: Task<Void, Never>?
     
     init() {
         bindLiveChannelGroups()
@@ -44,8 +48,7 @@ class LiveViewModel: ObservableObject {
     
     /// 选择频道
     func selectChannel(_ channel: LiveChannelItem) {
-        currentChannel = channel
-        loadEPG(for: channel)
+        setCurrentChannel(channel)
     }
     
     /// 上一个频道
@@ -88,12 +91,75 @@ class LiveViewModel: ObservableObject {
         guard selectedGroupIndex < channelGroups.count else { return [] }
         return channelGroups[selectedGroupIndex].channels
     }
+
+    var currentEpg: Epginfo? {
+        epgList.first(where: \.isLive)
+    }
+
+    var nextEpg: Epginfo? {
+        if let currentEpg,
+           let currentIndex = epgList.firstIndex(of: currentEpg),
+           currentIndex + 1 < epgList.count {
+            return epgList[currentIndex + 1]
+        }
+        let now = Date().timeIntervalSince1970
+        return epgList.first { $0.startTimestamp > now }
+    }
     
     /// 加载 EPG 节目单
     private func loadEPG(for channel: LiveChannelItem) {
-        // 预留：后续可在此按频道名/频道 ID 请求远程 EPG。
-        // 当前版本先清空，避免展示过期节目单。
+        epgLoadTask?.cancel()
         epgList = []
+        epgErrorMessage = nil
+
+        guard channel.epgUrl.nilIfBlank != nil else {
+            isLoading = false
+            return
+        }
+
+        isLoading = true
+        let channelId = channel.id
+
+        epgLoadTask = Task { [weak self, channel] in
+            do {
+                let programs = try await XMLTVService.shared.loadTodayPrograms(for: channel)
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard let self, self.currentChannel?.id == channelId else { return }
+                    self.epgList = programs
+                    self.isLoading = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self, self.currentChannel?.id == channelId else { return }
+                    self.isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.currentChannel?.id == channelId else { return }
+                    self.epgList = []
+                    self.epgErrorMessage = error.localizedDescription
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+
+    private func setCurrentChannel(_ channel: LiveChannelItem?) {
+        currentChannel = channel
+        if let channel {
+            loadEPG(for: channel)
+        } else {
+            clearEPG()
+        }
+    }
+
+    private func clearEPG() {
+        epgLoadTask?.cancel()
+        epgLoadTask = nil
+        epgList = []
+        epgErrorMessage = nil
+        isLoading = false
     }
     
     private func bindLiveChannelGroups() {
@@ -111,7 +177,7 @@ class LiveViewModel: ObservableObject {
         guard !groups.isEmpty else {
             selectedGroupIndex = 0
             selectedChannelIndex = 0
-            currentChannel = nil
+            setCurrentChannel(nil)
             return
         }
         
@@ -119,7 +185,7 @@ class LiveViewModel: ObservableObject {
            let located = locateChannel(withId: previousChannelId, in: groups) {
             selectedGroupIndex = located.groupIndex
             selectedChannelIndex = located.channelIndex
-            currentChannel = groups[located.groupIndex].channels[located.channelIndex]
+            setCurrentChannel(groups[located.groupIndex].channels[located.channelIndex])
             return
         }
         
@@ -129,13 +195,13 @@ class LiveViewModel: ObservableObject {
         let channels = groups[clampedGroupIndex].channels
         guard !channels.isEmpty else {
             selectedChannelIndex = 0
-            currentChannel = nil
+            setCurrentChannel(nil)
             return
         }
         
         let clampedChannelIndex = min(max(0, selectedChannelIndex), channels.count - 1)
         selectedChannelIndex = clampedChannelIndex
-        currentChannel = channels[clampedChannelIndex]
+        setCurrentChannel(channels[clampedChannelIndex])
     }
     
     private func locateChannel(
@@ -148,6 +214,10 @@ class LiveViewModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    deinit {
+        epgLoadTask?.cancel()
     }
 }
 

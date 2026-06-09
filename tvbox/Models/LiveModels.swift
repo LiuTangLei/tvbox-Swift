@@ -109,21 +109,85 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
 
 /// EPG 节目信息
 struct Epginfo: Codable, Identifiable, Hashable {
-    var id: String { "\(title)_\(startTime)" }
+    var id: String { "\(index)_\(title)_\(startTime)_\(endTime)" }
     var title: String = ""
     var startTime: String = ""
     var endTime: String = ""
     var index: Int = 0
+    /// Unix timestamp in seconds. Used when XMLTV provides a real date and timezone.
+    var startTimestamp: TimeInterval = 0
+    /// Unix timestamp in seconds. Used when XMLTV provides a real date and timezone.
+    var endTimestamp: TimeInterval = 0
     
     /// 根据 `HH:mm` 时间段判断节目是否正在播出。
     var isLive: Bool {
+        if startTimestamp > 0, endTimestamp > 0 {
+            let now = Date().timeIntervalSince1970
+            return now >= startTimestamp && now < endTimestamp
+        }
+
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
         guard let start = formatter.date(from: startTime),
               let end = formatter.date(from: endTime) else { return false }
         
         let now = formatter.date(from: formatter.string(from: Date()))!
+        if end < start {
+            return now >= start || now < end
+        }
         return now >= start && now < end
+    }
+
+    var timeRange: String {
+        if startTime.isEmpty, endTime.isEmpty { return "" }
+        if endTime.isEmpty { return startTime }
+        if startTime.isEmpty { return endTime }
+        return "\(startTime) - \(endTime)"
+    }
+
+    init(
+        title: String = "",
+        startTime: String = "",
+        endTime: String = "",
+        index: Int = 0,
+        startTimestamp: TimeInterval = 0,
+        endTimestamp: TimeInterval = 0
+    ) {
+        self.title = title
+        self.startTime = startTime
+        self.endTime = endTime
+        self.index = index
+        self.startTimestamp = startTimestamp
+        self.endTimestamp = endTimestamp
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case startTime
+        case endTime
+        case index
+        case startTimestamp
+        case endTimestamp
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        startTime = try container.decodeIfPresent(String.self, forKey: .startTime) ?? ""
+        endTime = try container.decodeIfPresent(String.self, forKey: .endTime) ?? ""
+        index = try container.decodeIfPresent(Int.self, forKey: .index) ?? 0
+        startTimestamp = try container.decodeIfPresent(TimeInterval.self, forKey: .startTimestamp) ?? 0
+        endTimestamp = try container.decodeIfPresent(TimeInterval.self, forKey: .endTimestamp) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(title, forKey: .title)
+        try container.encode(startTime, forKey: .startTime)
+        try container.encode(endTime, forKey: .endTime)
+        try container.encode(index, forKey: .index)
+        try container.encode(startTimestamp, forKey: .startTimestamp)
+        try container.encode(endTimestamp, forKey: .endTimestamp)
     }
 }
 

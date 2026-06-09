@@ -66,38 +66,7 @@ struct LiveView: View {
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                
-                if viewModel.channelGroups.isEmpty {
-                    emptyState
-                } else {
-                    // 播放器
-                    if selectedEngine == .vlc {
-                        if let urlString = viewModel.currentChannel?.currentUrl, !urlString.isEmpty {
-                            VLCLivePlayerView(
-                                urlString: urlString,
-                                httpHeaders: viewModel.currentChannel?.currentHeaders ?? [:],
-                                activityToken: vlcInteractionToken,
-                                onPlaybackFailed: {
-                                    handlePlaybackFailure(trigger: "vlc_error")
-                                },
-                                onToggleFullScreen: {
-                                    toggleWindowFullScreen()
-                                }
-                            )
-                            .ignoresSafeArea()
-                            .id("vlc-live-\(viewModel.currentChannel?.currentPlaybackIdentifier ?? urlString)-\(viewModel.currentChannel?.id ?? "")")
-                        }
-                    } else if let player = avPlayer {
-                        PlatformVideoPlayer(player: player)
-                            .ignoresSafeArea()
-                    }
-                    
-                    // 覆盖 UI
-                    overlayUI
-                }
-            }
+            contentLayer
             .navigationTitle("直播")
             #if os(macOS)
             .toolbar(isWindowFullScreen ? .hidden : .visible, for: .windowToolbar)
@@ -157,6 +126,43 @@ struct LiveView: View {
                 }
             }
             #endif
+        }
+    }
+
+    private var contentLayer: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if viewModel.channelGroups.isEmpty {
+                emptyState
+            } else {
+                activePlayerLayer
+                overlayUI
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var activePlayerLayer: some View {
+        if selectedEngine == .vlc {
+            if let urlString = viewModel.currentChannel?.currentUrl, !urlString.isEmpty {
+                VLCLivePlayerView(
+                    urlString: urlString,
+                    httpHeaders: viewModel.currentChannel?.currentHeaders ?? [:],
+                    activityToken: vlcInteractionToken,
+                    onPlaybackFailed: {
+                        handlePlaybackFailure(trigger: "vlc_error")
+                    },
+                    onToggleFullScreen: {
+                        toggleWindowFullScreen()
+                    }
+                )
+                .ignoresSafeArea()
+                .id("vlc-live-\(viewModel.currentChannel?.currentPlaybackIdentifier ?? urlString)-\(viewModel.currentChannel?.id ?? "")")
+            }
+        } else if let player = avPlayer {
+            PlatformVideoPlayer(player: player)
+                .ignoresSafeArea()
         }
     }
     
@@ -300,6 +306,13 @@ struct LiveView: View {
                 channelList
                     .frame(width: 240)
             }
+
+            if viewModel.isLoading || !viewModel.epgList.isEmpty || viewModel.epgErrorMessage != nil {
+                Divider()
+                    .overlay(Color.white.opacity(0.1))
+                epgListPanel
+                    .frame(maxHeight: 220)
+            }
         }
         .frame(width: 390)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -395,6 +408,8 @@ struct LiveView: View {
                 }
             }
             
+            epgStatusLine
+
             // 操作按钮行
             if channel.sourceNum > 1 {
                 HStack(spacing: 12) {
@@ -441,6 +456,8 @@ struct LiveView: View {
                         .font(.system(size: 12))
                         .foregroundColor(.white.opacity(0.6))
                 }
+
+                epgStatusLine
             }
             
             Spacer()
@@ -494,6 +511,93 @@ struct LiveView: View {
         .frame(maxWidth: .infinity)
         .padding(20)
         #endif
+    }
+
+    @ViewBuilder
+    private var epgStatusLine: some View {
+        if viewModel.isLoading {
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("节目单加载中")
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white.opacity(0.7))
+            .lineLimit(1)
+        } else if let current = viewModel.currentEpg {
+            HStack(spacing: 7) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.orange)
+                Text([current.timeRange, current.title].filter { !$0.isEmpty }.joined(separator: "  "))
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white.opacity(0.72))
+        } else if let next = viewModel.nextEpg {
+            HStack(spacing: 7) {
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.55))
+                Text([next.timeRange, next.title].filter { !$0.isEmpty }.joined(separator: "  "))
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(.white.opacity(0.62))
+        }
+    }
+
+    private var epgListPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Label("节目单", systemImage: "calendar")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.75))
+                Spacer()
+                if viewModel.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+
+            if viewModel.epgList.isEmpty {
+                Text(viewModel.isLoading ? "加载中" : "暂无节目单")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(viewModel.epgList) { item in
+                            epgListRow(item)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func epgListRow(_ item: Epginfo) -> some View {
+        HStack(spacing: 8) {
+            Text(item.timeRange)
+                .font(.system(size: 11, weight: item.isLive ? .semibold : .regular))
+                .foregroundColor(item.isLive ? .orange : .white.opacity(0.45))
+                .frame(width: 72, alignment: .leading)
+
+            Text(item.title)
+                .font(.system(size: 12, weight: item.isLive ? .semibold : .regular))
+                .foregroundColor(item.isLive ? .white.opacity(0.9) : .white.opacity(0.65))
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(item.isLive ? Color.orange.opacity(0.13) : Color.clear)
     }
     
     private func wakeUpCurrentChannelInfo() {
