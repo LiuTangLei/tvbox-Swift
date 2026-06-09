@@ -1,10 +1,12 @@
 import Foundation
+import zlib
 
 actor XMLTVService {
     static let shared = XMLTVService()
 
     private static let cacheTTL: TimeInterval = 6 * 60 * 60
     private static let maxCacheEntries = 12
+    private static let decompressChunkSize = 64 * 1024
     private static let requestHeaders = [
         "User-Agent": "okhttp/4.12.0",
         "Accept": "*/*"
@@ -53,10 +55,11 @@ actor XMLTVService {
             payloadCache.removeValue(forKey: candidate.cacheKey)
         }
 
-        let payload = try await NetworkManager.shared.getString(
+        let (data, response) = try await NetworkManager.shared.getDataWithResponse(
             from: candidate.url,
             headers: Self.requestHeaders
         )
+        let payload = try Self.decodePayload(data, response: response, urlString: candidate.url)
         payloadCache[candidate.cacheKey] = CacheEntry(payload: payload, fetchedAt: now)
         trimCacheIfNeeded()
         return payload
@@ -108,6 +111,78 @@ actor XMLTVService {
             return try jsonPrograms(from: trimmed, requestedDate: date)
         }
         return try xmlPrograms(from: trimmed, channel: channel, date: date)
+    }
+
+    private static func decodePayload(
+        _ data: Data,
+        response: HTTPURLResponse,
+        urlString: String
+    ) throws -> String {
+        let decodedData = isGzipPayload(data) ? try gunzip(data) : data
+        if let declaredEncoding = response.textEncodingName,
+           let encoding = stringEncoding(fromIANACharset: declaredEncoding),
+           let value = String(data: decodedData, encoding: encoding) {
+            return value
+        }
+        if let value = String(data: decodedData, encoding: .utf8)
+            ?? String(data: decodedData, encoding: .isoLatin1) {
+            return value
+        }
+        if !decodedData.isEmpty {
+            return String(decoding: decodedData, as: UTF8.self)
+        }
+        throw XMLTVServiceError.emptyPayload(urlString)
+    }
+
+    private static func isGzipPayload(_ data: Data) -> Bool {
+        data.count >= 2 && data[data.startIndex] == 0x1F && data[data.index(after: data.startIndex)] == 0x8B
+    }
+
+    private static func gunzip(_ data: Data) throws -> Data {
+        var stream = z_stream()
+        var status = inflateInit2_(
+            &stream,
+            MAX_WBITS + 16,
+            ZLIB_VERSION,
+            Int32(MemoryLayout<z_stream>.size)
+        )
+        guard status == Z_OK else {
+            throw XMLTVServiceError.gzipDecompressionFailed(status)
+        }
+        defer { inflateEnd(&stream) }
+
+        var output = Data()
+        var buffer = [UInt8](repeating: 0, count: decompressChunkSize)
+
+        try data.withUnsafeBytes { rawBuffer in
+            guard let source = rawBuffer.bindMemory(to: Bytef.self).baseAddress else { return }
+            stream.next_in = UnsafeMutablePointer<Bytef>(mutating: source)
+            stream.avail_in = uInt(data.count)
+
+            repeat {
+                try buffer.withUnsafeMutableBytes { rawOutput in
+                    guard let destination = rawOutput.bindMemory(to: Bytef.self).baseAddress else { return }
+                    stream.next_out = destination
+                    stream.avail_out = uInt(decompressChunkSize)
+                    status = inflate(&stream, Z_NO_FLUSH)
+                    guard status == Z_OK || status == Z_STREAM_END else {
+                        throw XMLTVServiceError.gzipDecompressionFailed(status)
+                    }
+                    let produced = decompressChunkSize - Int(stream.avail_out)
+                    if produced > 0 {
+                        output.append(destination, count: produced)
+                    }
+                }
+            } while status != Z_STREAM_END
+        }
+
+        return output
+    }
+
+    private static func stringEncoding(fromIANACharset charset: String) -> String.Encoding? {
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(charset as CFString)
+        guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
+        return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
     }
 
     private static func jsonPrograms(from payload: String, requestedDate: Date) throws -> [Epginfo] {
@@ -509,11 +584,17 @@ private final class XMLTVParserDelegate: NSObject, XMLParserDelegate {
 
 private enum XMLTVServiceError: LocalizedError {
     case parseFailed
+    case emptyPayload(String)
+    case gzipDecompressionFailed(Int32)
 
     var errorDescription: String? {
         switch self {
         case .parseFailed:
             return "XMLTV 解析失败"
+        case .emptyPayload(let urlString):
+            return "EPG 内容为空: \(urlString)"
+        case .gzipDecompressionFailed(let status):
+            return "EPG gzip 解压失败: \(status)"
         }
     }
 }
