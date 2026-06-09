@@ -297,6 +297,7 @@ struct BridgePlayResponse: Decodable {
         case proxied
         case format
         case parse
+        case jx
         case flag
         case jxFrom
         case expiresAt
@@ -325,6 +326,7 @@ struct BridgePlayResponse: Decodable {
         proxied = try container.decodeIfPresent(Bool.self, forKey: .proxied)
         format = try container.decodeIfPresent(String.self, forKey: .format)
         parse = try container.decodeIfPresent(Int.self, forKey: .parse)
+            ?? container.decodeIfPresent(Int.self, forKey: .jx)
         flag = try container.decodeIfPresent(String.self, forKey: .flag)
         jxFrom = try container.decodeIfPresent(String.self, forKey: .jxFrom)
         expiresAt = try container.decodeIfPresent(TimeInterval.self, forKey: .expiresAt)
@@ -379,6 +381,19 @@ struct BridgePlayResponse: Decodable {
 
     var containsJarUiSnapshot: Bool {
         image?.isEmpty == false || elements?.isEmpty == false
+    }
+
+    var isPlayableMode: Bool {
+        guard let mode = mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !mode.isEmpty else {
+            return true
+        }
+        switch mode {
+        case "direct", "proxy", "proxied":
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -691,7 +706,10 @@ final class BridgeClient {
         if response.ok == false {
             throw BridgeError.unsupportedPlayback(response.message ?? response.code ?? "Bridge 暂不支持该播放结果")
         }
-        guard response.mode == "direct", let url = response.url, !url.isEmpty else {
+        guard response.isPlayableMode else {
+            throw BridgeError.unsupportedPlayback(response.message ?? response.code ?? "Bridge 返回了不可直接播放模式")
+        }
+        guard let url = response.url?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else {
             throw BridgeError.unsupportedPlayback("Bridge 未返回可直接播放地址")
         }
         let fallbackURL = response.fallbackUrl?.trimmingCharacters(in: .whitespacesAndNewlines)

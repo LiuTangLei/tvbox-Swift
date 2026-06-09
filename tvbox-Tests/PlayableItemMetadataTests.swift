@@ -96,8 +96,8 @@ struct BridgeDRMDecodingTests {
         let data = Data("""
         {
           "ok": true,
-          "mode": "direct",
           "url": "https://media.example.com/video.m3u8",
+          "jx": 1,
           "header": {
             "User-Agent": "Android TVBox"
           },
@@ -125,9 +125,26 @@ struct BridgeDRMDecodingTests {
 
         let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
 
+        #expect(response.isPlayableMode)
+        #expect(response.parse == 1)
         #expect(response.headers?["User-Agent"] == "Android TVBox")
         #expect(response.subtitles?.first?.url == "https://media.example.com/sub.srt")
         #expect(response.danmakus?.first?.url == "https://media.example.com/danmaku.xml")
         #expect(response.drm?.playableDRM?.scheme == "widevine")
+    }
+
+    @Test("Bridge play response rejects non-playable modes")
+    func bridgePlayResponseRejectsNonPlayableModes() throws {
+        let data = Data("""
+        {
+          "ok": true,
+          "mode": "proxyRequired",
+          "url": "https://media.example.com/video.m3u8"
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
+
+        #expect(!response.isPlayableMode)
     }
 }
