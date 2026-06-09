@@ -217,7 +217,13 @@ class LiveViewModel: ObservableObject {
                 .sorted { $0.0 < $1.0 }
                 .map { "\($0.0):\($0.1)" }
                 .joined(separator: "\n")
-            return ["catchup", catchupPlayback.url, headerKey, catchupPlayback.epg.id].joined(separator: "\n")
+            return [
+                "catchup",
+                catchupPlayback.url,
+                headerKey,
+                catchupPlayback.drm?.playbackCacheKey ?? "",
+                catchupPlayback.epg.id
+            ].joined(separator: "\n")
         }
         return currentChannel?.currentPlaybackIdentifier ?? ""
     }

@@ -57,6 +57,8 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
     var catchupSource: String = ""
     /// 回看替换规则。
     var catchupReplace: String = ""
+    /// 直播 DRM 信息，先保留配置语义，播放器支持按内核逐步接入。
+    var drm: PlayableDRM?
     
     init(channelName: String = "", channelIndex: Int = 0) {
         self.channelName = channelName
@@ -82,7 +84,7 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
             .sorted { $0.0 < $1.0 }
             .map { "\($0.0):\($0.1)" }
             .joined(separator: "\n")
-        return [currentUrl ?? "", headerKey, format].joined(separator: "\n")
+        return [currentUrl ?? "", headerKey, format, drm?.playbackCacheKey ?? ""].joined(separator: "\n")
     }
 
     func catchupPlayback(for epg: Epginfo) -> LiveCatchupPlayback? {
@@ -96,7 +98,7 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
            let range = epg.rtspRange {
             headers["rtsp_range"] = range
         }
-        return LiveCatchupPlayback(url: catchupURL, headers: headers, epg: epg)
+        return LiveCatchupPlayback(url: catchupURL, headers: headers, epg: epg, drm: drm)
     }
 
     func canPlayCatchup(_ epg: Epginfo) -> Bool {
@@ -247,6 +249,7 @@ struct LiveCatchupPlayback: Codable, Identifiable, Hashable {
     var url: String
     var headers: [String: String]
     var epg: Epginfo
+    var drm: PlayableDRM?
 }
 
 private struct LiveCatchupTemplate {

@@ -140,8 +140,30 @@ struct PlayableDanmaku: Hashable {
     }
 }
 
-struct PlayableDRM: Hashable {
+struct PlayableDRM: Codable, Hashable {
     let scheme: String?
     let licenseURL: String?
     let headers: [String: String]
+    let forceKey: Bool
+
+    init(
+        scheme: String? = nil,
+        licenseURL: String? = nil,
+        headers: [String: String] = [:],
+        forceKey: Bool = false
+    ) {
+        self.scheme = scheme?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.licenseURL = licenseURL?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.headers = PlaybackHTTPHeaders.normalized(headers)
+        self.forceKey = forceKey
+    }
+
+    var playbackCacheKey: String {
+        let headerKey = headers
+            .map { ($0.key.lowercased(), $0.value) }
+            .sorted { $0.0 < $1.0 }
+            .map { "\($0.0):\($0.1)" }
+            .joined(separator: "\n")
+        return [scheme ?? "", licenseURL ?? "", forceKey ? "force" : "", headerKey].joined(separator: "\n")
+    }
 }

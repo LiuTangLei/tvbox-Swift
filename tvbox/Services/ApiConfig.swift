@@ -899,6 +899,7 @@ class ApiConfig: ObservableObject {
         var catchupReplace: String = ""
         var headers: [String: String] = [:]
         var urlHeaders: [String: [String: String]] = [:]
+        var drm: PlayableDRM?
 
         init() {}
 
@@ -913,7 +914,8 @@ class ApiConfig: ObservableObject {
             catchupSource: String,
             catchupReplace: String,
             headers: [String: String],
-            urlHeaders: [String: [String: String]]
+            urlHeaders: [String: [String: String]],
+            drm: PlayableDRM? = nil
         ) {
             self.logo = logo
             self.tvgId = tvgId
@@ -926,6 +928,7 @@ class ApiConfig: ObservableObject {
             self.catchupReplace = catchupReplace
             self.headers = headers
             self.urlHeaders = urlHeaders
+            self.drm = drm
         }
 
         init(_ channel: LiveChannelItem) {
@@ -940,6 +943,131 @@ class ApiConfig: ObservableObject {
             catchupReplace = channel.catchupReplace
             headers = channel.headers
             urlHeaders = channel.urlHeaders
+            drm = channel.drm
+        }
+    }
+
+    private struct LiveStreamOptions {
+        var headers: [String: String] = [:]
+        var drm: PlayableDRM?
+    }
+
+    private struct LiveDRMBuilder {
+        private var scheme: String?
+        private var license: String?
+        private var headers: [String: String] = [:]
+        private var forceKey = false
+
+        var playableDRM: PlayableDRM? {
+            let normalizedScheme = scheme?.nilIfBlank
+            let normalizedLicense = Self.normalizedLicense(license, scheme: normalizedScheme)
+            guard normalizedScheme != nil || normalizedLicense != nil else { return nil }
+            return PlayableDRM(
+                scheme: normalizedScheme,
+                licenseURL: normalizedLicense,
+                headers: headers,
+                forceKey: forceKey
+            )
+        }
+
+        mutating func setScheme(_ value: String?) {
+            guard let value = value?.nilIfBlank else { return }
+            scheme = value
+        }
+
+        mutating func setLicense(_ value: String?) {
+            guard let value = value?.nilIfBlank else { return }
+            let parts = value.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            license = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if parts.count > 1 {
+                headers.merge(Self.headerPairs(String(parts[1])), uniquingKeysWith: { _, new in new })
+            }
+        }
+
+        mutating func setForceKey(_ value: String?) {
+            guard let value = value?.nilIfBlank else { return }
+            forceKey = NSString(string: value).boolValue
+        }
+
+        mutating func merge(_ drm: PlayableDRM?) {
+            guard let drm else { return }
+            setScheme(drm.scheme)
+            setLicense(drm.licenseURL)
+            headers.merge(drm.headers, uniquingKeysWith: { _, new in new })
+            forceKey = forceKey || drm.forceKey
+        }
+
+        private static func normalizedLicense(_ value: String?, scheme: String?) -> String? {
+            guard let value = value?.nilIfBlank else { return nil }
+            guard scheme?.lowercased().contains("clearkey") == true else { return value }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("{") || trimmed.lowercased().hasPrefix("http") {
+                return trimmed
+            }
+
+            let keys = trimmed.split(separator: ",").compactMap { pair -> [String: String]? in
+                let parts = pair.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2,
+                      let kid = base64URLHex(String(parts[0])),
+                      let key = base64URLHex(String(parts[1])) else {
+                    return nil
+                }
+                return ["kty": "oct", "kid": kid, "k": key]
+            }
+            guard !keys.isEmpty,
+                  let data = try? JSONSerialization.data(
+                    withJSONObject: ["keys": keys, "type": "temporary"],
+                    options: []
+                  ),
+                  let json = String(data: data, encoding: .utf8) else {
+                return trimmed
+            }
+            return json
+        }
+
+        private static func base64URLHex(_ value: String) -> String? {
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard clean.count.isMultiple(of: 2) else { return nil }
+
+            var bytes: [UInt8] = []
+            var index = clean.startIndex
+            while index < clean.endIndex {
+                let next = clean.index(index, offsetBy: 2)
+                guard let byte = UInt8(clean[index..<next], radix: 16) else { return nil }
+                bytes.append(byte)
+                index = next
+            }
+
+            return Data(bytes)
+                .base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+
+        private static func headerPairs(_ payload: String) -> [String: String] {
+            var headers: [String: String] = [:]
+            let normalized = payload.replacingOccurrences(of: "|", with: "&")
+            for part in normalized.split(separator: "&") {
+                let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard pair.count == 2 else { continue }
+                let key = strippedValue(String(pair[0]))
+                let value = strippedValue(String(pair[1]))
+                guard !key.isEmpty, !value.isEmpty else { continue }
+                headers[key] = value
+            }
+            return PlaybackHTTPHeaders.normalized(headers)
+        }
+
+        private static func strippedValue(_ value: String) -> String {
+            var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            while result.hasPrefix("\"") || result.hasPrefix("'") {
+                result.removeFirst()
+            }
+            while result.hasSuffix("\"") || result.hasSuffix("'") {
+                result.removeLast()
+            }
+            return result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
@@ -963,6 +1091,7 @@ class ApiConfig: ObservableObject {
             var currentMetadata = LiveChannelMetadata()
             var pendingHeaders: [String: String] = [:]
             var pendingFormat = ""
+            var pendingDRM = LiveDRMBuilder()
             var globalEpgUrl = defaultEpgUrl
 
             for line in lines {
@@ -972,7 +1101,7 @@ class ApiConfig: ObservableObject {
                 if trimmed.hasPrefix("#EXTM3U") {
                     let attributes = Self.parseM3UAttributes(trimmed)
                     globalEpgUrl = attributes["tvg-url"] ?? attributes["url-tvg"] ?? globalEpgUrl
-                } else if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat) {
+                } else if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat, drm: &pendingDRM) {
                     continue
                 } else if trimmed.hasPrefix("#EXTINF:") {
                     let attributes = Self.parseM3UAttributes(trimmed)
@@ -1009,6 +1138,9 @@ class ApiConfig: ObservableObject {
                         metadata.headers = defaultHeaders
                         metadata.headers.merge(extinfHeaders, uniquingKeysWith: { _, new in new })
                         metadata.headers.merge(pendingHeaders, uniquingKeysWith: { _, new in new })
+                        var drmBuilder = pendingDRM
+                        drmBuilder.merge(parsed.drm)
+                        metadata.drm = drmBuilder.playableDRM ?? metadata.drm
                         if !parsed.headers.isEmpty {
                             metadata.urlHeaders[LiveChannelItem.normalizeURLKey(streamURL)] = parsed.headers
                         }
@@ -1023,18 +1155,20 @@ class ApiConfig: ObservableObject {
                         currentMetadata = LiveChannelMetadata()
                         pendingHeaders = [:]
                         pendingFormat = ""
+                        pendingDRM = LiveDRMBuilder()
                     }
                 }
             }
         } else {
             var pendingHeaders: [String: String] = [:]
             var pendingFormat = ""
+            var pendingDRM = LiveDRMBuilder()
             // TXT 格式: 分组名,#genre#  或  频道名,url
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmed.isEmpty else { continue }
 
-                if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat) {
+                if Self.applyLiveDirective(trimmed, headers: &pendingHeaders, format: &pendingFormat, drm: &pendingDRM) {
                     continue
                 }
 
@@ -1045,6 +1179,7 @@ class ApiConfig: ObservableObject {
                         .trimmingCharacters(in: .whitespaces)
                     pendingHeaders = [:]
                     pendingFormat = ""
+                    pendingDRM = LiveDRMBuilder()
                     continue
                 }
 
@@ -1053,11 +1188,11 @@ class ApiConfig: ObservableObject {
                     let name = parts[0].trimmingCharacters(in: .whitespaces)
                     let url = parts[1...].joined(separator: ",").trimmingCharacters(in: .whitespaces)
 
-                    var parsedStreams: [(url: String, headers: [String: String])] = []
+                    var parsedStreams: [(url: String, headers: [String: String], drm: PlayableDRM?)] = []
                     for rawStream in url.components(separatedBy: "#") {
                         let parsed = Self.parseLiveStreamLine(rawStream)
                         if let streamURL = parsed.url, Self.isLiveStreamUrl(streamURL) {
-                            parsedStreams.append((url: streamURL, headers: parsed.headers))
+                            parsedStreams.append((url: streamURL, headers: parsed.headers, drm: parsed.drm))
                         }
                     }
                     let urls = parsedStreams.map { $0.url }
@@ -1066,9 +1201,14 @@ class ApiConfig: ObservableObject {
                         metadata.headers = defaultHeaders
                         metadata.headers.merge(pendingHeaders, uniquingKeysWith: { _, new in new })
                         metadata.format = pendingFormat
+                        var drmBuilder = pendingDRM
                         for stream in parsedStreams where !stream.headers.isEmpty {
                             metadata.urlHeaders[LiveChannelItem.normalizeURLKey(stream.url)] = stream.headers
                         }
+                        for stream in parsedStreams {
+                            drmBuilder.merge(stream.drm)
+                        }
+                        metadata.drm = drmBuilder.playableDRM
                         appendChannel(
                             named: name,
                             urls: urls,
@@ -1177,6 +1317,7 @@ class ApiConfig: ObservableObject {
         if channel.catchup.isEmpty, let value = metadata.catchup.nilIfBlank { channel.catchup = value }
         if channel.catchupSource.isEmpty, let value = metadata.catchupSource.nilIfBlank { channel.catchupSource = value }
         if channel.catchupReplace.isEmpty, let value = metadata.catchupReplace.nilIfBlank { channel.catchupReplace = value }
+        if channel.drm == nil { channel.drm = metadata.drm }
 
         channel.headers.merge(normalizedLiveHeaders(metadata.headers), uniquingKeysWith: { _, new in new })
         for (url, headers) in metadata.urlHeaders {
@@ -1192,23 +1333,26 @@ class ApiConfig: ObservableObject {
         parseLiveStreamLine(line).url.map(isLiveStreamUrl) == true
     }
 
-    private static func parseLiveStreamLine(_ line: String) -> (url: String?, headers: [String: String]) {
+    private static func parseLiveStreamLine(_ line: String) -> (url: String?, headers: [String: String], drm: PlayableDRM?) {
         let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
         let url = parts.first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let headers = parts.count > 1 ? parseHeaderPairs(String(parts[1])) : [:]
-        return (url?.isEmpty == false ? url : nil, headers)
+        let options = parts.count > 1 ? parseLiveOptionsPayload(String(parts[1])) : LiveStreamOptions()
+        return (url?.isEmpty == false ? url : nil, options.headers, options.drm)
     }
 
     @discardableResult
     private static func applyLiveDirective(
         _ line: String,
         headers: inout [String: String],
-        format: inout String
+        format: inout String,
+        drm: inout LiveDRMBuilder
     ) -> Bool {
         let lowercased = line.lowercased()
         if lowercased.hasPrefix("#exthttp:") {
             let payload = String(line.dropFirst("#EXTHTTP:".count))
-            headers.merge(parseHeaderPayload(payload), uniquingKeysWith: { _, new in new })
+            let options = parseLiveOptionsPayload(payload)
+            headers.merge(options.headers, uniquingKeysWith: { _, new in new })
+            drm.merge(options.drm)
             return true
         }
         if lowercased.hasPrefix("#extvlcopt:http-user-agent") {
@@ -1228,9 +1372,29 @@ class ApiConfig: ObservableObject {
             format = normalizedLiveFormat(valueAfter(line, marker: "=") ?? "")
             return true
         }
+        if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.license_key") {
+            drm.setLicense(valueAfter(line, marker: "license_key=") ?? valueAfter(line, marker: "="))
+            return true
+        }
+        if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.license_type") {
+            drm.setScheme(valueAfter(line, marker: "license_type=") ?? valueAfter(line, marker: "="))
+            return true
+        }
+        if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.drm_legacy") {
+            if let payload = valueAfter(line, marker: "drm_legacy=") ?? valueAfter(line, marker: "=") {
+                let parts = payload.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                drm.setScheme(parts.first.map(String.init))
+                if parts.count > 1 {
+                    drm.setLicense(String(parts[1]))
+                }
+            }
+            return true
+        }
         if lowercased.hasPrefix("#kodiprop:inputstream.adaptive.stream_headers")
             || lowercased.hasPrefix("#kodiprop:inputstream.adaptive.common_headers") {
-            headers.merge(parseHeaderPairs(valueAfter(line, marker: "=") ?? ""), uniquingKeysWith: { _, new in new })
+            let options = parseLiveOptionsPayload(valueAfter(line, marker: "=") ?? "")
+            headers.merge(options.headers, uniquingKeysWith: { _, new in new })
+            drm.merge(options.drm)
             return true
         }
         if lowercased.hasPrefix("ua") {
@@ -1246,11 +1410,17 @@ class ApiConfig: ObservableObject {
             return true
         }
         if lowercased.hasPrefix("header") {
-            headers.merge(parseHeaderPayload(valueAfter(line, marker: "header=") ?? ""), uniquingKeysWith: { _, new in new })
+            let options = parseLiveOptionsPayload(valueAfter(line, marker: "header=") ?? "")
+            headers.merge(options.headers, uniquingKeysWith: { _, new in new })
+            drm.merge(options.drm)
             return true
         }
         if lowercased.hasPrefix("format") {
             format = normalizedLiveFormat(valueAfter(line, marker: "format=") ?? "")
+            return true
+        }
+        if lowercased.hasPrefix("forcekey") {
+            drm.setForceKey(valueAfter(line, marker: "forceKey=") ?? valueAfter(line, marker: "="))
             return true
         }
         return false
@@ -1271,32 +1441,71 @@ class ApiConfig: ObservableObject {
     }
 
     private static func parseHeaderPayload(_ payload: String) -> [String: String] {
+        parseLiveOptionsPayload(payload).headers
+    }
+
+    private static func parseLiveOptionsPayload(_ payload: String) -> LiveStreamOptions {
         let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [:] }
+        guard !trimmed.isEmpty else { return LiveStreamOptions() }
         if let data = trimmed.data(using: .utf8),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return normalizedLiveHeaders(
-                object.reduce(into: [String: String]()) { result, item in
-                    result[item.key] = "\(item.value)"
-                }
-            )
+            return liveOptions(from: object.reduce(into: [String: String]()) { result, item in
+                result[item.key] = "\(item.value)"
+            })
         }
-        return parseHeaderPairs(trimmed)
+        return parseLiveOptionsPairs(trimmed)
     }
 
     private static func parseHeaderPairs(_ payload: String) -> [String: String] {
-        var headers: [String: String] = [:]
-        let normalized = payload.replacingOccurrences(of: "|", with: "&")
-        for part in normalized.split(separator: "&") {
+        parseLiveOptionsPairs(payload).headers
+    }
+
+    private static func parseLiveOptionsPairs(_ payload: String) -> LiveStreamOptions {
+        var pairs: [String: String] = [:]
+        func appendPair(_ part: String) {
             let pair = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard pair.count == 2 else { continue }
+            guard pair.count == 2 else { return }
             let key = strippedDirectiveValue(String(pair[0]))
             let value = strippedDirectiveValue(String(pair[1]))
-            guard !key.isEmpty, !value.isEmpty else { continue }
-            if key == "drmScheme" || key == "drmLicense" { continue }
-            headers[key] = value
+            guard !key.isEmpty, !value.isEmpty else { return }
+            pairs[key] = value
         }
-        return normalizedLiveHeaders(headers)
+
+        for segment in payload.split(separator: "&", omittingEmptySubsequences: false) {
+            let text = String(segment)
+            let key = text
+                .split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                .first
+                .map { strippedDirectiveValue(String($0)).lowercased() }
+            if key == "drmlicense" {
+                appendPair(text)
+            } else {
+                for part in text.split(separator: "|", omittingEmptySubsequences: false) {
+                    appendPair(String(part))
+                }
+            }
+        }
+        return liveOptions(from: pairs)
+    }
+
+    private static func liveOptions(from pairs: [String: String]) -> LiveStreamOptions {
+        var headers: [String: String] = [:]
+        var drm = LiveDRMBuilder()
+        for (rawKey, rawValue) in pairs {
+            let key = strippedDirectiveValue(rawKey)
+            let value = strippedDirectiveValue(rawValue)
+            switch key.lowercased() {
+            case "drmscheme":
+                drm.setScheme(value)
+            case "drmlicense":
+                drm.setLicense(value)
+            case "forcekey":
+                drm.setForceKey(value)
+            default:
+                headers[key] = value
+            }
+        }
+        return LiveStreamOptions(headers: normalizedLiveHeaders(headers), drm: drm.playableDRM)
     }
 
     private static func normalizedLiveHeaders(_ headers: [String: String]) -> [String: String] {
