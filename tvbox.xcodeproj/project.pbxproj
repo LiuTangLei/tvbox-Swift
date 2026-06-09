@@ -10,6 +10,7 @@
 		00DC0B0A8D261A9015CE9308 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB87D0D74C7CB27B06EBBC4A /* PlayerView.swift */; };
 		01259DBB84CEFA52CB5BC8C1 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F4341B27BB1A860CB183467 /* ContentView.swift */; };
 		020C5667E8D08A0C9B03EC8E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10969CAA236B75C35062BCE /* SettingsView.swift */; };
+		051F68E1A97DB5DAE4E95D9D /* PlayableItemMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB054A86128D0F3D5707A37F /* PlayableItemMetadataTests.swift */; };
 		058BC2FBB08D016A6FCF4C13 /* FavoritesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06CD8B07440DBB1EF2807795 /* FavoritesView.swift */; };
 		073BA70E29280BDF914166CF /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AAD980DF9D6ABDD040AC805 /* SearchView.swift */; };
 		0B78C3CA1D93FA29531ABD0B /* Movie.swift in Sources */ = {isa = PBXBuildFile; fileRef = D791457269BE952C496ECE55 /* Movie.swift */; };
@@ -156,6 +157,7 @@
 		B3D8D6F9D894DBE0594084F9 /* LiveView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveView.swift; sourceTree = "<group>"; };
 		B990F78DE6EC5B84C17182BB /* XMLTVService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XMLTVService.swift; sourceTree = "<group>"; };
 		B9D5D580A3FABBCD5EE1F9A0 /* EpisodeListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpisodeListView.swift; sourceTree = "<group>"; };
+		BB054A86128D0F3D5707A37F /* PlayableItemMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayableItemMetadataTests.swift; sourceTree = "<group>"; };
 		BB87D0D74C7CB27B06EBBC4A /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
 		BFD32454522C32D876921A30 /* CacheStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CacheStore.swift; sourceTree = "<group>"; };
 		CE83E7D21400ACFE3BC6ED38 /* LiveModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveModels.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 		0F55DB9D84FD47BF11F99DE5 /* tvbox-Tests */ = {
 			isa = PBXGroup;
 			children = (
+				BB054A86128D0F3D5707A37F /* PlayableItemMetadataTests.swift */,
 				9777D260D16B089DA2DACB22 /* PlayerGestureLayerTests.swift */,
 				5EDFB004DA6642926C611BC9 /* PlayerGestureLayerZoneClassificationTests.swift */,
 			);
@@ -569,6 +572,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CF28A416A2BCEF2E37892899 /* ChannelOverlayGroupWidthPropertyTests.swift in Sources */,
+				051F68E1A97DB5DAE4E95D9D /* PlayableItemMetadataTests.swift in Sources */,
 				F351B1ECC80D0C2A15DE2BEC /* PlayerGestureLayerPropertyTests.swift in Sources */,
 				D3B09E23F0DFA6298CCE6B40 /* PlayerGestureLayerTests.swift in Sources */,
 				C04126B16A89AF84E7EAC441 /* PlayerGestureLayerZoneClassificationTests.swift in Sources */,

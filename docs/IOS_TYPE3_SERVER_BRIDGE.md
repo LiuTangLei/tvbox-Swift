@@ -662,7 +662,7 @@ docker start type3-android-emulator
 | P1 | 配置注册与源状态管理 | 让服务端掌握完整配置上下文 |
 | P2 | chaquopy / QuickJS 全面接入 | 覆盖 Py、QuickJS 动态脚本源 |
 | P2 | mDNS 发现、HTTPS、访问 token | 提升部署体验和安全性 |
-| P3 | iOS `PlayableItem` 与高级元数据 | 减少代理依赖，提升字幕/DRM/弹幕体验 |
+| P3 | Swift 播放器高级元数据消费 | 减少代理依赖，提升字幕/DRM/弹幕体验 |
 
 ## 15. 验收标准
 
@@ -689,12 +689,12 @@ docker start type3-android-emulator
 1. Android 先新增 `Bridge` server process，注册到现有 `Nano.addProcess()`，提供 `/health` 与 `/api/v1/...` JSON API。`/proxy` 继续使用现有 `Proxy` process，不改协议。
 2. Android 首批支持两种注册方式：`POST /api/v1/config/register` 接收 `configUrl` 时调用现有 `VodConfig.load` 体系；接收 `sites` 时只注册 Bridge 自有站点表，用于 Swift 已加载配置后的按需调用。
 3. Android 首批数据接口只承诺 `home`、`category`、`detail`、`search`、`play`。实现时优先直接调用现有 `SiteApi`；当站点来自 Bridge 自有站点表而未进入 `VodConfig` 时，使用 `BaseLoader.getSpider(key, api, ext, jar)` 直接调 Spider，并把返回 JSON 归一成现有 `Result` JSON。
-4. Android `play` 第一版返回稳定 Bridge JSON：`mode`、`url`、`headers`、`format`、`parse`、`subtitles`、`danmakus`、`expiresAt`。如果结果带 headers 或 `parse == 1`，第一版先返回 `mode=proxyRequired` 结构化错误，后续 Phase 2 再实现 Bridge 自有媒体代理；已有 Spider 本地代理仍由 `/proxy` 保持可用。
+4. Android `play` 返回稳定 Bridge JSON：`mode`、`url`、`headers`、`format`、`parse`、`subtitles`、`danmakus`、`drm`、`expiresAt`。如果直连需要当前 Swift 播放内核无法消费的能力，应返回代理 URL 或结构化失败原因；已有 Spider 本地代理仍由 `/proxy` 保持可用。
 5. iOS 新增 `BridgeClient`，只负责 HTTP 调用、健康检查和把 Bridge 返回的 `Result` 映射到现有 `MovieSort.SortData`、`Movie.Video`、`VodInfo`、播放 URL。
 6. iOS `SourceBean` 保留 `jar` 和配置顶层 `spider` fallback，新增 `requiresBridge`、`isPlayableWithBridge`。`isSupportedInSwift` 保持“本地支持”语义，不把 `type=3` 伪装成本地支持。
 7. iOS `ApiConfig.parseConfig` 在构造 `SourceBean` 时写入 `jar: site.jar ?? config.spider`，并在配置加载成功后，如果 Bridge 已启用，异步注册当前配置 URL 与站点元数据。
 8. iOS `SourceService` 对 `type=3` 分派到 `BridgeClient`：首页/分类/详情/搜索走 Bridge，其它类型保持现有逻辑。
-9. iOS `DetailViewModel` 播放 `type=3` 剧集前调用 Bridge `play`，把返回的 URL 写入现有 `playUrl`。第一版不改播放器入参，不接 headers/字幕/DRM。
+9. Swift `DetailViewModel` 播放 `type=3` 剧集前调用 Bridge `play`，把返回的 URL、headers、format、字幕、弹幕、DRM 写入 `PlayableItem`。
 10. iOS 设置页增加 Bridge Server 地址、启用开关、`/health` 测试结果，并保存到 `UserDefaults`。未配置或不可达时，`type=0/1/4` 不受影响，`type=3` 返回明确错误。
 
 本轮编码完成标准：
@@ -709,5 +709,5 @@ docker start type3-android-emulator
 
 - 是否新建裁剪 Bridge-only APK 与 x86_64 flavor。
 - 是否为公网部署加入 HTTPS、token、限流和 mDNS。
-- 是否接入 `PlayableItem` 以支持 headers、字幕、弹幕、DRM。
+- 如何继续完善 `PlayableItem` 对 headers、字幕、弹幕、DRM 的播放器消费矩阵。
 - 是否实现 Bridge 自有 Range/M3U8 媒体代理。

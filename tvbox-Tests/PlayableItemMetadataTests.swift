@@ -1,0 +1,93 @@
+import Foundation
+import Testing
+@testable import TVBox
+
+@Suite("PlayableItem metadata identity")
+struct PlayableItemMetadataIdentityTests {
+    @Test("DRM changes playback identity")
+    func drmChangesPlaybackIdentity() {
+        let plain = PlayableItem(url: "https://example.com/movie.mpd")
+        let protected = PlayableItem(
+            url: "https://example.com/movie.mpd",
+            drm: PlayableDRM(
+                scheme: "widevine",
+                licenseURL: "https://license.example.com/widevine",
+                headers: ["Authorization": "Bearer token"],
+                forceKey: true
+            )
+        )
+
+        #expect(plain.id != protected.id)
+    }
+
+    @Test("subtitle and format changes playback identity")
+    func subtitleAndFormatChangePlaybackIdentity() {
+        let base = PlayableItem(url: "https://example.com/movie.m3u8")
+        let withSubtitle = PlayableItem(
+            url: "https://example.com/movie.m3u8",
+            subtitles: [
+                PlayableSubtitle(
+                    url: "https://example.com/subtitle.vtt",
+                    name: "English",
+                    lang: "en",
+                    format: "text/vtt",
+                    flag: 1
+                )!
+            ]
+        )
+        let withFormat = PlayableItem(
+            url: "https://example.com/movie.m3u8",
+            format: "application/x-mpegURL"
+        )
+
+        #expect(base.id != withSubtitle.id)
+        #expect(base.id != withFormat.id)
+    }
+}
+
+@Suite("Bridge DRM decoding")
+struct BridgeDRMDecodingTests {
+    @Test("Decodes Android Drm field names")
+    func decodesAndroidDrmFieldNames() throws {
+        let data = Data("""
+        {
+          "key": "https://license.example.com/widevine",
+          "type": "widevine",
+          "forceKey": true,
+          "header": {
+            "Authorization": " Bearer abc ",
+            "Host": "ignored.example.com"
+          }
+        }
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(BridgePlaybackDRM.self, from: data)
+        let drm = try #require(decoded.playableDRM)
+
+        #expect(drm.scheme == "widevine")
+        #expect(drm.licenseURL == "https://license.example.com/widevine")
+        #expect(drm.forceKey)
+        #expect(drm.headers["Authorization"] == "Bearer abc")
+        #expect(drm.headers["Host"] == nil)
+    }
+
+    @Test("Decodes Bridge alias field names")
+    func decodesBridgeAliasFieldNames() throws {
+        let data = Data("""
+        {
+          "licenseURL": "https://license.example.com/clearkey",
+          "scheme": "clearkey",
+          "headers": {
+            "X-License": "ok"
+          }
+        }
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(BridgePlaybackDRM.self, from: data)
+        let drm = try #require(decoded.playableDRM)
+
+        #expect(drm.scheme == "clearkey")
+        #expect(drm.licenseURL == "https://license.example.com/clearkey")
+        #expect(drm.headers["X-License"] == "ok")
+    }
+}

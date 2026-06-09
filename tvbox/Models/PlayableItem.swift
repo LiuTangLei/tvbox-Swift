@@ -60,9 +60,18 @@ struct PlayableItem: Identifiable, Hashable {
         self.id = Self.makeIdentifier(
             url: self.url,
             headers: self.headers,
+            format: self.format,
+            parse: self.parse,
             sourceKey: self.sourceKey,
             flag: self.flag,
             episodeId: self.episodeId,
+            fallbackURL: self.fallbackURL,
+            proxied: self.proxied,
+            jxFrom: self.jxFrom,
+            expiresAt: self.expiresAt,
+            subtitles: self.subtitles,
+            danmakus: self.danmakus,
+            drm: self.drm,
             origin: origin
         )
     }
@@ -94,19 +103,45 @@ struct PlayableItem: Identifiable, Hashable {
     private static func makeIdentifier(
         url: String,
         headers: [String: String],
+        format: String?,
+        parse: Int?,
         sourceKey: String?,
         flag: String?,
         episodeId: String?,
+        fallbackURL: String?,
+        proxied: Bool,
+        jxFrom: String?,
+        expiresAt: TimeInterval?,
+        subtitles: [PlayableSubtitle],
+        danmakus: [PlayableDanmaku],
+        drm: PlayableDRM?,
         origin: Origin
     ) -> String {
-        [
+        let subtitleKey = subtitles
+            .map { [$0.url, $0.name ?? "", $0.lang ?? "", $0.format ?? "", $0.flag.map(String.init) ?? ""].joined(separator: "\u{1F}") }
+            .joined(separator: "\u{1E}")
+        let danmakuKey = danmakus
+            .map { [$0.name ?? "", $0.url].joined(separator: "\u{1F}") }
+            .joined(separator: "\u{1E}")
+        let expiryKey = expiresAt.map { String($0) } ?? ""
+        let parts: [String] = [
             sourceKey ?? "",
             flag ?? "",
             episodeId ?? "",
             origin.rawValue,
             url,
-            PlaybackHTTPHeaders.cacheKey(headers)
-        ].joined(separator: "|")
+            PlaybackHTTPHeaders.cacheKey(headers),
+            format ?? "",
+            parse.map(String.init) ?? "",
+            fallbackURL ?? "",
+            proxied ? "proxied" : "",
+            jxFrom ?? "",
+            expiryKey,
+            subtitleKey,
+            danmakuKey,
+            drm?.playbackCacheKey ?? ""
+        ]
+        return parts.joined(separator: "|")
     }
 }
 
