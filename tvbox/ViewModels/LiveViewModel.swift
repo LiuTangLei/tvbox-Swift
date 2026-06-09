@@ -7,6 +7,12 @@ import Combine
 class LiveViewModel: ObservableObject {
     private static let favoriteGroupName = "收藏"
 
+    private struct LastChannelSelection: Codable, Equatable {
+        var groupName: String
+        var channelName: String
+        var url: String
+    }
+
     /// 全部频道分组。
     @Published var channelGroups: [LiveChannelGroup] = []
     /// 当前选中分组索引。
@@ -93,7 +99,10 @@ class LiveViewModel: ObservableObject {
     func switchSource() {
         catchupPlayback = nil
         // `currentChannel` 为值类型，调用 mutating 方法会触发 @Published 重新发布。
-        currentChannel?.nextSource()
+        guard var channel = currentChannel else { return }
+        channel.nextSource()
+        currentChannel = channel
+        saveLastSelection(for: channel)
     }
     
     /// 当前频道列表
@@ -222,6 +231,7 @@ class LiveViewModel: ObservableObject {
         catchupPlayback = nil
         currentChannel = channel
         if let channel {
+            saveLastSelection(for: channel)
             loadEPG(for: channel)
         } else {
             clearEPG()
@@ -269,7 +279,7 @@ class LiveViewModel: ObservableObject {
            ) {
             selectedGroupIndex = located.groupIndex
             selectedChannelIndex = located.channelIndex
-            setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
+            setCurrentChannel(located.channel)
             return
         }
 
@@ -278,6 +288,14 @@ class LiveViewModel: ObservableObject {
             selectedGroupIndex = located.groupIndex
             selectedChannelIndex = located.channelIndex
             setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
+            return
+        }
+
+        if let lastSelection = Self.loadLastSelection(),
+           let located = locateLastSelection(lastSelection, in: channelGroups) {
+            selectedGroupIndex = located.groupIndex
+            selectedChannelIndex = located.channelIndex
+            setCurrentChannel(located.channel)
             return
         }
         
@@ -317,7 +335,7 @@ class LiveViewModel: ObservableObject {
            ) {
             selectedGroupIndex = located.groupIndex
             selectedChannelIndex = located.channelIndex
-            setCurrentChannel(channelGroups[located.groupIndex].channels[located.channelIndex])
+            setCurrentChannel(located.channel)
             return
         }
 
@@ -366,27 +384,95 @@ class LiveViewModel: ObservableObject {
         return nil
     }
 
+    private func locateLastSelection(
+        _ selection: LastChannelSelection,
+        in groups: [LiveChannelGroup]
+    ) -> (groupIndex: Int, channelIndex: Int, channel: LiveChannelItem)? {
+        let normalizedName = Self.normalizedChannelName(selection.channelName)
+        guard !normalizedName.isEmpty else { return nil }
+
+        if let groupIndex = groups.firstIndex(where: { $0.groupName == selection.groupName }),
+           let located = locateSelection(
+                selection,
+                normalizedName: normalizedName,
+                in: groups[groupIndex],
+                groupIndex: groupIndex
+           ) {
+            return located
+        }
+
+        for (groupIndex, group) in groups.enumerated() {
+            if let located = locateSelection(
+                selection,
+                normalizedName: normalizedName,
+                in: group,
+                groupIndex: groupIndex
+            ) {
+                return located
+            }
+        }
+        return nil
+    }
+
+    private func locateSelection(
+        _ selection: LastChannelSelection,
+        normalizedName: String,
+        in group: LiveChannelGroup,
+        groupIndex: Int
+    ) -> (groupIndex: Int, channelIndex: Int, channel: LiveChannelItem)? {
+        for (channelIndex, channel) in group.channels.enumerated() {
+            guard Self.normalizedChannelName(channel.channelName) == normalizedName else { continue }
+            guard selection.url.isEmpty || channel.channelUrls.contains(selection.url) else { continue }
+            var restoredChannel = channel
+            if let sourceIndex = channel.channelUrls.firstIndex(of: selection.url) {
+                restoredChannel.sourceIndex = sourceIndex
+            }
+            return (groupIndex, channelIndex, restoredChannel)
+        }
+        return nil
+    }
+
     private func locateChannel(
         matching channel: LiveChannelItem,
         in groups: [LiveChannelGroup],
         preferredGroupName: String?
-    ) -> (groupIndex: Int, channelIndex: Int)? {
+    ) -> (groupIndex: Int, channelIndex: Int, channel: LiveChannelItem)? {
         if let preferredGroupName,
            let preferredGroupIndex = groups.firstIndex(where: { $0.groupName == preferredGroupName }),
            let channelIndex = groups[preferredGroupIndex].channels.firstIndex(where: {
                Self.isSamePlaybackChannel($0, channel)
            }) {
-            return (preferredGroupIndex, channelIndex)
+            return (
+                preferredGroupIndex,
+                channelIndex,
+                Self.restoredChannel(groups[preferredGroupIndex].channels[channelIndex], preservingSourceFrom: channel)
+            )
         }
 
         for (groupIndex, group) in groups.enumerated() {
             if let channelIndex = group.channels.firstIndex(where: {
                 Self.isSamePlaybackChannel($0, channel)
             }) {
-                return (groupIndex, channelIndex)
+                return (
+                    groupIndex,
+                    channelIndex,
+                    Self.restoredChannel(group.channels[channelIndex], preservingSourceFrom: channel)
+                )
             }
         }
         return nil
+    }
+
+    private static func restoredChannel(
+        _ channel: LiveChannelItem,
+        preservingSourceFrom previousChannel: LiveChannelItem
+    ) -> LiveChannelItem {
+        var restored = channel
+        if let previousURL = previousChannel.currentUrl,
+           let sourceIndex = channel.channelUrls.firstIndex(of: previousURL) {
+            restored.sourceIndex = sourceIndex
+        }
+        return restored
     }
 
     private static func isSamePlaybackChannel(
@@ -410,9 +496,11 @@ class LiveViewModel: ObservableObject {
     }
 
     private static func favoriteKey(for channel: LiveChannelItem) -> String {
-        channel.channelName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        normalizedChannelName(channel.channelName)
+    }
+
+    private static func normalizedChannelName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func loadFavoriteChannelKeys() -> [String] {
@@ -433,6 +521,32 @@ class LiveViewModel: ObservableObject {
             result.append(normalized)
         }
         return result
+    }
+
+    private func saveLastSelection(for channel: LiveChannelItem) {
+        let selection = LastChannelSelection(
+            groupName: currentGroupName,
+            channelName: channel.channelName,
+            url: channel.currentUrl ?? ""
+        )
+        Self.saveLastSelection(selection)
+    }
+
+    private var currentGroupName: String {
+        guard selectedGroupIndex >= 0, selectedGroupIndex < channelGroups.count else { return "" }
+        return channelGroups[selectedGroupIndex].groupName
+    }
+
+    private static func loadLastSelection() -> LastChannelSelection? {
+        guard let data = UserDefaults.standard.data(forKey: HawkConfig.LIVE_LAST_CHANNEL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(LastChannelSelection.self, from: data)
+    }
+
+    private static func saveLastSelection(_ selection: LastChannelSelection) {
+        guard let data = try? JSONEncoder().encode(selection) else { return }
+        UserDefaults.standard.set(data, forKey: HawkConfig.LIVE_LAST_CHANNEL)
     }
 
     deinit {

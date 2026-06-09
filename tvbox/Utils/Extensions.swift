@@ -32,6 +32,7 @@ struct HawkConfig {
     static let SEARCH_HISTORY = "search_history"
     static let CONFIG_API_HISTORY = "config_api_history"
     static let LIVE_CHANNEL_FAVORITES = "live_channel_favorites"
+    static let LIVE_LAST_CHANNEL = "live_last_channel"
     static let BRIDGE_ENABLED = "bridge_enabled"
     static let BRIDGE_SERVER_URL = "bridge_server_url"
     static let BRIDGE_LAST_VERIFIED_URL = "bridge_last_verified_url"
