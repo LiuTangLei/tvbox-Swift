@@ -158,6 +158,7 @@ struct PlayerView: View {
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackRateChanged: ((Double) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -228,6 +229,7 @@ struct PlayerView: View {
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
+                onPlaybackRateChanged: onPlaybackRateChanged,
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
@@ -246,6 +248,7 @@ struct PlayerView: View {
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
                 onProgressChanged: onProgressChanged,
+                onPlaybackRateChanged: onPlaybackRateChanged,
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
@@ -283,6 +286,7 @@ struct AVPlayerContentView: View {
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackRateChanged: ((Double) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -582,6 +586,7 @@ struct AVPlayerContentView: View {
                     if abs(savedPlaybackRate - Double(normalized)) > 0.001 {
                         savedPlaybackRate = Double(normalized)
                     }
+                    onPlaybackRateChanged?(Double(normalized))
                 }
             }
         ]
@@ -1594,13 +1599,16 @@ struct AVPlayerContentView: View {
     }
 
     private func syncRateFromSettings() {
-        rate = normalizedSavedPlaybackRate
+        let normalized = normalizedSavedPlaybackRate
+        rate = normalized
+        onPlaybackRateChanged?(Double(normalized))
     }
 
     private func setPlaybackRate(_ value: Float) {
         let normalized = Self.normalizedPlaybackRate(from: value)
         rate = normalized
         savedPlaybackRate = Double(normalized)
+        onPlaybackRateChanged?(Double(normalized))
         guard let player else { return }
         player.defaultRate = normalized
         if player.rate > 0 {
@@ -1611,6 +1619,7 @@ struct AVPlayerContentView: View {
     private func applyPreferredPlaybackRate(to player: AVPlayer) {
         let normalized = normalizedSavedPlaybackRate
         rate = normalized
+        onPlaybackRateChanged?(Double(normalized))
         player.defaultRate = normalized
         if player.rate > 0 {
             player.rate = normalized

@@ -26,6 +26,7 @@ struct DetailView: View {
     @State private var lastNetworkPlaybackReconnectAt = Date.distantPast
     @State private var isCollected = false
     @State private var inlineVideoAspectRatio: CGFloat = 16 / 9
+    @State private var currentPlaybackRate: Double = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED) as? Double ?? 1.0
     
     var body: some View {
         GeometryReader { proxy in
@@ -115,6 +116,7 @@ struct DetailView: View {
                     startPosition: viewModel.currentPlaybackSeconds(),
                     playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
+                    onPlaybackRateChanged: handlePlaybackRateChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -155,6 +157,7 @@ struct DetailView: View {
                     startPosition: viewModel.currentPlaybackSeconds(),
                     playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
+                    onPlaybackRateChanged: handlePlaybackRateChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -233,6 +236,7 @@ struct DetailView: View {
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
                     onProgressChanged: handlePlaybackProgress,
+                    onPlaybackRateChanged: handlePlaybackRateChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -718,7 +722,8 @@ struct DetailView: View {
         let playbackState = VodPlaybackState(
             flag: viewModel.selectedFlag,
             episodeIndex: viewModel.selectedEpisodeIndex,
-            progressSeconds: progress
+            progressSeconds: progress,
+            playbackRate: currentPlaybackRate
         )
         
         Task { @MainActor in
@@ -734,6 +739,12 @@ struct DetailView: View {
     private func handlePlaybackProgress(_ seconds: Double, _: Double?) {
         viewModel.updatePlaybackProgress(seconds: seconds)
         persistHistoryIfNeeded(force: false, currentProgress: seconds)
+    }
+
+    private func handlePlaybackRateChanged(_ rate: Double) {
+        guard rate.isFinite, rate >= 0.25, rate <= 5 else { return }
+        currentPlaybackRate = rate
+        saveHistoryForCurrentEpisode()
     }
 
     private func handlePlaybackStarted() {
@@ -1705,6 +1716,7 @@ struct FullScreenPlayerView: View {
     var startPosition: Double = 0
     let playbackReloadToken: UUID
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackRateChanged: ((Double) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -1731,6 +1743,7 @@ struct FullScreenPlayerView: View {
                     httpHeaders: httpHeaders,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
+                    onPlaybackRateChanged: onPlaybackRateChanged,
                     onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
                     onPlaybackFailed: onPlaybackFailed,

@@ -18,6 +18,8 @@ struct VodPlaybackState: Codable {
     var episodeIndex: Int
     /// 播放进度（秒）。
     var progressSeconds: Double
+    /// 播放倍速，兼容 Android History.speed。
+    var playbackRate: Double?
 }
 
 /// 视频收藏

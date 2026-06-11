@@ -302,6 +302,9 @@ class DetailViewModel: ObservableObject {
         let progress = max(0, state.progressSeconds)
         resumeSeconds = progress
         realtimeProgressSeconds = progress
+        if let playbackRate = state.playbackRate, Self.isValidPlaybackRate(playbackRate) {
+            UserDefaults.standard.set(playbackRate, forKey: HawkConfig.PLAY_SPEED)
+        }
         let episodeURL = episodes[targetIndex].url
         if currentSource?.requiresBridge == true {
             resetQualityState()
@@ -309,6 +312,10 @@ class DetailViewModel: ObservableObject {
             updateQualityOptions(for: episodeURL, resetSelection: true)
         }
         startPlayback(episodeURL: episodeURL, flag: selectedFlag)
+    }
+
+    private static func isValidPlaybackRate(_ value: Double) -> Bool {
+        value.isFinite && value >= 0.25 && value <= 5
     }
     
     /// 选择清晰度

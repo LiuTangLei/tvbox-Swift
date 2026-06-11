@@ -1402,6 +1402,7 @@ struct VLCVodPlayerView: View {
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackRateChanged: ((Double) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -1522,6 +1523,7 @@ struct VLCVodPlayerView: View {
             startPlayback()
             wakeUpControls()
             reportVideoOrientation(for: controller.videoSize)
+            onPlaybackRateChanged?(Double(controller.playbackRate))
         }
         .onChange(of: urlString) { _, _ in
             startPlayback()
@@ -1542,6 +1544,9 @@ struct VLCVodPlayerView: View {
         }
         .onChange(of: controller.isPlaying) { _, isPlaying in
             if isPlaying { onPlaybackStarted?() }
+        }
+        .onChange(of: controller.playbackRate) { _, newValue in
+            onPlaybackRateChanged?(Double(newValue))
         }
         .onReceive(controller.$videoSize) { newSize in
             reportVideoOrientation(for: newSize)
@@ -2997,6 +3002,7 @@ struct VLCVodPlayerView: View {
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
+    var onPlaybackRateChanged: ((Double) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -3015,6 +3021,7 @@ struct VLCVodPlayerView: View {
             httpHeaders: httpHeaders,
             startPosition: startPosition,
             onProgressChanged: onProgressChanged,
+            onPlaybackRateChanged: onPlaybackRateChanged,
             onPlaybackStarted: onPlaybackStarted,
             onPlaybackEnded: onPlaybackEnded,
             onPlaybackFailed: onPlaybackFailed,
