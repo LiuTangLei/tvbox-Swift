@@ -65,6 +65,8 @@ class SettingsViewModel: ObservableObject {
     @Published var livePlayerEngine: PlayerEngine = .system
     /// 解码模式选择。
     @Published var decodeMode: VideoDecodeMode = .auto
+    /// 视频画面缩放模式。
+    @Published var videoScaleMode: VideoScaleMode = .defaultMode
     /// VLC 缓冲策略。
     @Published var vlcBufferMode: VLCBufferMode = .defaultMode
     /// 快进/快退步长（秒）。
@@ -88,6 +90,8 @@ class SettingsViewModel: ObservableObject {
     let playerEngineOptions: [PlayerEngine] = PlayerEngine.availableEngines
     /// 解码模式候选。
     let decodeModeOptions: [VideoDecodeMode] = VideoDecodeMode.allCases
+    /// 视频缩放模式候选。
+    let videoScaleModeOptions: [VideoScaleMode] = VideoScaleMode.allCases
     /// VLC 缓冲模式候选。
     let vlcBufferModeOptions: [VLCBufferMode] = VLCBufferMode.allCases
 
@@ -123,6 +127,9 @@ class SettingsViewModel: ObservableObject {
         )
         decodeMode = VideoDecodeMode.fromStoredValue(
             defaults.integer(forKey: HawkConfig.PLAY_DECODE_MODE)
+        )
+        videoScaleMode = VideoScaleMode.fromStoredValue(
+            defaults.integer(forKey: HawkConfig.PLAY_SCALE)
         )
         vlcBufferMode = VLCBufferMode.fromStoredValue(
             defaults.integer(forKey: HawkConfig.PLAY_VLC_BUFFER_MODE)
@@ -462,6 +469,13 @@ class SettingsViewModel: ObservableObject {
         guard decodeModeOptions.contains(mode) else { return }
         decodeMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: HawkConfig.PLAY_DECODE_MODE)
+    }
+
+    /// 设置视频画面缩放模式
+    func setVideoScaleMode(_ mode: VideoScaleMode) {
+        guard videoScaleModeOptions.contains(mode) else { return }
+        videoScaleMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: HawkConfig.PLAY_SCALE)
     }
 
     /// 设置 VLC 缓冲策略

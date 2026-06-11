@@ -22,11 +22,13 @@ struct DetailView: View {
     #if os(macOS)
     @State private var pendingMacWindowFullScreen = false
     #endif
+    @State private var pendingNetworkPlaybackReconnectTask: Task<Void, Never>?
     @State private var lastPersistedProgress: Double = 0
     @State private var lastNetworkPlaybackReconnectAt = Date.distantPast
     @State private var isCollected = false
     @State private var inlineVideoAspectRatio: CGFloat = 16 / 9
     @State private var currentPlaybackRate: Double = UserDefaults.standard.object(forKey: HawkConfig.PLAY_SPEED) as? Double ?? 1.0
+    @State private var currentVideoScaleMode: VideoScaleMode = VideoScaleMode.fromStoredValue(UserDefaults.standard.integer(forKey: HawkConfig.PLAY_SCALE))
     
     var body: some View {
         GeometryReader { proxy in
@@ -91,6 +93,8 @@ struct DetailView: View {
             refreshCollectState()
         }
         .onDisappear {
+            pendingNetworkPlaybackReconnectTask?.cancel()
+            pendingNetworkPlaybackReconnectTask = nil
             viewModel.commitPlaybackProgressSnapshot()
             persistHistoryIfNeeded(force: true)
             showFullScreen = false
@@ -114,9 +118,11 @@ struct DetailView: View {
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
+                    videoScaleMode: currentVideoScaleMode,
                     playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackRateChanged: handlePlaybackRateChanged,
+                    onVideoScaleChanged: handleVideoScaleChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -155,9 +161,11 @@ struct DetailView: View {
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
+                    videoScaleMode: currentVideoScaleMode,
                     playbackReloadToken: viewModel.playbackReloadToken,
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackRateChanged: handlePlaybackRateChanged,
+                    onVideoScaleChanged: handleVideoScaleChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -235,8 +243,10 @@ struct DetailView: View {
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
+                    videoScaleMode: currentVideoScaleMode,
                     onProgressChanged: handlePlaybackProgress,
                     onPlaybackRateChanged: handlePlaybackRateChanged,
+                    onVideoScaleChanged: handleVideoScaleChanged,
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
@@ -723,7 +733,8 @@ struct DetailView: View {
             flag: viewModel.selectedFlag,
             episodeIndex: viewModel.selectedEpisodeIndex,
             progressSeconds: progress,
-            playbackRate: currentPlaybackRate
+            playbackRate: currentPlaybackRate,
+            videoScaleRawValue: currentVideoScaleMode.rawValue
         )
         
         Task { @MainActor in
@@ -747,6 +758,11 @@ struct DetailView: View {
         saveHistoryForCurrentEpisode()
     }
 
+    private func handleVideoScaleChanged(_ mode: VideoScaleMode) {
+        currentVideoScaleMode = mode
+        saveHistoryForCurrentEpisode()
+    }
+
     private func handlePlaybackStarted() {
         viewModel.markPlaybackStarted()
     }
@@ -761,9 +777,23 @@ struct DetailView: View {
         let now = Date()
         guard now.timeIntervalSince(lastNetworkPlaybackReconnectAt) >= 1.5 else { return }
         lastNetworkPlaybackReconnectAt = now
+        pendingNetworkPlaybackReconnectTask?.cancel()
         viewModel.commitPlaybackProgressSnapshot()
         stopSharedPlayers()
         viewModel.reconnectCurrentPlaybackAfterNetworkPathChange()
+        pendingNetworkPlaybackReconnectTask = Task { @MainActor in
+            defer { pendingNetworkPlaybackReconnectTask = nil }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled,
+                  viewModel.isAwaitingNetworkPlaybackReconnect,
+                  viewModel.isPlaying,
+                  viewModel.playUrl != nil else {
+                return
+            }
+            viewModel.commitPlaybackProgressSnapshot()
+            stopSharedPlayers()
+            viewModel.reconnectCurrentPlaybackAfterNetworkPathChange()
+        }
     }
 
     private func stopSharedPlayers() {
@@ -792,6 +822,12 @@ struct DetailView: View {
         ) else { return }
         
         viewModel.applyPlaybackState(playbackState)
+        if let playbackRate = playbackState.playbackRate, playbackRate.isFinite, playbackRate >= 0.25, playbackRate <= 5 {
+            currentPlaybackRate = playbackRate
+        }
+        if let rawScale = playbackState.videoScaleRawValue {
+            currentVideoScaleMode = VideoScaleMode.fromStoredValue(rawScale)
+        }
         lastPersistedProgress = max(playbackState.progressSeconds, 0)
     }
     
@@ -1714,9 +1750,11 @@ struct FullScreenPlayerView: View {
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    var videoScaleMode: VideoScaleMode = .defaultMode
     let playbackReloadToken: UUID
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackRateChanged: ((Double) -> Void)? = nil
+    var onVideoScaleChanged: ((VideoScaleMode) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -1742,8 +1780,10 @@ struct FullScreenPlayerView: View {
                     playback: playback,
                     httpHeaders: httpHeaders,
                     startPosition: startPosition,
+                    videoScaleMode: videoScaleMode,
                     onProgressChanged: onProgressChanged,
                     onPlaybackRateChanged: onPlaybackRateChanged,
+                    onVideoScaleChanged: onVideoScaleChanged,
                     onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
                     onPlaybackFailed: onPlaybackFailed,

@@ -151,6 +151,38 @@ enum VideoDecodeMode: Int, CaseIterable, Identifiable {
     }
 }
 
+/// 视频画面缩放模式，对齐 Android ExoPlayer resize mode 下标。
+enum VideoScaleMode: Int, CaseIterable, Identifiable, Hashable {
+    case fit = 0
+    case fixedWidth = 1
+    case fixedHeight = 2
+    case fill = 3
+    case zoom = 4
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .fit:
+            return "原始"
+        case .fixedWidth:
+            return "16:9"
+        case .fixedHeight:
+            return "4:3"
+        case .fill:
+            return "填充"
+        case .zoom:
+            return "裁剪"
+        }
+    }
+
+    static var defaultMode: VideoScaleMode { .fit }
+
+    static func fromStoredValue(_ rawValue: Int) -> VideoScaleMode {
+        VideoScaleMode(rawValue: rawValue) ?? defaultMode
+    }
+}
+
 /// VLC 缓冲策略
 enum VLCBufferMode: Int, CaseIterable, Identifiable {
     /// 低延迟优先，适合直播但容错较低。

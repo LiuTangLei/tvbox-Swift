@@ -305,6 +305,10 @@ class DetailViewModel: ObservableObject {
         if let playbackRate = state.playbackRate, Self.isValidPlaybackRate(playbackRate) {
             UserDefaults.standard.set(playbackRate, forKey: HawkConfig.PLAY_SPEED)
         }
+        if let rawScale = state.videoScaleRawValue {
+            let scaleMode = VideoScaleMode.fromStoredValue(rawScale)
+            UserDefaults.standard.set(scaleMode.rawValue, forKey: HawkConfig.PLAY_SCALE)
+        }
         let episodeURL = episodes[targetIndex].url
         if currentSource?.requiresBridge == true {
             resetQualityState()
@@ -360,6 +364,10 @@ class DetailViewModel: ObservableObject {
         if playbackFallbackMessage == networkReconnectPlaybackMessage {
             playbackFallbackMessage = nil
         }
+    }
+
+    var isAwaitingNetworkPlaybackReconnect: Bool {
+        playbackFallbackMessage == networkReconnectPlaybackMessage
     }
     
     /// 当前实时进度（不触发 UI 高频刷新）

@@ -41,6 +41,7 @@ struct SettingsView: View {
         case livePlayer
         case liveSource
         case decode
+        case videoScale
         case vlcBuffer
         case playTimeStep
     }
@@ -128,6 +129,10 @@ struct SettingsView: View {
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "cpu", title: "视频解码", value: viewModel.decodeMode.title) {
                             showingPicker = .decode
+                        }
+                        Divider().background(Color.white.opacity(0.1))
+                        SettingsRow(icon: "arrow.up.left.and.arrow.down.right", title: "画面缩放", value: viewModel.videoScaleMode.title) {
+                            showingPicker = .videoScale
                         }
                         if PlayerEngine.isVLCAvailable {
                             Divider().background(Color.white.opacity(0.1))
@@ -258,6 +263,19 @@ struct SettingsView: View {
                 itemTitle: { $0.title },
                 onSelect: { mode in
                     viewModel.setDecodeMode(mode)
+                    showingPicker = .none
+                },
+                onCancel: { showingPicker = .none }
+            )
+        case .videoScale:
+            SelectionModal(
+                title: "画面缩放模式",
+                icon: "arrow.up.left.and.arrow.down.right",
+                items: viewModel.videoScaleModeOptions,
+                selectedItem: viewModel.videoScaleMode,
+                itemTitle: { $0.title },
+                onSelect: { mode in
+                    viewModel.setVideoScaleMode(mode)
                     showingPicker = .none
                 },
                 onCancel: { showingPicker = .none }

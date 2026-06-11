@@ -81,12 +81,13 @@ struct SubtitleAppearance: Equatable {
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
     let player: AVPlayer
+    let videoScaleMode: VideoScaleMode
 
     var body: some View {
         #if os(macOS)
-        MacOSPlayerView(player: player)
+        MacOSPlayerView(player: player, videoGravity: videoScaleMode.avVideoGravity)
         #else
-        VideoPlayer(player: player)
+        IOSPlayerLayerView(player: player, videoGravity: videoScaleMode.avVideoGravity)
         #endif
     }
 }
@@ -94,6 +95,7 @@ struct PlatformVideoPlayer: View {
 #if os(macOS)
 private struct MacOSPlayerView: NSViewRepresentable {
     let player: AVPlayer
+    let videoGravity: AVLayerVideoGravity
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
@@ -101,7 +103,7 @@ private struct MacOSPlayerView: NSViewRepresentable {
         view.layer?.backgroundColor = NSColor.black.cgColor
         view.controlsStyle = .none
         view.showsFullScreenToggleButton = false
-        view.videoGravity = .resizeAspect
+        view.videoGravity = videoGravity
         view.player = player
         return view
     }
@@ -111,13 +113,55 @@ private struct MacOSPlayerView: NSViewRepresentable {
         if nsView.player !== player {
             nsView.player = player
         }
+        nsView.videoGravity = videoGravity
     }
 
     static func dismantleNSView(_ nsView: AVPlayerView, coordinator: ()) {
         nsView.player = nil
     }
 }
+#else
+private final class PlayerLayerUIView: UIView {
+    override static var layerClass: AnyClass { AVPlayerLayer.self }
+
+    var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+}
+
+private struct IOSPlayerLayerView: UIViewRepresentable {
+    let player: AVPlayer
+    let videoGravity: AVLayerVideoGravity
+
+    func makeUIView(context: Context) -> PlayerLayerUIView {
+        let view = PlayerLayerUIView()
+        view.backgroundColor = .black
+        view.playerLayer.player = player
+        view.playerLayer.videoGravity = videoGravity
+        return view
+    }
+
+    func updateUIView(_ uiView: PlayerLayerUIView, context: Context) {
+        if uiView.playerLayer.player !== player {
+            uiView.playerLayer.player = player
+        }
+        uiView.playerLayer.videoGravity = videoGravity
+    }
+}
 #endif
+
+private extension VideoScaleMode {
+    var avVideoGravity: AVLayerVideoGravity {
+        switch self {
+        case .fill:
+            return .resize
+        case .zoom:
+            return .resizeAspectFill
+        case .fit, .fixedWidth, .fixedHeight:
+            return .resizeAspect
+        }
+    }
+}
 
 /// 系统播放器会话控制器：用于在页面内联与全屏视图间复用同一 AVPlayer，避免重复拉流
 @MainActor
@@ -157,8 +201,10 @@ struct PlayerView: View {
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackRateChanged: ((Double) -> Void)? = nil
+    var onVideoScaleChanged: ((VideoScaleMode) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -228,8 +274,10 @@ struct PlayerView: View {
                 playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
+                videoScaleMode: videoScaleMode,
                 onProgressChanged: onProgressChanged,
                 onPlaybackRateChanged: onPlaybackRateChanged,
+                onVideoScaleChanged: onVideoScaleChanged,
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
@@ -247,8 +295,10 @@ struct PlayerView: View {
                 playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
+                videoScaleMode: videoScaleMode,
                 onProgressChanged: onProgressChanged,
                 onPlaybackRateChanged: onPlaybackRateChanged,
+                onVideoScaleChanged: onVideoScaleChanged,
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
@@ -285,8 +335,10 @@ struct AVPlayerContentView: View {
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackRateChanged: ((Double) -> Void)? = nil
+    var onVideoScaleChanged: ((VideoScaleMode) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -331,8 +383,10 @@ struct AVPlayerContentView: View {
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
     @State private var hasReportedPlaybackFailure = false
     @State private var stalledRecoveryWorkItem: DispatchWorkItem?
+    @State private var manualPlayRecoveryWorkItem: DispatchWorkItem?
 
     @State private var videoZoomScale: CGFloat = 1.0
+    @State private var activeVideoScaleMode: VideoScaleMode = VideoScaleMode.fromStoredValue(UserDefaults.standard.integer(forKey: HawkConfig.PLAY_SCALE))
     @State private var lastReportedVideoOrientation: Bool?
     @State private var lastReportedVideoSize: CGSize = .zero
 
@@ -340,7 +394,7 @@ struct AVPlayerContentView: View {
         ZStack {
             Group {
                 if let player = player {
-                    PlatformVideoPlayer(player: player)
+                    PlatformVideoPlayer(player: player, videoScaleMode: activeVideoScaleMode)
                         #if os(iOS)
                         .scaleEffect(videoZoomScale)
                         #endif
@@ -444,8 +498,12 @@ struct AVPlayerContentView: View {
         }
         .onAppear {
             syncRateFromSettings()
+            syncVideoScaleModeFromParent()
             setupPlayer()
             wakeUpControls()
+        }
+        .onChange(of: videoScaleMode) { _, _ in
+            syncVideoScaleModeFromParent()
         }
         .onChange(of: urlString) { _, _ in
             syncRateFromSettings()
@@ -643,6 +701,8 @@ struct AVPlayerContentView: View {
             NotificationCenter.default.removeObserver(observer)
             playbackStalledObserver = nil
         }
+        manualPlayRecoveryWorkItem?.cancel()
+        manualPlayRecoveryWorkItem = nil
         stalledRecoveryWorkItem?.cancel()
         stalledRecoveryWorkItem = nil
         playerObservers.forEach { $0.invalidate() }
@@ -700,6 +760,8 @@ struct AVPlayerContentView: View {
     }
 
     private func startPlayback(for player: AVPlayer, startPosition: Double? = nil) {
+        manualPlayRecoveryWorkItem?.cancel()
+        manualPlayRecoveryWorkItem = nil
         let target = max(startPosition ?? self.startPosition, 0)
 
         if target > 0 {
@@ -716,28 +778,39 @@ struct AVPlayerContentView: View {
     private func togglePlayPause() {
         guard let player = player else { return }
         if player.timeControlStatus == .playing {
+            manualPlayRecoveryWorkItem?.cancel()
+            manualPlayRecoveryWorkItem = nil
             player.pause()
         } else if shouldRecreateMediaForManualPlay(player) {
             restartCurrentMediaFromCurrentPosition()
         } else {
             playAtPreferredRate(player)
+            scheduleManualPlayRecoveryCheck(for: player)
         }
     }
 
     private func shouldRecreateMediaForManualPlay(_ player: AVPlayer) -> Bool {
         guard player.timeControlStatus != .playing else { return false }
+        if player.error != nil {
+            return true
+        }
         if playbackError != nil || hasReportedPlaybackFailure {
             return true
         }
-        if player.currentItem?.status == .failed {
-            return true
+        if let item = player.currentItem {
+            if item.status == .failed || item.error != nil {
+                return true
+            }
+            if item.isPlaybackBufferEmpty && !item.isPlaybackLikelyToKeepUp && currentResumePosition() > 0 {
+                return true
+            }
         }
         return player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-            && player.reasonForWaitingToPlay == .toMinimizeStalls
-            && player.rate > 0
     }
 
     private func restartCurrentMediaFromCurrentPosition() {
+        manualPlayRecoveryWorkItem?.cancel()
+        manualPlayRecoveryWorkItem = nil
         let resumePosition = currentResumePosition()
         cleanupPlayer()
         currentTime = resumePosition
@@ -747,6 +820,21 @@ struct AVPlayerContentView: View {
         isPreparing = true
         isPlaying = false
         setupPlayer(startPositionOverride: resumePosition, forceReload: true)
+    }
+
+    private func scheduleManualPlayRecoveryCheck(for player: AVPlayer) {
+        manualPlayRecoveryWorkItem?.cancel()
+        let baseline = currentResumePosition()
+        let workItem = DispatchWorkItem {
+            guard self.player === player else { return }
+            guard player.timeControlStatus != .playing else { return }
+            let current = player.currentTime().seconds
+            let advanced = current.isFinite && baseline.isFinite ? current - baseline : 0
+            guard advanced < 0.5 else { return }
+            self.restartCurrentMediaFromCurrentPosition()
+        }
+        manualPlayRecoveryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
     }
 
     private func currentResumePosition() -> Double {
@@ -1080,6 +1168,7 @@ struct AVPlayerContentView: View {
                 // 左：倍速、音轨、字幕
                 HStack(spacing: 6) {
                     playbackRateMenu
+                    videoScaleMenu
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
@@ -1201,6 +1290,7 @@ struct AVPlayerContentView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
+                    videoScaleMenu
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
@@ -1363,6 +1453,29 @@ struct AVPlayerContentView: View {
             .padding(.vertical, 6)
             .background(Color.white.opacity(0.12))
             .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var videoScaleMenu: some View {
+        Menu {
+            ForEach(VideoScaleMode.allCases) { mode in
+                Button {
+                    wakeUpControls()
+                    setVideoScaleMode(mode)
+                    showOSD(icon: "arrow.up.left.and.arrow.down.right")
+                } label: {
+                    HStack {
+                        Text(mode.title)
+                        if mode == activeVideoScaleMode {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            trackMenuLabel(icon: "arrow.up.left.and.arrow.down.right", title: activeVideoScaleMode.title)
         }
         .buttonStyle(.plain)
     }
@@ -1614,6 +1727,19 @@ struct AVPlayerContentView: View {
         if player.rate > 0 {
             player.rate = normalized
         }
+    }
+
+    private func syncVideoScaleModeFromParent() {
+        guard activeVideoScaleMode != videoScaleMode else { return }
+        activeVideoScaleMode = videoScaleMode
+        UserDefaults.standard.set(videoScaleMode.rawValue, forKey: HawkConfig.PLAY_SCALE)
+        onVideoScaleChanged?(videoScaleMode)
+    }
+
+    private func setVideoScaleMode(_ mode: VideoScaleMode) {
+        activeVideoScaleMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: HawkConfig.PLAY_SCALE)
+        onVideoScaleChanged?(mode)
     }
 
     private func applyPreferredPlaybackRate(to player: AVPlayer) {

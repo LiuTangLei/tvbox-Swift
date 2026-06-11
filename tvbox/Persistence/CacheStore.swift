@@ -20,6 +20,8 @@ struct VodPlaybackState: Codable {
     var progressSeconds: Double
     /// 播放倍速，兼容 Android History.speed。
     var playbackRate: Double?
+    /// 画面缩放模式，兼容 Android History.scale。
+    var videoScaleRawValue: Int?
 }
 
 /// 视频收藏

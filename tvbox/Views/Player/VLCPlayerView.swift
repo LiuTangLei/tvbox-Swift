@@ -413,7 +413,9 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         case .error, .stopped, .ended:
             return true
         case .opening, .buffering:
-            return isInBufferingState && !mediaPlayer.isPlaying
+            return !mediaPlayer.isPlaying
+        case .paused:
+            return isInBufferingState || isPreparing
         default:
             return false
         }
@@ -1401,8 +1403,10 @@ struct VLCVodPlayerView: View {
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackRateChanged: ((Double) -> Void)? = nil
+    var onVideoScaleChanged: ((VideoScaleMode) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -1426,6 +1430,7 @@ struct VLCVodPlayerView: View {
     @State private var lastReportedVideoOrientation: Bool?
     @State private var lastReportedVideoSize: CGSize = .zero
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
+    @State private var activeVideoScaleMode: VideoScaleMode = VideoScaleMode.fromStoredValue(UserDefaults.standard.integer(forKey: HawkConfig.PLAY_SCALE))
 
     private var controller: VLCPlayerController {
         sharedController ?? ownedController
@@ -1435,6 +1440,7 @@ struct VLCVodPlayerView: View {
         ZStack {
             VLCDrawableView(controller: controller)
                 .background(Color.black)
+                .scaleEffect(activeVideoScaleMode.vlcDisplayScale)
             #if !os(iOS)
                 .onTapGesture(count: 2) {
                     onToggleFullScreen?()
@@ -1520,10 +1526,14 @@ struct VLCVodPlayerView: View {
             }
         }
         .onAppear {
+            syncVideoScaleModeFromParent()
             startPlayback()
             wakeUpControls()
             reportVideoOrientation(for: controller.videoSize)
             onPlaybackRateChanged?(Double(controller.playbackRate))
+        }
+        .onChange(of: videoScaleMode) { _, _ in
+            syncVideoScaleModeFromParent()
         }
         .onChange(of: urlString) { _, _ in
             startPlayback()
@@ -1753,6 +1763,7 @@ struct VLCVodPlayerView: View {
                 // 左：倍速、音轨、字幕
                 HStack(spacing: 6) {
                     playbackRateMenu
+                    videoScaleMenu
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
@@ -1874,6 +1885,7 @@ struct VLCVodPlayerView: View {
                 // 左侧区：倍速、音轨、字幕
                 HStack(spacing: 10) {
                     playbackRateMenu
+                    videoScaleMenu
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
@@ -2035,6 +2047,29 @@ struct VLCVodPlayerView: View {
             .padding(.vertical, 6)
             .background(Color.white.opacity(0.12))
             .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var videoScaleMenu: some View {
+        Menu {
+            ForEach(VideoScaleMode.allCases) { mode in
+                Button {
+                    wakeUpControls()
+                    setVideoScaleMode(mode)
+                    showOSD(icon: "arrow.up.left.and.arrow.down.right")
+                } label: {
+                    HStack {
+                        Text(mode.title)
+                        if mode == activeVideoScaleMode {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            trackMenuLabel(icon: "arrow.up.left.and.arrow.down.right", title: activeVideoScaleMode.title)
         }
         .buttonStyle(.plain)
     }
@@ -2271,6 +2306,20 @@ struct VLCVodPlayerView: View {
         return "\(String(format: "%.2f", rate))x"
     }
 
+    private func syncVideoScaleModeFromParent() {
+        guard activeVideoScaleMode != videoScaleMode else { return }
+        activeVideoScaleMode = videoScaleMode
+        UserDefaults.standard.set(videoScaleMode.rawValue, forKey: HawkConfig.PLAY_SCALE)
+        onVideoScaleChanged?(videoScaleMode)
+    }
+
+    private func setVideoScaleMode(_ mode: VideoScaleMode) {
+        guard activeVideoScaleMode != mode else { return }
+        activeVideoScaleMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: HawkConfig.PLAY_SCALE)
+        onVideoScaleChanged?(mode)
+    }
+
     private var volumeIconName: String {
         switch controller.volume {
         case ...0:
@@ -2279,6 +2328,19 @@ struct VLCVodPlayerView: View {
             return "speaker.wave.1.fill"
         default:
             return "speaker.wave.2.fill"
+        }
+    }
+}
+
+private extension VideoScaleMode {
+    var vlcDisplayScale: CGFloat {
+        switch self {
+        case .zoom:
+            return 1.16
+        case .fill:
+            return 1.08
+        case .fit, .fixedWidth, .fixedHeight:
+            return 1
         }
     }
 }
@@ -3001,8 +3063,10 @@ struct VLCVodPlayerView: View {
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackRateChanged: ((Double) -> Void)? = nil
+    var onVideoScaleChanged: ((VideoScaleMode) -> Void)? = nil
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
@@ -3020,8 +3084,10 @@ struct VLCVodPlayerView: View {
             playback: playback,
             httpHeaders: httpHeaders,
             startPosition: startPosition,
+            videoScaleMode: videoScaleMode,
             onProgressChanged: onProgressChanged,
             onPlaybackRateChanged: onPlaybackRateChanged,
+            onVideoScaleChanged: onVideoScaleChanged,
             onPlaybackStarted: onPlaybackStarted,
             onPlaybackEnded: onPlaybackEnded,
             onPlaybackFailed: onPlaybackFailed,
