@@ -24,19 +24,23 @@ struct HistoryView: View {
     var body: some View {
         historyContent
     }
+
+    private var visibleRecords: [VodRecord] {
+        Array(records.filter(VodHistoryPolicy.isVisible).prefix(VodHistoryPolicy.limit))
+    }
     
     /// 历史记录内容视图（不含 NavigationStack 包裹）。
     /// iOS 下由外层 ProfileView/SettingsView 的 NavigationStack 管理导航；
     /// macOS 下由 ContentView 的 NavigationSplitView detail 区域使用独立 NavigationStack。
     private var historyContent: some View {
         Group {
-            if records.isEmpty {
+            if visibleRecords.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
                         // 记录卡片支持跳转详情与右键删除。
-                        ForEach(records) { item in
+                        ForEach(visibleRecords) { item in
                             NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
                                 recordCard(item)
                             }
@@ -65,13 +69,18 @@ struct HistoryView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .onAppear {
+            Task {
+                await CacheStore.shared.pruneHistory(context: modelContext)
+            }
+        }
         .toolbar {
-            if !records.isEmpty {
+            if !visibleRecords.isEmpty {
                 ToolbarItem(placement: .automatic) {
                     // 清空历史使用统一缓存服务，确保行为与其他入口一致。
                     Button {
                         Task {
-                            CacheStore.shared.clearHistory(context: modelContext)
+                            await CacheStore.shared.clearHistory(context: modelContext)
                         }
                     } label: {
                         Text("清空")

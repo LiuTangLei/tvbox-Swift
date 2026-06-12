@@ -24,6 +24,25 @@ struct VodPlaybackState: Codable {
     var videoScaleRawValue: Int?
 }
 
+/// 播放历史保留策略，对齐 Android `HistoryDao.find(... LIMIT 60)` 与 60 天窗口。
+enum VodHistoryPolicy {
+    static let maxAge: TimeInterval = 60 * 24 * 60 * 60
+    static let defaultLimit = 60
+
+    static var cutoffDate: Date {
+        Date(timeIntervalSinceNow: -maxAge)
+    }
+
+    static var limit: Int {
+        let configured = UserDefaults.standard.integer(forKey: HawkConfig.HISTORY_NUM)
+        return configured > 0 ? configured : defaultLimit
+    }
+
+    static func isVisible(_ record: VodRecord) -> Bool {
+        record.updateTime >= cutoffDate
+    }
+}
+
 /// 视频收藏
 @Model
 final class VodCollect {
@@ -206,9 +225,20 @@ actor CacheStore {
                 context.insert(record)
             }
             
+            try pruneHistoryRecords(context: context)
             try context.save()
         } catch {
             print("写入播放记录失败: \(error)")
+        }
+    }
+
+    @MainActor
+    func pruneHistory(context: ModelContext) {
+        do {
+            try pruneHistoryRecords(context: context)
+            try context.save()
+        } catch {
+            print("清理过期历史记录失败: \(error)")
         }
     }
     
@@ -266,6 +296,21 @@ actor CacheStore {
         }
         
         return records.sorted(by: { $0.updateTime > $1.updateTime })
+    }
+
+    @MainActor
+    private func pruneHistoryRecords(context: ModelContext) throws {
+        var descriptor = FetchDescriptor<VodRecord>(sortBy: [SortDescriptor<VodRecord>(\.updateTime, order: .reverse)])
+        descriptor.includePendingChanges = true
+        let records = try context.fetch(descriptor)
+        let cutoff = VodHistoryPolicy.cutoffDate
+        let limit = VodHistoryPolicy.limit
+
+        for (index, record) in records.enumerated() {
+            if record.updateTime < cutoff || index >= limit {
+                context.delete(record)
+            }
+        }
     }
     
     @MainActor
