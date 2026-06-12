@@ -30,6 +30,7 @@ struct HawkConfig {
     static let HOME_REC_STYLE = "home_rec_style"
     static let HISTORY_NUM = "history_num"
     static let SEARCH_HISTORY = "search_history"
+    static let SEARCH_HOT_WORDS = "search_hot_words"
     static let CONFIG_API_HISTORY = "config_api_history"
     static let LIVE_CHANNEL_FAVORITES = "live_channel_favorites"
     static let LIVE_LAST_CHANNEL = "live_last_channel"

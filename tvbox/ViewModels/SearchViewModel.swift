@@ -27,6 +27,10 @@ class SearchViewModel: ObservableObject {
     @Published var isSearching = false
     /// 本地搜索历史（最近在前）。
     @Published var searchHistory: [String] = []
+    /// 热搜/联想词，空输入时展示热搜，输入时展示搜索建议。
+    @Published var searchWords: [String] = []
+    /// 搜索词区域标题。
+    @Published var searchWordTitle = "热门搜索"
     /// 搜索失败或空结果提示。
     @Published var errorMessage: String?
     /// 已返回结果的源数量。
@@ -38,12 +42,17 @@ class SearchViewModel: ObservableObject {
 
     /// 源数据服务（负责多源并发搜索）。
     private let sourceService = SourceService.shared
+    /// 网络服务，用于加载热搜和联想词。
+    private let network = NetworkManager.shared
     /// 搜索请求序号（用于丢弃过期异步结果）。
     private var latestSearchRequestId: UUID = UUID()
+    /// 热搜/联想词请求序号，用于丢弃过期异步结果。
+    private var latestWordRequestId: UUID = UUID()
 
     /// 初始化时同步加载本地历史记录，确保搜索页首次渲染即可展示。
     init() {
         loadSearchHistory()
+        loadCachedHotWords()
     }
 
     var visibleResults: [Movie.Video] {
@@ -114,6 +123,60 @@ class SearchViewModel: ObservableObject {
         await search()
     }
 
+    func loadSearchWords() async {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            await loadHotWords()
+        } else {
+            await loadSuggestedWords(for: trimmed)
+        }
+    }
+
+    private func loadHotWords() async {
+        let requestId = UUID()
+        latestWordRequestId = requestId
+        searchWordTitle = "热门搜索"
+
+        do {
+            let response = try await network.getString(
+                from: "https://api.web.360kan.com/v1/rank?cat=1",
+                headers: ["Referer": "https://www.360kan.com/rank/general"],
+                maxRetries: 0
+            )
+            let words = Self.parseWordTitles(from: response)
+            guard latestWordRequestId == requestId, !words.isEmpty else { return }
+            searchWords = words
+            UserDefaults.standard.set(words, forKey: HawkConfig.SEARCH_HOT_WORDS)
+        } catch {
+            guard latestWordRequestId == requestId else { return }
+            loadCachedHotWords()
+        }
+    }
+
+    private func loadSuggestedWords(for text: String) async {
+        let requestId = UUID()
+        latestWordRequestId = requestId
+        searchWordTitle = "搜索建议"
+
+        guard let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            searchWords = []
+            return
+        }
+
+        do {
+            let response = try await network.getString(
+                from: "https://suggest.video.iqiyi.com/?if=mobile&key=\(encoded)",
+                maxRetries: 0
+            )
+            let words = Self.parseWordTitles(from: response)
+            guard latestWordRequestId == requestId else { return }
+            searchWords = words
+        } catch {
+            guard latestWordRequestId == requestId else { return }
+            searchWords = []
+        }
+    }
+
     func clearCurrentSearch() {
         latestSearchRequestId = UUID()
         keyword = ""
@@ -122,6 +185,18 @@ class SearchViewModel: ObservableObject {
         selectedSourceKey = nil
         completedSourceCount = 0
         isSearching = false
+        errorMessage = nil
+        resetFolderBrowsing()
+    }
+
+    func prepareForKeywordEditing() {
+        guard !isSearching else { return }
+        latestSearchRequestId = UUID()
+        isSearching = false
+        completedSourceCount = 0
+        results = []
+        resultGroups = []
+        selectedSourceKey = nil
         errorMessage = nil
         resetFolderBrowsing()
     }
@@ -159,6 +234,11 @@ class SearchViewModel: ObservableObject {
     /// 从本地读取历史。
     private func loadSearchHistory() {
         searchHistory = UserDefaults.standard.stringArray(forKey: HawkConfig.SEARCH_HISTORY) ?? []
+    }
+
+    private func loadCachedHotWords() {
+        searchWordTitle = "热门搜索"
+        searchWords = UserDefaults.standard.stringArray(forKey: HawkConfig.SEARCH_HOT_WORDS) ?? []
     }
 
     /// 新增历史项并去重，最多保留 20 条。
@@ -200,6 +280,23 @@ class SearchViewModel: ObservableObject {
         }
         completedSourceCount = resultGroups.count
         results = resultGroups.flatMap(\.videos)
+    }
+
+    private static func parseWordTitles(from json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawItems = root["data"] as? [[String: Any]] else {
+            return []
+        }
+
+        var seen = Set<String>()
+        return rawItems.compactMap { item in
+            let title = (item["title"] as? String ?? item["name"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !seen.contains(title) else { return nil }
+            seen.insert(title)
+            return title
+        }
     }
 
     func openFolder(_ video: Movie.Video) async {

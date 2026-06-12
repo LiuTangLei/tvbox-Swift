@@ -506,29 +506,33 @@ class SourceService {
     // MARK: - 搜索
 
     /// 在指定源中搜索
-    func search(sourceBean: SourceBean, keyword: String) async throws -> [Movie.Video] {
+    func search(sourceBean: SourceBean, keyword: String, quick: Bool = false) async throws -> [Movie.Video] {
         let api = sourceBean.api
         guard !api.isEmpty else { throw SourceError.emptyApi }
         if try shouldUseBridge(for: sourceBean) {
-            let jsonStr = try await bridge.search(source: sourceBean, keyword: keyword)
+            let jsonStr = try await bridge.search(source: sourceBean, keyword: keyword, quick: quick)
             let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
             return filterSearchResults(videos, keyword: keyword)
         }
         guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
         guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(api) }
 
+        let quickValue = String(quick)
         let url: String
         if sourceBean.type == 0 {
             url = try buildURL(
                 base: api,
-                queryItems: [URLQueryItem(name: "wd", value: keyword)]
+                queryItems: [
+                    URLQueryItem(name: "wd", value: keyword),
+                    URLQueryItem(name: "quick", value: quickValue)
+                ]
             )
         } else if sourceBean.type == 4 {
             // Type 4: 远程接口
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(name: "wd", value: keyword),
                 URLQueryItem(name: "ac", value: "detail"),
-                URLQueryItem(name: "quick", value: "false")
+                URLQueryItem(name: "quick", value: quickValue)
             ]
 
             // 加载 extend
@@ -543,7 +547,10 @@ class SourceService {
             // JSON 接口 (type=1)
             url = try buildURL(
                 base: api,
-                queryItems: [URLQueryItem(name: "wd", value: keyword)]
+                queryItems: [
+                    URLQueryItem(name: "wd", value: keyword),
+                    URLQueryItem(name: "quick", value: quickValue)
+                ]
             )
         }
 
@@ -561,6 +568,7 @@ class SourceService {
     /// `onGroup` 会在每个源完成时立刻回调，用于搜索页渐进展示结果。
     func searchGroups(
         keyword: String,
+        quick: Bool = false,
         onGroup: ((SearchResultGroup) async -> Void)? = nil
     ) async -> [SearchResultGroup] {
         let sources = await ApiConfig.shared.getSearchableSources()
@@ -582,7 +590,8 @@ class SourceService {
                 nextCandidate += 1
                 group.addTask { [self] in
                     do {
-                        return (index, source, try await self.search(sourceBean: source, keyword: keyword))
+                        if quick && !source.isQuickSearchEnabled { return (index, source, []) }
+                        return (index, source, try await self.search(sourceBean: source, keyword: keyword, quick: quick))
                     } catch {
                         return (index, source, [])
                     }
@@ -601,9 +610,6 @@ class SourceService {
                     await onGroup?(resultGroup)
                 }
                 enqueueNextSearch()
-            }
-            if onGroup != nil {
-                return groups.map(\.1)
             }
             return groups.sorted { $0.0 < $1.0 }.map(\.1)
         }

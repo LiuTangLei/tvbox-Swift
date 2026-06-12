@@ -6,6 +6,7 @@ struct SearchView: View {
     @StateObject private var viewModel = SearchViewModel()
     @EnvironmentObject private var appState: AppState
     @State private var navigationPath = NavigationPath()
+    @State private var searchWordTask: Task<Void, Never>?
 
     #if os(iOS)
     /// iOS 卡片网格参数。
@@ -33,8 +34,8 @@ struct SearchView: View {
                     Spacer()
                 } else if !viewModel.results.isEmpty {
                     searchResults
-                } else if viewModel.keyword.isEmpty {
-                    // 输入为空时显示历史；输入非空但无结果时显示提示文案。
+                } else if viewModel.keyword.isEmpty || !viewModel.searchWords.isEmpty {
+                    // 空输入展示历史/热搜；输入中展示联想词。
                     searchHistorySection
                 } else if let error = viewModel.errorMessage {
                     Spacer()
@@ -55,9 +56,20 @@ struct SearchView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
         }
-        .onAppear(perform: consumePendingSearchKeyword)
+        .onAppear {
+            consumePendingSearchKeyword()
+            scheduleSearchWordRefresh(immediate: true)
+        }
+        .onDisappear {
+            searchWordTask?.cancel()
+            searchWordTask = nil
+        }
         .onChange(of: appState.pendingSearchKeyword) { _, _ in
             consumePendingSearchKeyword()
+        }
+        .onChange(of: viewModel.keyword) { _, _ in
+            viewModel.prepareForKeywordEditing()
+            scheduleSearchWordRefresh()
         }
     }
 
@@ -66,6 +78,17 @@ struct SearchView: View {
             guard let keyword = appState.consumePendingSearchKeyword() else { return }
             navigationPath = NavigationPath()
             await viewModel.search(keyword: keyword)
+        }
+    }
+
+    private func scheduleSearchWordRefresh(immediate: Bool = false) {
+        searchWordTask?.cancel()
+        searchWordTask = Task { @MainActor in
+            if !immediate {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            await viewModel.loadSearchWords()
         }
     }
 
@@ -459,8 +482,42 @@ struct SearchView: View {
                 .padding(.horizontal, 20)
             }
 
+            if !viewModel.searchWords.isEmpty {
+                HStack {
+                    Text(viewModel.searchWordTitle)
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, viewModel.searchHistory.isEmpty ? 16 : 6)
+
+                FlowLayout(spacing: 8) {
+                    ForEach(viewModel.searchWords, id: \.self) { word in
+                        searchWordButton(word)
+                    }
+                }
+                .padding(.horizontal, 20)
+            }
+
             Spacer()
         }
+    }
+
+    private func searchWordButton(_ word: String) -> some View {
+        Button {
+            viewModel.keyword = word
+            Task { await viewModel.search() }
+        } label: {
+            Text(word)
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.86))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.1))
+                .cornerRadius(16)
+        }
+        .buttonStyle(.plain)
     }
 }
 
