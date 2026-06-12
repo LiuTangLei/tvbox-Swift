@@ -71,6 +71,8 @@ class SettingsViewModel: ObservableObject {
     @Published var vlcBufferMode: VLCBufferMode = .defaultMode
     /// 快进/快退步长（秒）。
     @Published var playTimeStep: Int = 10
+    /// 播放请求默认 User-Agent，留空时使用内置浏览器 UA。
+    @Published var playerUserAgent: String = ""
     /// Type=3 Bridge 是否启用。
     @Published var bridgeEnabled = false
     /// Type=3 Bridge Server 地址。
@@ -137,6 +139,7 @@ class SettingsViewModel: ObservableObject {
 
         let savedStep = defaults.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         playTimeStep = savedStep > 0 ? savedStep : 10
+        playerUserAgent = defaults.string(forKey: HawkConfig.UA) ?? ""
         bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeServerUrl = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
         if !bridgeServerUrl.isEmpty {
@@ -339,6 +342,20 @@ class SettingsViewModel: ObservableObject {
         guard step > 0 else { return }
         playTimeStep = step
         UserDefaults.standard.set(step, forKey: HawkConfig.PLAY_TIME_STEP)
+    }
+
+    var playerUserAgentSummary: String {
+        playerUserAgent.nilIfBlank ?? "默认"
+    }
+
+    func setPlayerUserAgent(_ value: String) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        playerUserAgent = normalized
+        if normalized.isEmpty {
+            UserDefaults.standard.removeObject(forKey: HawkConfig.UA)
+        } else {
+            UserDefaults.standard.set(normalized, forKey: HawkConfig.UA)
+        }
     }
 
     func setBridgeEnabled(_ enabled: Bool) {

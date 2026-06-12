@@ -34,6 +34,8 @@ struct SettingsView: View {
     @State private var showAbout = false
     @State private var sourceSearchText = ""
     @State private var showingPicker: PickerType = .none
+    @State private var showingUserAgentInput = false
+    @State private var userAgentDraft = ""
 
     enum PickerType {
         case none
@@ -144,6 +146,11 @@ struct SettingsView: View {
                         SettingsRow(icon: "forward", title: "快进步长", value: "\(viewModel.playTimeStep)秒") {
                             showingPicker = .playTimeStep
                         }
+                        Divider().background(Color.white.opacity(0.1))
+                        SettingsRow(icon: "network", title: "播放UA", value: viewModel.playerUserAgentSummary) {
+                            userAgentDraft = viewModel.playerUserAgent
+                            showingUserAgentInput = true
+                        }
                     }
 
                     // 功能
@@ -191,6 +198,9 @@ struct SettingsView: View {
             #endif
             .sheet(item: $activeApiInputType) { inputType in
                 apiInputSheet(for: inputType)
+            }
+            .sheet(isPresented: $showingUserAgentInput) {
+                userAgentInputSheet
             }
             .alert("缓存", isPresented: cacheClearAlertBinding) {
                 Button("好", role: .cancel) {
@@ -429,6 +439,47 @@ struct SettingsView: View {
         .overlay(multiRepoSelectionOverlay)
         #if os(iOS)
         .presentationDetents([.medium, .large])
+        #endif
+    }
+
+    private var userAgentInputSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                TextEditor(text: $userAgentDraft)
+                    .font(.body)
+                    .frame(minHeight: 120)
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(10)
+
+                Button {
+                    userAgentDraft = PlaybackHTTPHeaders.defaultUserAgent
+                } label: {
+                    Label("填入默认 UA", systemImage: "arrow.counterclockwise")
+                        .font(.subheadline)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("播放 UA")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showingUserAgentInput = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        viewModel.setPlayerUserAgent(userAgentDraft)
+                        showingUserAgentInput = false
+                    }
+                }
+            }
+        }
+        #if os(iOS)
+        .presentationDetents([.medium])
         #endif
     }
 

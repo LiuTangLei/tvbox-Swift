@@ -142,6 +142,8 @@ struct BridgePlaybackDRM: Decodable, Hashable {
 }
 
 enum PlaybackHTTPHeaders {
+    static let defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
     static func normalized(_ headers: [String: String]?) -> [String: String] {
         guard let headers else { return [:] }
         var normalized: [String: String] = [:]
@@ -154,12 +156,24 @@ enum PlaybackHTTPHeaders {
         return normalized
     }
 
+    static func normalizedForPlayback(_ headers: [String: String]?) -> [String: String] {
+        var normalized = normalized(headers)
+        if normalized.keys.contains(where: { $0.caseInsensitiveCompare("User-Agent") == .orderedSame }) == false {
+            normalized["User-Agent"] = playbackUserAgent
+        }
+        return normalized
+    }
+
     static func cacheKey(_ headers: [String: String]) -> String {
         normalized(headers)
             .map { ($0.key.lowercased(), $0.value) }
             .sorted { $0.0 < $1.0 }
             .map { "\($0.0):\($0.1)" }
             .joined(separator: "\n")
+    }
+
+    static var playbackUserAgent: String {
+        UserDefaults.standard.string(forKey: HawkConfig.UA)?.nilIfBlank ?? defaultUserAgent
     }
 
     private static func shouldSkip(_ key: String) -> Bool {

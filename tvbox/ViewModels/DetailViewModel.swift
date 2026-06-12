@@ -1070,7 +1070,7 @@ class DetailViewModel: ObservableObject {
 
         var request = URLRequest(url: url, timeoutInterval: directPlaybackProbeTimeout)
         request.httpMethod = "GET"
-        for (key, value) in PlaybackHTTPHeaders.normalized(headers) {
+        for (key, value) in PlaybackHTTPHeaders.normalizedForPlayback(headers) {
             request.setValue(value, forHTTPHeaderField: key)
         }
         if !looksLikeHLSURL(url) {

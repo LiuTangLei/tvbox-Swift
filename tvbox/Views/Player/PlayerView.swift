@@ -545,7 +545,7 @@ struct AVPlayerContentView: View {
             return
         }
         let targetURLString = url.absoluteString
-        let normalizedHeaders = PlaybackHTTPHeaders.normalized(effectiveHTTPHeaders)
+        let normalizedHeaders = PlaybackHTTPHeaders.normalizedForPlayback(effectiveHTTPHeaders)
         let targetPlaybackKey = targetURLString + "\n" + PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
         let targetStartPosition = max(startPositionOverride ?? startPosition, 0)
         let preferredRate = normalizedSavedPlaybackRate

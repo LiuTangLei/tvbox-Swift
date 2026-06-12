@@ -234,7 +234,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         forceReload: Bool = false
     ) {
         let targetURLString = url.absoluteString
-        let normalizedHeaders = PlaybackHTTPHeaders.normalized(httpHeaders)
+        let normalizedHeaders = PlaybackHTTPHeaders.normalizedForPlayback(httpHeaders)
         let normalizedSubtitles = Self.normalizedExternalSubtitles(externalSubtitles)
         let targetHeaderKey = PlaybackHTTPHeaders.cacheKey(normalizedHeaders)
         let targetSubtitleKey = Self.externalSubtitleCacheKey(normalizedSubtitles)
@@ -309,8 +309,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             "audio-time-stretch": 1,
             "sub-autodetect-file": 1,
             "sub-autodetect-fuzzy": 3,
-            "subsdec-encoding": "UTF-8",
-            "http-user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "subsdec-encoding": "UTF-8"
         ]
         // MP4 VOD commonly keeps its moov index at the tail. Let VLC range-seek
         // for it instead of forcing the HTTP input into a sequential stream.
