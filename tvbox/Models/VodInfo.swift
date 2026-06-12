@@ -95,11 +95,7 @@ struct VodInfo: Codable, Identifiable {
         info.playFlags = flags
         for (i, flag) in flags.enumerated() {
             if i < urls.count {
-                let episodes = urls[i].components(separatedBy: "#").compactMap { item -> Episode? in
-                    let parts = item.components(separatedBy: "$")
-                    guard parts.count >= 2 else { return nil }
-                    return Episode(name: parts[0], url: parts[1])
-                }
+                let episodes = episodes(from: urls[i])
                 info.playUrlMap[flag] = episodes
             }
         }
@@ -109,6 +105,29 @@ struct VodInfo: Codable, Identifiable {
         }
 
         return info
+    }
+
+    /// Parse Android/FongMi's `name$url#name$url` episode payload.
+    static func episodes(from rawValue: String) -> [Episode] {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let rawEpisodes = trimmed.contains("#") ? trimmed.components(separatedBy: "#") : [trimmed]
+        return rawEpisodes.enumerated().compactMap { index, rawEpisode in
+            episode(from: rawEpisode, index: index)
+        }
+    }
+
+    private static func episode(from rawValue: String, index: Int) -> Episode? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let fallbackName = String(format: "%02d", index + 1)
+        guard let separator = trimmed.firstIndex(of: "$") else {
+            return Episode(name: fallbackName, url: trimmed)
+        }
+        let rawName = String(trimmed[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return nil }
+        return Episode(name: rawName.isEmpty ? fallbackName : rawName, url: url)
     }
 
     /// 当前线路下的剧集。

@@ -475,7 +475,7 @@ class SourceService {
                     video: video,
                     playFrom: playFrom,
                     playUrl: playUrl,
-                    flagGroups: parseStructuredFlagGroups(first["vodFlags"])
+                    flagGroups: parseStructuredFlagGroups(structuredFlagGroupsValue(in: first))
                 )
             }
         }
@@ -483,24 +483,80 @@ class SourceService {
         return nil
     }
 
+    private func structuredFlagGroupsValue(in object: [String: Any]) -> Any? {
+        for key in ["vodFlags", "vod_flags", "flags", "playFlags", "play_flags"] {
+            if let value = object[key] { return value }
+        }
+        return nil
+    }
+
     private func parseStructuredFlagGroups(_ value: Any?) -> [VodInfo.FlagGroup] {
-        guard let flags = value as? [[String: Any]] else { return [] }
+        let flags: [[String: Any]]
+        if let value = value as? [[String: Any]] {
+            flags = value
+        } else if let value = value as? [Any] {
+            flags = value.compactMap { $0 as? [String: Any] }
+        } else {
+            return []
+        }
 
         return flags.compactMap { flag in
-            let name = stringValue(flag["flag"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let name = firstStringValue(in: flag, keys: ["flag", "show", "name", "title", "from", "player"])
             guard !name.isEmpty else { return nil }
 
-            let episodes = (flag["episodes"] as? [[String: Any]] ?? []).enumerated().compactMap {
-                index, episode -> VodInfo.Episode? in
-                let url = stringValue(episode["url"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !url.isEmpty else { return nil }
-                let itemName = stringValue(episode["name"])?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return VodInfo.Episode(name: itemName.isEmpty ? String(index + 1) : itemName, url: url)
-            }
+            let episodes = parseStructuredEpisodes(from: firstValue(in: flag, keys: ["episodes", "items", "list", "urls", "url", "playUrl", "vod_play_url"]))
 
             guard !episodes.isEmpty else { return nil }
             return VodInfo.FlagGroup(name: name, episodes: episodes)
         }
+    }
+
+    private func parseStructuredEpisodes(from value: Any?) -> [VodInfo.Episode] {
+        if let value = value as? [[String: Any]] {
+            return value.enumerated().compactMap { parseStructuredEpisode($0.element, index: $0.offset) }
+        }
+        if let value = value as? [Any] {
+            return value.enumerated().flatMap { index, item -> [VodInfo.Episode] in
+                if let object = item as? [String: Any] {
+                    return parseStructuredEpisode(object, index: index).map { [$0] } ?? []
+                }
+                if let string = stringValue(item)?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty {
+                    if string.contains("#") || string.contains("$") {
+                        return VodInfo.episodes(from: string)
+                    }
+                    return [VodInfo.Episode(name: String(format: "%02d", index + 1), url: string)]
+                }
+                return []
+            }
+        }
+        if let value = stringValue(value) {
+            return VodInfo.episodes(from: value)
+        }
+        return []
+    }
+
+    private func parseStructuredEpisode(_ object: [String: Any], index: Int) -> VodInfo.Episode? {
+        let url = firstStringValue(in: object, keys: ["url", "id", "playUrl", "vod_play_url", "episodeUrl"])
+        guard !url.isEmpty else { return nil }
+        let name = firstStringValue(in: object, keys: ["name", "title", "desc", "remark", "vod_name"])
+        let fallbackName = String(format: "%02d", index + 1)
+        return VodInfo.Episode(name: name.isEmpty ? fallbackName : name, url: url)
+    }
+
+    private func firstValue(in object: [String: Any], keys: [String]) -> Any? {
+        for key in keys {
+            if let value = object[key] { return value }
+        }
+        return nil
+    }
+
+    private func firstStringValue(in object: [String: Any], keys: [String]) -> String {
+        for key in keys {
+            if let value = stringValue(object[key])?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        return ""
     }
 
     // MARK: - 搜索
