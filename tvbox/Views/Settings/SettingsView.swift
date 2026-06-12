@@ -44,6 +44,7 @@ struct SettingsView: View {
         case liveSource
         case decode
         case videoScale
+        case liveVideoScale
         case vlcBuffer
         case playTimeStep
     }
@@ -151,8 +152,12 @@ struct SettingsView: View {
                             showingPicker = .decode
                         }
                         Divider().background(Color.white.opacity(0.1))
-                        SettingsRow(icon: "arrow.up.left.and.arrow.down.right", title: "画面缩放", value: viewModel.videoScaleMode.title) {
+                        SettingsRow(icon: "arrow.up.left.and.arrow.down.right", title: "点播缩放", value: viewModel.videoScaleMode.title) {
                             showingPicker = .videoScale
+                        }
+                        Divider().background(Color.white.opacity(0.1))
+                        SettingsRow(icon: "arrow.up.left.and.arrow.down.right", title: "直播缩放", value: viewModel.liveVideoScaleMode.title) {
+                            showingPicker = .liveVideoScale
                         }
                         if PlayerEngine.isVLCAvailable {
                             Divider().background(Color.white.opacity(0.1))
@@ -315,13 +320,26 @@ struct SettingsView: View {
             )
         case .videoScale:
             SelectionModal(
-                title: "画面缩放模式",
+                title: "点播缩放模式",
                 icon: "arrow.up.left.and.arrow.down.right",
                 items: viewModel.videoScaleModeOptions,
                 selectedItem: viewModel.videoScaleMode,
                 itemTitle: { $0.title },
                 onSelect: { mode in
                     viewModel.setVideoScaleMode(mode)
+                    showingPicker = .none
+                },
+                onCancel: { showingPicker = .none }
+            )
+        case .liveVideoScale:
+            SelectionModal(
+                title: "直播缩放模式",
+                icon: "arrow.up.left.and.arrow.down.right",
+                items: viewModel.videoScaleModeOptions,
+                selectedItem: viewModel.liveVideoScaleMode,
+                itemTitle: { $0.title },
+                onSelect: { mode in
+                    viewModel.setLiveVideoScaleMode(mode)
                     showingPicker = .none
                 },
                 onCancel: { showingPicker = .none }

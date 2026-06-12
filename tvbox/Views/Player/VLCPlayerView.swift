@@ -2348,6 +2348,7 @@ struct VLCLivePlayerView: View {
     let urlString: String
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var activityToken: Int = 0
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
@@ -2364,6 +2365,7 @@ struct VLCLivePlayerView: View {
         ZStack {
             VLCDrawableView(controller: controller)
                 .background(Color.black)
+                .scaleEffect(videoScaleMode.vlcDisplayScale)
             #if !os(iOS)
                 .onTapGesture(count: 2) {
                     onToggleFullScreen?()
@@ -3102,7 +3104,9 @@ struct VLCVodPlayerView: View {
 
 struct VLCLivePlayerView: View {
     let urlString: String
+    var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
+    var videoScaleMode: VideoScaleMode = .defaultMode
     var activityToken: Int = 0
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil

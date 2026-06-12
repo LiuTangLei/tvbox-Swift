@@ -18,6 +18,10 @@ struct LiveView: View {
     @AppStorage(HawkConfig.PLAY_TYPE_LIVE) private var livePlayTypeRaw = -1
     /// 兼容旧版本单播放器字段。
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
+    /// 直播专用画面缩放；未配置时回退点播缩放。
+    @AppStorage(HawkConfig.LIVE_SCALE) private var liveVideoScaleRaw = -1
+    /// 点播缩放兜底值，对齐 Android LiveSetting.getScale()。
+    @AppStorage(HawkConfig.PLAY_SCALE) private var vodVideoScaleRaw = VideoScaleMode.defaultMode.rawValue
     /// 是否展示左侧频道抽屉。
     @State private var showChannelDrawer = true
     #if os(iOS)
@@ -68,6 +72,14 @@ struct LiveView: View {
                 : PlayerEngine.system.rawValue
         }
         return PlayerEngine.fromStoredValue(rawValue)
+    }
+
+    private var liveVideoScaleMode: VideoScaleMode {
+        let defaults = UserDefaults.standard
+        let rawValue = defaults.object(forKey: HawkConfig.LIVE_SCALE) == nil
+            ? vodVideoScaleRaw
+            : liveVideoScaleRaw
+        return VideoScaleMode.fromStoredValue(rawValue)
     }
     
     var body: some View {
@@ -156,6 +168,7 @@ struct LiveView: View {
                     urlString: playback.url,
                     playback: playback,
                     httpHeaders: playback.headers,
+                    videoScaleMode: liveVideoScaleMode,
                     activityToken: vlcInteractionToken,
                     onPlaybackFailed: {
                         handlePlaybackFailure(trigger: "vlc_error")
@@ -168,7 +181,7 @@ struct LiveView: View {
                 .id("vlc-live-\(viewModel.currentPlaybackIdentifier)-\(viewModel.currentChannel?.id ?? "")")
             }
         } else if let player = avPlayer {
-            PlatformVideoPlayer(player: player)
+            PlatformVideoPlayer(player: player, videoScaleMode: liveVideoScaleMode)
                 .ignoresSafeArea()
         }
     }

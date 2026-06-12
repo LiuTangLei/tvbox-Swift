@@ -20,6 +20,7 @@ struct HawkConfig {
     static let IJK_CODEC = "ijk_codec"
     static let RENDER_TYPE = "render_type"
     static let PLAY_SCALE = "play_scale"
+    static let LIVE_SCALE = "scale_live"
     static let PLAY_SPEED = "play_speed"
     static let PLAY_VOLUME = "play_volume"
     static let UA = "ua"
