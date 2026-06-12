@@ -63,6 +63,8 @@ class SettingsViewModel: ObservableObject {
     @Published var vodPlayerEngine: PlayerEngine = .system
     /// 直播播放器内核选择。
     @Published var livePlayerEngine: PlayerEngine = .system
+    /// 直播上下换台是否跨分组，默认对齐 Android LiveSetting.isAcross()。
+    @Published var liveChannelAcrossGroups = true
     /// 解码模式选择。
     @Published var decodeMode: VideoDecodeMode = .auto
     /// 视频画面缩放模式。
@@ -129,6 +131,9 @@ class SettingsViewModel: ObservableObject {
         livePlayerEngine = PlayerEngine.fromStoredValue(
             defaults.integer(forKey: HawkConfig.PLAY_TYPE_LIVE)
         )
+        liveChannelAcrossGroups = defaults.object(forKey: HawkConfig.LIVE_CHANNEL_ACROSS) == nil
+            ? true
+            : defaults.bool(forKey: HawkConfig.LIVE_CHANNEL_ACROSS)
         decodeMode = VideoDecodeMode.fromStoredValue(
             defaults.integer(forKey: HawkConfig.PLAY_DECODE_MODE)
         )
@@ -487,6 +492,11 @@ class SettingsViewModel: ObservableObject {
         guard playerEngineOptions.contains(engine) else { return }
         livePlayerEngine = engine
         UserDefaults.standard.set(engine.rawValue, forKey: HawkConfig.PLAY_TYPE_LIVE)
+    }
+
+    func setLiveChannelAcrossGroups(_ enabled: Bool) {
+        liveChannelAcrossGroups = enabled
+        UserDefaults.standard.set(enabled, forKey: HawkConfig.LIVE_CHANNEL_ACROSS)
     }
 
     /// 设置视频解码模式

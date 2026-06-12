@@ -123,10 +123,10 @@ class LiveViewModel: ObservableObject {
     
     /// 上一个频道
     func previousChannel() {
-        guard !channelGroups.isEmpty else { return }
+        guard !channelGroups.isEmpty, selectedGroupIndex < channelGroups.count else { return }
         if selectedChannelIndex > 0 {
             selectedChannelIndex -= 1
-        } else if selectedGroupIndex > 0 {
+        } else if shouldSwitchAcrossGroups, selectedGroupIndex > 0 {
             selectedGroupIndex -= 1
             selectedChannelIndex = channelGroups[selectedGroupIndex].channels.count - 1
         }
@@ -137,11 +137,11 @@ class LiveViewModel: ObservableObject {
     
     /// 下一个频道
     func nextChannel() {
-        guard !channelGroups.isEmpty else { return }
+        guard !channelGroups.isEmpty, selectedGroupIndex < channelGroups.count else { return }
         let group = channelGroups[selectedGroupIndex]
         if selectedChannelIndex < group.channels.count - 1 {
             selectedChannelIndex += 1
-        } else if selectedGroupIndex < channelGroups.count - 1 {
+        } else if shouldSwitchAcrossGroups, selectedGroupIndex < channelGroups.count - 1 {
             selectedGroupIndex += 1
             selectedChannelIndex = 0
         }
@@ -371,6 +371,12 @@ class LiveViewModel: ObservableObject {
         epgList = []
         epgErrorMessage = nil
         isLoading = false
+    }
+
+    private var shouldSwitchAcrossGroups: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: HawkConfig.LIVE_CHANNEL_ACROSS) != nil else { return true }
+        return defaults.bool(forKey: HawkConfig.LIVE_CHANNEL_ACROSS)
     }
     
     private func bindLiveChannelGroups() {

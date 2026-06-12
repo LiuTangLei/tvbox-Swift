@@ -129,6 +129,24 @@ struct SettingsView: View {
                             }
                         }
                         Divider().background(Color.white.opacity(0.1))
+                        HStack(spacing: 16) {
+                            Image(systemName: "arrow.up.arrow.down")
+                                .font(.system(size: 16))
+                                .foregroundColor(.orange)
+                                .frame(width: 24)
+                            Text("跨组换台")
+                                .font(.body)
+                                .foregroundColor(.white.opacity(0.9))
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { viewModel.liveChannelAcrossGroups },
+                                set: { viewModel.setLiveChannelAcrossGroups($0) }
+                            ))
+                            .labelsHidden()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "cpu", title: "视频解码", value: viewModel.decodeMode.title) {
                             showingPicker = .decode
                         }
