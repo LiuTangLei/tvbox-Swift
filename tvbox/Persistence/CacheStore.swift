@@ -192,6 +192,7 @@ actor CacheStore {
         playbackState: VodPlaybackState? = nil,
         context: ModelContext
     ) {
+        guard !UserDefaults.standard.bool(forKey: HawkConfig.INCOGNITO) else { return }
         let vodId = video.id
         let sourceKey = video.sourceKey
         let encodedState = Self.encodePlaybackState(playbackState)

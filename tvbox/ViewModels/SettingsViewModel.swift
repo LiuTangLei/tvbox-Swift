@@ -73,6 +73,8 @@ class SettingsViewModel: ObservableObject {
     @Published var playTimeStep: Int = 10
     /// 播放请求默认 User-Agent，留空时使用内置浏览器 UA。
     @Published var playerUserAgent: String = ""
+    /// 无痕模式：开启后不保存新的播放历史。
+    @Published var incognitoMode = false
     /// Type=3 Bridge 是否启用。
     @Published var bridgeEnabled = false
     /// Type=3 Bridge Server 地址。
@@ -140,6 +142,7 @@ class SettingsViewModel: ObservableObject {
         let savedStep = defaults.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         playTimeStep = savedStep > 0 ? savedStep : 10
         playerUserAgent = defaults.string(forKey: HawkConfig.UA) ?? ""
+        incognitoMode = defaults.bool(forKey: HawkConfig.INCOGNITO)
         bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeServerUrl = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
         if !bridgeServerUrl.isEmpty {
@@ -356,6 +359,11 @@ class SettingsViewModel: ObservableObject {
         } else {
             UserDefaults.standard.set(normalized, forKey: HawkConfig.UA)
         }
+    }
+
+    func setIncognitoMode(_ enabled: Bool) {
+        incognitoMode = enabled
+        UserDefaults.standard.set(enabled, forKey: HawkConfig.INCOGNITO)
     }
 
     func setBridgeEnabled(_ enabled: Bool) {

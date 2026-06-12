@@ -155,6 +155,24 @@ struct SettingsView: View {
 
                     // 功能
                     SectionCard(title: "功能") {
+                        HStack(spacing: 16) {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 16))
+                                .foregroundColor(.orange)
+                                .frame(width: 24)
+                            Text("无痕模式")
+                                .font(.body)
+                                .foregroundColor(.white.opacity(0.9))
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { viewModel.incognitoMode },
+                                set: { viewModel.setIncognitoMode($0) }
+                            ))
+                            .labelsHidden()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        Divider().background(Color.white.opacity(0.1))
                         NavigationLink {
                             HistoryView()
                         } label: {
