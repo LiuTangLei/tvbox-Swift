@@ -183,6 +183,8 @@ struct BridgeDRMDecodingTests {
 
         let response = try JSONDecoder().decode(BridgePlayResponse.self, from: data)
 
+        #expect(response.rawUrl == "https://origin.example.com/video")
+        #expect(response.playUrl == "https://parser.example.com/?url=")
         #expect(response.url == "https://parser.example.com/?url=https://origin.example.com/video")
     }
 
@@ -240,5 +242,37 @@ struct BridgeDRMDecodingTests {
             "https://parser.example.com/?url=https://origin.example.com/video-720",
             "https://parser.example.com/?url=https://origin.example.com/video-1080"
         ])
+    }
+}
+
+@Suite("VOD config compatibility")
+struct VodConfigCompatibilityTests {
+    @Test("Flexible header decodes object and string forms")
+    func flexibleHeaderDecodesObjectAndStringForms() throws {
+        let objectData = Data("""
+        {
+          "User-Agent": "Android TVBox",
+          "Host": "ignored.example.com"
+        }
+        """.utf8)
+        let stringData = Data(#""Referer=https://example.com&Cookie=session=abc""#.utf8)
+
+        let objectHeader = try JSONDecoder().decode(FlexibleStringMap.self, from: objectData)
+        let stringHeader = try JSONDecoder().decode(FlexibleStringMap.self, from: stringData)
+
+        #expect(objectHeader.value["User-Agent"] == "Android TVBox")
+        #expect(objectHeader.value["Host"] == nil)
+        #expect(stringHeader.value["Referer"] == "https://example.com")
+        #expect(stringHeader.value["Cookie"] == "session=abc")
+    }
+
+    @Test("ParseBean matches Android ext flag semantics")
+    func parseBeanMatchesAndroidExtFlagSemantics() {
+        let global = ParseBean(name: "global", url: "https://parser.example.com/?url=", type: 1)
+        let flagged = ParseBean(name: "vip", url: "https://vip.example.com/?url=", type: 1, flags: ["youku", "qq"])
+
+        #expect(global.matches(flag: "anything"))
+        #expect(flagged.matches(flag: "YOUKU"))
+        #expect(!flagged.matches(flag: "mgtv"))
     }
 }

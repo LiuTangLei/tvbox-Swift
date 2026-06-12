@@ -27,6 +27,7 @@ class SourceService {
 
     private let network = NetworkManager.shared
     private let bridge = BridgeClient.shared
+    private let decoder = JSONDecoder()
 
     private init() {}
 
@@ -63,7 +64,7 @@ class SourceService {
         let jsonStr: String
         if sourceBean.type == 0 {
             // XML 接口
-            jsonStr = try await network.getString(from: api)
+            jsonStr = try await network.getString(from: api, headers: sourceBean.headers)
         } else if sourceBean.type == 4 {
             // Type 4: 远程接口，需要 extend 和 filter 参数
             var queryItems: [URLQueryItem] = [
@@ -77,14 +78,14 @@ class SourceService {
                 }
             }
             let url = try buildURL(base: api, queryItems: queryItems)
-            jsonStr = try await network.getString(from: url)
+            jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
         } else {
             // JSON 接口 (type=1)
             let url = try buildURL(
                 base: api,
                 queryItems: [URLQueryItem(name: "ac", value: "class")]
             )
-            jsonStr = try await network.getString(from: url)
+            jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
         }
 
         var (sorts, homeVideos) = try parseSort(jsonStr, sourceBean: sourceBean)
@@ -98,7 +99,7 @@ class SourceService {
             let listUrl: String
             if sourceBean.type == 4 {
                 // type=4 用 ac=detail 格式，与 getList 保持一致
-                let ext = Data("{}".utf8).base64EncodedString()
+                let ext = Self.base64URLString("{}")
                 listUrl = try buildURL(
                     base: api,
                     queryItems: [
@@ -118,12 +119,17 @@ class SourceService {
                     ]
                 )
             }
-            if let listStr = try? await network.getString(from: listUrl) {
+            if let listStr = try? await network.getString(from: listUrl, headers: sourceBean.headers) {
                 let fallback = (try? parseVideoList(listStr, sourceBean: sourceBean)) ?? []
                 if !fallback.isEmpty {
                     homeVideos = fallback
                 }
             }
+        }
+
+        if !sourceBean.categories.isEmpty {
+            let allowed = Set(sourceBean.categories)
+            sorts = sorts.filter { allowed.contains($0.name) }
         }
 
         return (sorts, homeVideos)
@@ -234,11 +240,11 @@ class SourceService {
             if let filters = filters, !filters.isEmpty {
                 if let filterData = try? JSONSerialization.data(withJSONObject: filters),
                    let filterStr = String(data: filterData, encoding: .utf8) {
-                    let ext = Data(filterStr.utf8).base64EncodedString()
+                    let ext = Self.base64URLString(filterStr)
                     queryItems.append(URLQueryItem(name: "ext", value: ext))
                 }
             } else {
-                let ext = Data("{}".utf8).base64EncodedString()
+                let ext = Self.base64URLString("{}")
                 queryItems.append(URLQueryItem(name: "ext", value: ext))
             }
 
@@ -268,7 +274,7 @@ class SourceService {
             url = try buildURL(base: api, queryItems: queryItems)
         }
 
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
         return try parseVideoPage(jsonStr, sourceBean: sourceBean, requestedPage: page)
     }
 
@@ -446,7 +452,7 @@ class SourceService {
             )
         }
 
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
         return try parseDetail(jsonStr, sourceKey: sourceBean.key, type: sourceBean.type)
     }
 
@@ -587,7 +593,6 @@ class SourceService {
             // Type 4: 远程接口
             var queryItems: [URLQueryItem] = [
                 URLQueryItem(name: "wd", value: keyword),
-                URLQueryItem(name: "ac", value: "detail"),
                 URLQueryItem(name: "quick", value: quickValue)
             ]
 
@@ -610,7 +615,7 @@ class SourceService {
             )
         }
 
-        let jsonStr = try await network.getString(from: url)
+        let jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
         let videos = try parseVideoList(jsonStr, sourceBean: sourceBean)
         return filterSearchResults(videos, keyword: keyword)
     }
@@ -706,6 +711,226 @@ class SourceService {
             !CharacterSet.symbols.contains(scalar)
         }
         return String(String.UnicodeScalarView(scalars)).lowercased()
+    }
+
+    // MARK: - 播放解析
+
+    /// 对齐 Android `SiteApi.playerContent` + 可用的 `ParseJob` 子集。
+    /// Swift 本地无法复用 Android native extractor / WebView 嗅探；这里优先覆盖直链、type=4 player、
+    /// JSON 解析器、请求头、字幕、弹幕、DRM 等可直接表达的播放结果。
+    func resolvePlayback(sourceBean: SourceBean, flag: String, id: String) async throws -> BridgePlayback {
+        guard !sourceBean.requiresBridge else {
+            return try await bridge.play(source: sourceBean, flag: flag, id: id)
+        }
+        guard sourceBean.isSupportedInSwift else { throw SourceError.unsupportedType(sourceBean.typeDescription) }
+
+        var candidate: PlaybackCandidate
+        if sourceBean.type == 4 {
+            candidate = try await remotePlaybackCandidate(sourceBean: sourceBean, flag: flag, id: id)
+        } else {
+            candidate = syntheticPlaybackCandidate(sourceBean: sourceBean, flag: flag, id: id)
+        }
+
+        let parseContext = await MainActor.run {
+            (parses: ApiConfig.shared.parseBeanList, flags: ApiConfig.shared.vodFlagList)
+        }
+        candidate = await resolvePlayableURLIfNeeded(
+            candidate,
+            parses: parseContext.parses,
+            vodFlags: parseContext.flags
+        )
+
+        let playbackURL = candidate.playbackURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !playbackURL.isEmpty else { throw SourceError.parseError("播放地址为空") }
+
+        return BridgePlayback(
+            url: playbackURL,
+            headers: candidate.headers,
+            fallbackURL: nil,
+            proxied: false,
+            startPosition: candidate.startPosition,
+            artwork: candidate.artwork,
+            descriptionText: candidate.descriptionText,
+            qualities: candidate.qualities,
+            format: candidate.format,
+            parse: candidate.parse,
+            flag: candidate.flag,
+            jxFrom: candidate.jxFrom,
+            expiresAt: candidate.expiresAt,
+            subtitles: candidate.subtitles,
+            danmakus: candidate.danmakus,
+            drm: candidate.drm
+        )
+    }
+
+    private func remotePlaybackCandidate(sourceBean: SourceBean, flag: String, id: String) async throws -> PlaybackCandidate {
+        guard sourceBean.isHttpApi else { throw SourceError.invalidApiUrl(sourceBean.api) }
+        var queryItems = [
+            URLQueryItem(name: "play", value: id),
+            URLQueryItem(name: "flag", value: flag)
+        ]
+        if let ext = sourceBean.ext, !ext.isEmpty {
+            let extend = await resolveExtend(ext)
+            if !extend.isEmpty {
+                queryItems.append(URLQueryItem(name: "extend", value: extend))
+            }
+        }
+        let url = try buildURL(base: sourceBean.api, queryItems: queryItems)
+        let jsonStr = try await network.getString(from: url, headers: sourceBean.headers)
+        let response = try decodePlayResponse(jsonStr)
+        return PlaybackCandidate(response: response, sourceBean: sourceBean, fallbackFlag: flag, fallbackURL: id)
+    }
+
+    private func syntheticPlaybackCandidate(sourceBean: SourceBean, flag: String, id: String) -> PlaybackCandidate {
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let playURLPrefix = sourceBean.playUrl
+        let parse = Self.looksLikeDirectMediaURL(trimmedID) && playURLPrefix.isEmpty ? 0 : 1
+        return PlaybackCandidate(
+            rawURL: trimmedID,
+            playbackURL: playURLPrefix + trimmedID,
+            headers: sourceBean.headers,
+            playUrl: playURLPrefix,
+            parse: parse,
+            flag: flag
+        )
+    }
+
+    private func decodePlayResponse(_ jsonStr: String) throws -> BridgePlayResponse {
+        guard let data = jsonStr.data(using: .utf8) else {
+            throw SourceError.parseError("播放结果不是 UTF-8")
+        }
+        return try decoder.decode(BridgePlayResponse.self, from: data)
+    }
+
+    private func resolvePlayableURLIfNeeded(
+        _ candidate: PlaybackCandidate,
+        parses: [ParseBean],
+        vodFlags: [String]
+    ) async -> PlaybackCandidate {
+        let needsParse = candidate.parse == 1 || shouldUseParse(candidate: candidate, parses: parses, vodFlags: vodFlags)
+        guard needsParse else { return candidate }
+        guard let parser = selectJSONParser(
+            playUrl: candidate.playUrl,
+            flag: candidate.flag,
+            parses: parses,
+            requiresDefaultParse: needsParse
+        ) else {
+            return candidate
+        }
+        guard let parsed = await runJSONParser(parser, webURL: candidate.rawURL) else {
+            return candidate
+        }
+
+        var resolved = candidate
+        resolved.playbackURL = parsed.url
+        resolved.rawURL = parsed.url
+        if !parsed.headers.isEmpty {
+            resolved.headers = parsed.headers
+        }
+        resolved.jxFrom = parsed.from ?? parser.name.nilIfBlank
+        resolved.qualities = []
+        return resolved
+    }
+
+    private func shouldUseParse(candidate: PlaybackCandidate, parses: [ParseBean], vodFlags: [String]) -> Bool {
+        guard !parses.isEmpty else { return false }
+        let flag = candidate.flag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !flag.isEmpty else { return false }
+        let matchesConfigFlag = vodFlags.contains { $0.caseInsensitiveCompare(flag) == .orderedSame }
+        return candidate.playUrl.isEmpty && matchesConfigFlag
+    }
+
+    private func selectJSONParser(
+        playUrl: String,
+        flag: String,
+        parses: [ParseBean],
+        requiresDefaultParse: Bool
+    ) -> ParseBean? {
+        let trimmedPlayURL = playUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPlayURL.range(of: "json:", options: [.caseInsensitive, .anchored]) != nil {
+            let url = String(trimmedPlayURL.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return url.isEmpty ? nil : ParseBean(name: "json", url: url, type: 1)
+        }
+        if trimmedPlayURL.range(of: "parse:", options: [.caseInsensitive, .anchored]) != nil {
+            let name = String(trimmedPlayURL.dropFirst(6)).trimmingCharacters(in: .whitespacesAndNewlines)
+            return parses.first {
+                $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.type == 1 && $0.matches(flag: flag)
+            }
+        }
+        guard trimmedPlayURL.isEmpty else { return nil }
+        guard requiresDefaultParse else { return nil }
+        return parses.first { $0.type == 1 && $0.matches(flag: flag) }
+            ?? parses.first { $0.type == 1 }
+    }
+
+    private func runJSONParser(_ parser: ParseBean, webURL: String) async -> ParsedPlaybackURL? {
+        let parserURL = parser.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = webURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !parserURL.isEmpty, !target.isEmpty else { return nil }
+
+        do {
+            let response = try await network.getString(from: parserURL + target, headers: parser.headers)
+            return parseJSONParserResponse(response, fallbackHeaders: parser.headers, fallbackFrom: parser.name)
+        } catch {
+            return nil
+        }
+    }
+
+    private func parseJSONParserResponse(
+        _ jsonStr: String,
+        fallbackHeaders: [String: String],
+        fallbackFrom: String
+    ) -> ParsedPlaybackURL? {
+        if let response = try? decodePlayResponse(jsonStr),
+           let url = response.rawUrl?.nilIfBlank ?? response.url?.nilIfBlank {
+            let headers = PlaybackHTTPHeaders.normalized(response.headers)
+            return ParsedPlaybackURL(
+                url: url,
+                headers: headers.isEmpty ? fallbackHeaders : headers,
+                from: response.jxFrom?.nilIfBlank ?? fallbackFrom.nilIfBlank
+            )
+        }
+
+        guard let data = jsonStr.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let topLevelURL = stringValue(object["url"])
+        let dataObject = object["data"] as? [String: Any]
+        let nestedURL = stringValue(dataObject?["url"])
+        guard let url = (topLevelURL ?? nestedURL)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !url.isEmpty else {
+            return nil
+        }
+
+        let headers = firstHeaderMap(in: [object, dataObject].compactMap { $0 })
+        return ParsedPlaybackURL(
+            url: url,
+            headers: headers.isEmpty ? fallbackHeaders : headers,
+            from: stringValue(object["jxFrom"])?.nilIfBlank ?? stringValue(object["from"])?.nilIfBlank ?? fallbackFrom.nilIfBlank
+        )
+    }
+
+    private func firstHeaderMap(in objects: [[String: Any]]) -> [String: String] {
+        for object in objects {
+            for key in ["header", "headers"] {
+                if let headers = object[key] as? [String: String] {
+                    let normalized = PlaybackHTTPHeaders.normalized(headers)
+                    if !normalized.isEmpty { return normalized }
+                }
+                if let headers = object[key] as? [String: Any] {
+                    let normalized = PlaybackHTTPHeaders.normalized(
+                        headers.reduce(into: [String: String]()) { result, item in
+                            if let value = stringValue(item.value) {
+                                result[item.key] = value
+                            }
+                        }
+                    )
+                    if !normalized.isEmpty { return normalized }
+                }
+            }
+        }
+        return [:]
     }
 
     // MARK: - Extend 解析
@@ -853,6 +1078,114 @@ class SourceService {
             throw SourceError.invalidApiUrl(base)
         }
         return url.absoluteString
+    }
+
+    private static func base64URLString(_ value: String) -> String {
+        Data(value.utf8)
+            .base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func looksLikeDirectMediaURL(_ value: String) -> Bool {
+        let lowercased = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowercased.isEmpty else { return false }
+        if lowercased.contains("url=http") || lowercased.contains("v=http") || lowercased.contains(".html") {
+            return false
+        }
+        if lowercased.hasPrefix("rtmp:") { return true }
+        if lowercased.contains("video/tos") { return true }
+        guard lowercased.hasPrefix("http://") || lowercased.hasPrefix("https://") else { return false }
+        return lowercased.range(
+            of: #"\.(m3u8|mp4|mkv|flv|mp3|m4a|aac|mpd)(\?|$)"#,
+            options: .regularExpression
+        ) != nil
+    }
+}
+
+private struct ParsedPlaybackURL {
+    let url: String
+    let headers: [String: String]
+    let from: String?
+}
+
+private struct PlaybackCandidate {
+    var rawURL: String
+    var playbackURL: String
+    var headers: [String: String]
+    var playUrl: String
+    var parse: Int?
+    var flag: String
+    var jxFrom: String?
+    var qualities: [BridgePlaybackQuality]
+    var startPosition: TimeInterval?
+    var artwork: String?
+    var descriptionText: String?
+    var format: String?
+    var expiresAt: TimeInterval?
+    var subtitles: [BridgePlaybackSubtitle]
+    var danmakus: [BridgePlaybackDanmaku]
+    var drm: PlayableDRM?
+
+    init(
+        rawURL: String,
+        playbackURL: String,
+        headers: [String: String],
+        playUrl: String,
+        parse: Int?,
+        flag: String,
+        jxFrom: String? = nil,
+        qualities: [BridgePlaybackQuality] = [],
+        startPosition: TimeInterval? = nil,
+        artwork: String? = nil,
+        descriptionText: String? = nil,
+        format: String? = nil,
+        expiresAt: TimeInterval? = nil,
+        subtitles: [BridgePlaybackSubtitle] = [],
+        danmakus: [BridgePlaybackDanmaku] = [],
+        drm: PlayableDRM? = nil
+    ) {
+        self.rawURL = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.playbackURL = playbackURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.headers = PlaybackHTTPHeaders.normalized(headers)
+        self.playUrl = playUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.parse = parse
+        self.flag = flag.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.jxFrom = jxFrom?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.qualities = qualities
+        self.startPosition = startPosition
+        self.artwork = artwork?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.descriptionText = descriptionText?.stripHTML.nilIfBlank
+        self.format = format?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        self.expiresAt = expiresAt
+        self.subtitles = subtitles
+        self.danmakus = danmakus
+        self.drm = drm
+    }
+
+    init(response: BridgePlayResponse, sourceBean: SourceBean, fallbackFlag: String, fallbackURL: String) {
+        let rawURL = response.rawUrl?.nilIfBlank ?? response.url?.nilIfBlank ?? fallbackURL
+        let playbackURL = response.url?.nilIfBlank ?? sourceBean.playUrl + rawURL
+        let responseHeaders = PlaybackHTTPHeaders.normalized(response.headers)
+        self.init(
+            rawURL: rawURL,
+            playbackURL: playbackURL,
+            headers: responseHeaders.isEmpty ? sourceBean.headers : responseHeaders,
+            playUrl: response.playUrl ?? "",
+            parse: response.parse,
+            flag: response.flag ?? fallbackFlag,
+            jxFrom: response.jxFrom,
+            qualities: response.qualities,
+            startPosition: response.startPosition,
+            artwork: response.artwork,
+            descriptionText: response.descriptionText,
+            format: response.format,
+            expiresAt: response.expiresAt,
+            subtitles: response.subtitles ?? [],
+            danmakus: response.danmakus ?? [],
+            drm: response.drm?.playableDRM
+        )
     }
 }
 

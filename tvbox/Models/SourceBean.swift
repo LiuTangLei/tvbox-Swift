@@ -29,11 +29,21 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let ext: String?
     /// type=3 站点级 jar；非 type=3 源不应携带配置顶层 spider fallback。
     let jar: String?
+    /// 站点默认请求头，对齐 Android Site.header。
+    let headers: [String: String]
+    /// 站点播放地址前缀，对齐 Android Site.playUrl。
+    let playUrl: String
+    /// 站点限定分类，对齐 Android Site.categories。
+    let categories: [String]
+    /// Web 嗅探点击脚本，对齐 Android Site.click。
+    let click: String
 
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
          indexs: Int = 0, changeable: Int = 1, playerType: Int = 0,
-         type: Int = 1, ext: String? = nil, jar: String? = nil) {
+         type: Int = 1, ext: String? = nil, jar: String? = nil,
+         headers: [String: String] = [:], playUrl: String = "",
+         categories: [String] = [], click: String = "") {
         self.key = key
         self.name = name
         self.api = api
@@ -46,6 +56,12 @@ struct SourceBean: Codable, Identifiable, Hashable {
         self.type = type
         self.ext = ext
         self.jar = type == 3 ? jar : nil
+        self.headers = PlaybackHTTPHeaders.normalized(headers)
+        self.playUrl = playUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.categories = categories
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        self.click = click.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var isSearchable: Bool { searchable == 1 }

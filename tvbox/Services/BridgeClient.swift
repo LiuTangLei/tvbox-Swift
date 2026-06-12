@@ -392,8 +392,10 @@ private struct BridgePlaybackURLValue: Decodable {
 struct BridgePlayResponse: Decodable {
     let ok: Bool?
     let mode: String?
+    let rawUrl: String?
     let url: String?
     let qualities: [BridgePlaybackQuality]
+    let playUrl: String?
     let fallbackUrl: String?
     let headers: [String: String]?
     let proxied: Bool?
@@ -459,8 +461,10 @@ struct BridgePlayResponse: Decodable {
         ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
         mode = try container.decodeIfPresent(String.self, forKey: .mode)
         let playUrlPrefix = try Self.decodeFirstString(from: container, keys: [.playUrl])
-        let urlSet = try Self.decodeFirstURLSet(from: container, keys: [.url, .realUrl])?
-            .applyingPlayURLPrefix(playUrlPrefix)
+        playUrl = playUrlPrefix
+        let decodedURLSet = try Self.decodeFirstURLSet(from: container, keys: [.url, .realUrl])
+        rawUrl = decodedURLSet?.url
+        let urlSet = decodedURLSet?.applyingPlayURLPrefix(playUrlPrefix)
         if let normalizedURL = urlSet?.url {
             url = normalizedURL
         } else {
@@ -1261,7 +1265,11 @@ final class BridgeClient {
             String(source.indexs),
             String(source.playerType),
             source.ext ?? "",
-            source.jar ?? ""
+            source.jar ?? "",
+            PlaybackHTTPHeaders.cacheKey(source.headers),
+            source.playUrl,
+            source.categories.joined(separator: "\u{1E}"),
+            source.click
         ].joined(separator: "\u{1F}")
     }
     
@@ -1308,6 +1316,7 @@ private struct BridgeSiteRequest: Encodable {
     let key: String
     let name: String
     let api: String
+    let header: [String: String]
     let searchable: Int
     let filterable: Int
     let quickSearch: Int
@@ -1316,11 +1325,15 @@ private struct BridgeSiteRequest: Encodable {
     let type: Int
     let ext: String?
     let jar: String?
+    let playUrl: String?
+    let categories: [String]
+    let click: String?
     
     init(source: SourceBean) {
         key = source.key
         name = source.name
         api = source.api
+        header = source.headers
         searchable = source.searchable
         filterable = source.filterable
         quickSearch = source.quickSearch
@@ -1329,6 +1342,9 @@ private struct BridgeSiteRequest: Encodable {
         type = source.type
         ext = source.ext
         jar = source.jar
+        playUrl = source.playUrl.nilIfEmpty
+        categories = source.categories
+        click = source.click.nilIfEmpty
     }
 }
 

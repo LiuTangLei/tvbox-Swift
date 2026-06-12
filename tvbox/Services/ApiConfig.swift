@@ -32,6 +32,7 @@ class ApiConfig: ObservableObject {
     @Published var sourceBeanList: [SourceBean] = []
     @Published var homeSourceBean: SourceBean?
     @Published var parseBeanList: [ParseBean] = []
+    @Published var vodFlagList: [String] = []
     @Published var liveChannelGroupList: [LiveChannelGroup] = []
     @Published var liveSourceOptions: [LiveSourceOption] = []
     @Published var homeLiveSourceOption: LiveSourceOption?
@@ -768,12 +769,17 @@ class ApiConfig: ObservableObject {
                         playerType: site.playerType?.value ?? 0,
                         type: sourceType,
                         ext: site.ext?.stringValue,
-                        jar: sourceType == 3 ? (site.jar ?? config.spider) : nil
+                        jar: sourceType == 3 ? (site.jar ?? config.spider) : nil,
+                        headers: site.header?.value ?? [:],
+                        playUrl: site.playUrl ?? "",
+                        categories: site.categories ?? [],
+                        click: site.click ?? ""
                     )
                     sources.append(bean)
                 }
             }
             self.sourceBeanList = sources
+            self.vodFlagList = Self.normalizedStringList(config.flags)
             BridgeClient.shared.updateConfigContext(configUrl: apiUrl, spider: config.spider)
             if BridgeClient.shared.isEnabled {
                 Task {
@@ -791,7 +797,15 @@ class ApiConfig: ObservableObject {
             // 解析解析器列表
             if let parses = config.parses {
                 self.parseBeanList = parses.map { p in
-                    ParseBean(name: p.name ?? "", url: p.url ?? "", type: p.type?.value ?? 0)
+                    let extObject = p.ext?.dictValue
+                    return ParseBean(
+                        name: p.name ?? "",
+                        url: p.url ?? "",
+                        type: p.type?.value ?? 0,
+                        ext: p.ext?.stringValue ?? Self.jsonString(from: extObject),
+                        flags: Self.parseFlags(from: extObject),
+                        headers: Self.parseHeaders(from: extObject)
+                    )
                 }
             } else {
                 self.parseBeanList = []
@@ -824,6 +838,44 @@ class ApiConfig: ObservableObject {
                 liveChannelGroupList = []
             }
         }
+    }
+
+    private static func normalizedStringList(_ values: [String]?) -> [String] {
+        (values ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func parseFlags(from extObject: [String: AnyCodableValue]?) -> [String] {
+        guard let value = extObject?["flag"] ?? extObject?["flags"] else { return [] }
+        if let values = value.stringArrayValue { return values }
+        if let value = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+            return value
+                .components(separatedBy: CharacterSet(charactersIn: ",|;"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        return []
+    }
+
+    private static func parseHeaders(from extObject: [String: AnyCodableValue]?) -> [String: String] {
+        guard let value = extObject?["header"] ?? extObject?["headers"] else { return [:] }
+        if let headers = value.stringDictionaryValue {
+            return PlaybackHTTPHeaders.normalized(headers)
+        }
+        if let raw = value.stringValue {
+            return FlexibleStringMap.parse(raw)
+        }
+        return [:]
+    }
+
+    private static func jsonString(from object: [String: AnyCodableValue]?) -> String? {
+        guard let object,
+              let data = try? JSONEncoder().encode(object),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return text
     }
 
     /// 解析直播列表

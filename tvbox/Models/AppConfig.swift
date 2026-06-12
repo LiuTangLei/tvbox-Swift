@@ -116,6 +116,85 @@ enum AnyCodableValue: Codable, Hashable {
             return nil
         }
     }
+
+    var stringArrayValue: [String]? {
+        guard case .array(let values) = self else { return nil }
+        let strings = values.compactMap { $0.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return strings.isEmpty ? nil : strings
+    }
+
+    var stringDictionaryValue: [String: String]? {
+        guard case .dict(let values) = self else { return nil }
+        let dictionary = values.reduce(into: [String: String]()) { result, item in
+            guard let value = item.value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !item.key.isEmpty,
+                  !value.isEmpty else {
+                return
+            }
+            result[item.key] = value
+        }
+        return dictionary.isEmpty ? nil : dictionary
+    }
+}
+
+/// 兼容配置里 header 字段可能是对象、JSON 字符串或普通 "k=v&k2=v2" 字符串。
+struct FlexibleStringMap: Codable, Hashable {
+    let value: [String: String]
+
+    init(_ value: [String: String] = [:]) {
+        self.value = value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let map = try? container.decode([String: String].self) {
+            self.value = PlaybackHTTPHeaders.normalized(map)
+            return
+        }
+        if let value = try? container.decode(String.self) {
+            self.value = Self.parse(value)
+            return
+        }
+        self.value = [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+
+    static func parse(_ rawValue: String) -> [String: String] {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [:] }
+
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return PlaybackHTTPHeaders.normalized(
+                object.reduce(into: [String: String]()) { result, item in
+                    if let value = item.value as? String {
+                        result[item.key] = value
+                    } else if let value = item.value as? CustomStringConvertible {
+                        result[item.key] = value.description
+                    }
+                }
+            )
+        }
+
+        let separators = CharacterSet(charactersIn: "&\n;")
+        let pairs = trimmed.components(separatedBy: separators)
+        var result: [String: String] = [:]
+        for pair in pairs {
+            let pieces = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pieces.count == 2 else { continue }
+            let key = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty, !value.isEmpty {
+                result[key] = value
+            }
+        }
+        return PlaybackHTTPHeaders.normalized(result)
+    }
 }
 
 // MARK: - 解析接口配置
@@ -126,12 +205,30 @@ struct ParseBean: Codable, Identifiable, Hashable {
     var name: String = ""
     var url: String = ""
     var type: Int = 0        // 0:嗅探 1:解析
-    var ext: [String: String]? = nil
+    var ext: String? = nil
+    var flags: [String] = []
+    var headers: [String: String] = [:]
     
-    init(name: String = "", url: String = "", type: Int = 0) {
+    init(
+        name: String = "",
+        url: String = "",
+        type: Int = 0,
+        ext: String? = nil,
+        flags: [String] = [],
+        headers: [String: String] = [:]
+    ) {
         self.name = name
         self.url = url
         self.type = type
+        self.ext = ext
+        self.flags = flags
+        self.headers = PlaybackHTTPHeaders.normalized(headers)
+    }
+
+    func matches(flag: String) -> Bool {
+        let normalizedFlag = flag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedFlag.isEmpty else { return flags.isEmpty }
+        return flags.isEmpty || flags.contains { $0.caseInsensitiveCompare(normalizedFlag) == .orderedSame }
     }
 }
 
@@ -167,10 +264,11 @@ struct AppConfigData: Codable {
         var playUrl: String?
         var categories: [String]?
         var click: String?
+        var header: FlexibleStringMap?
         
         enum CodingKeys: String, CodingKey {
             case key, name, api, searchable, filterable, quickSearch, indexs, changeable
-            case playerType, type, ext, jar, style, playUrl, categories, click
+            case playerType, type, ext, jar, style, playUrl, categories, click, header
             // type_flag 也可能出现
         }
     }

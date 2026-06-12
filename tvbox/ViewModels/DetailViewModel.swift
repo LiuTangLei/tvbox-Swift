@@ -545,13 +545,50 @@ class DetailViewModel: ObservableObject {
             origin: .bridge
         )
     }
+
+    private func sourcePlayableItem(
+        from playback: BridgePlayback,
+        source: SourceBean,
+        episodeURL: String,
+        flag: String
+    ) -> PlayableItem {
+        PlayableItem(
+            url: playback.url,
+            headers: playback.headers,
+            format: playback.format,
+            parse: playback.parse,
+            sourceKey: source.key,
+            flag: playback.flag ?? flag,
+            episodeId: episodeURL,
+            fallbackURL: playback.fallbackURL,
+            proxied: playback.proxied,
+            jxFrom: playback.jxFrom,
+            expiresAt: playback.expiresAt,
+            subtitles: playback.subtitles.compactMap {
+                PlayableSubtitle(url: $0.url, name: $0.name, lang: $0.lang, format: $0.format, flag: $0.flag)
+            },
+            danmakus: playback.danmakus.compactMap {
+                PlayableDanmaku(name: $0.name, url: $0.url)
+            },
+            drm: playback.drm,
+            origin: .direct
+        )
+    }
+
+    private func applySourceQualityOptions(_ playback: BridgePlayback) {
+        if playback.qualities.count > 1 {
+            applyBridgeQualityOptions(playback)
+        } else {
+            updateQualityOptions(for: playback.url, resetSelection: true)
+        }
+    }
     
     private func startPlayback(episodeURL: String, flag: String) {
         cancelPlaybackWatchdog()
         cancelDirectPlaybackProbe()
         bridgeMediaFallbackURL = nil
         isUsingBridgeMediaFallback = false
-        guard let source = currentSource, source.requiresBridge else {
+        guard let source = currentSource else {
             playbackResolveToken = UUID()
             isResolvingBridgePlayback = false
             bridgePlaybackMessage = nil
@@ -561,6 +598,45 @@ class DetailViewModel: ObservableObject {
             applyPlayback(directPlayableItem(url: selectedPlayableURL(fallback: episodeURL), episodeURL: episodeURL, flag: flag))
             isPlaying = true
             schedulePlaybackWatchdog()
+            return
+        }
+        guard source.requiresBridge else {
+            let token = UUID()
+            playbackResolveToken = token
+            isPlaying = false
+            isResolvingBridgePlayback = true
+            bridgePlaybackMessage = "正在解析播放地址..."
+            bridgeTokenPrompt = nil
+            isBridgeTokenPromptPresented = false
+            bridgeJarUiResponse = nil
+            isBridgeJarUiPresented = false
+            bridgeTokenErrorMessage = nil
+            errorMessage = nil
+            applyPlayback(nil)
+            detailPlaybackLogger.info("local play start source=\(source.key, privacy: .public) flag=\(flag, privacy: .public)")
+            Task { [source, episodeURL, flag, token] in
+                do {
+                    let playback = try await sourceService.resolvePlayback(sourceBean: source, flag: flag, id: episodeURL)
+                    guard playbackResolveToken == token else { return }
+                    detailPlaybackLogger.info("local play resolved source=\(source.key, privacy: .public) flag=\(flag, privacy: .public) parse=\(playback.parse ?? -1, privacy: .public)")
+                    isResolvingBridgePlayback = false
+                    bridgePlaybackMessage = nil
+                    applyBridgeStartPosition(playback.startPosition)
+                    applyBridgePlaybackMetadata(playback)
+                    applySourceQualityOptions(playback)
+                    advancePlaybackReloadToken()
+                    applyPlayback(sourcePlayableItem(from: playback, source: source, episodeURL: episodeURL, flag: flag))
+                    isPlaying = true
+                    schedulePlaybackWatchdog()
+                    errorMessage = nil
+                } catch {
+                    guard playbackResolveToken == token else { return }
+                    detailPlaybackLogger.error("local play failed source=\(source.key, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    isResolvingBridgePlayback = false
+                    bridgePlaybackMessage = nil
+                    startAutomaticPlaybackRecovery(trigger: error.localizedDescription)
+                }
+            }
             return
         }
         let token = UUID()
