@@ -178,9 +178,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     private let bufferingConfirmDelayVod: TimeInterval = 0.35
     private let bufferingIndicatorDelayVod: TimeInterval = 1.2
     private let vodBufferingProgressAdvanceThreshold: Double = 0.25
+    private let manualPlayRecoveryDelay: TimeInterval = 2.2
     private let progressPublishThreshold: Double = 0.25
     private let durationPublishThreshold: Double = 0.5
     private var lastNonZeroVolume = defaultVolume
+    private var manualPlayRecoveryWorkItem: DispatchWorkItem?
 
     override init() {
         super.init()
@@ -243,7 +245,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             || currentMediaHeaderKey != targetHeaderKey
             || currentMediaSubtitleKey != targetSubtitleKey
             || currentMediaIsLive != isLive
-        if isNewMedia {
+        if isNewMedia || forceReload {
             resetPlaybackRecoveryState()
         }
         syncDecodeModeFromSettings()
@@ -397,12 +399,14 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     func togglePlayback() {
         if isPlaying {
+            cancelManualPlayRecoveryCheck()
             mediaPlayer.pause()
         } else if shouldRecreateMediaForManualPlay() {
             restartCurrentMediaFromCurrentPosition()
         } else {
             mediaPlayer.play()
             applyPlaybackRate()
+            scheduleManualPlayRecoveryCheck()
         }
     }
 
@@ -421,9 +425,11 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func restartCurrentMediaFromCurrentPosition() {
+        cancelManualPlayRecoveryCheck()
         guard let urlString = currentMediaURLString, let url = URL(string: urlString) else {
             mediaPlayer.play()
             applyPlaybackRate()
+            scheduleManualPlayRecoveryCheck()
             return
         }
         let resumePosition = currentMediaIsLive ? 0 : max(currentSeconds(), currentTimeSeconds)
@@ -439,6 +445,51 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             onPlaybackFailed: onPlaybackFailed,
             forceReload: true
         )
+    }
+
+    private func scheduleManualPlayRecoveryCheck() {
+        cancelManualPlayRecoveryCheck()
+        guard currentMediaURLString != nil, mediaPlayer.media != nil else { return }
+        let baseline = currentMediaIsLive ? 0 : max(currentSeconds(), currentTimeSeconds)
+        let signature = currentMediaSignature
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.currentMediaSignature == signature,
+                      self.mediaPlayer.media != nil else {
+                    return
+                }
+                if self.currentMediaIsLive {
+                    guard !self.isPlaying else { return }
+                    self.restartCurrentMediaFromCurrentPosition()
+                    return
+                }
+
+                let current = max(self.currentSeconds(), self.currentTimeSeconds)
+                let advanced = current.isFinite && baseline.isFinite ? current - baseline : 0
+                guard !(self.mediaPlayer.isPlaying || self.mediaPlayer.state == .playing)
+                        || advanced < self.vodBufferingProgressAdvanceThreshold else {
+                    return
+                }
+                self.restartCurrentMediaFromCurrentPosition()
+            }
+        }
+        manualPlayRecoveryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + manualPlayRecoveryDelay, execute: workItem)
+    }
+
+    private func cancelManualPlayRecoveryCheck() {
+        manualPlayRecoveryWorkItem?.cancel()
+        manualPlayRecoveryWorkItem = nil
+    }
+
+    private var currentMediaSignature: String {
+        [
+            currentMediaURLString ?? "",
+            currentMediaHeaderKey,
+            currentMediaSubtitleKey,
+            currentMediaIsLive ? "live" : "vod"
+        ].joined(separator: "\n")
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -1267,6 +1318,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func resetPlaybackRecoveryState() {
+        cancelManualPlayRecoveryCheck()
         cancelBufferingFallbackTimer()
         cancelMissingVideoOutputFallbackTimer()
         cancelDelayedPreparingIndicator()
@@ -1607,8 +1659,9 @@ struct VLCVodPlayerView: View {
     }
 
     private func togglePlaybackWithOSD() {
+        let wantsPlayback = !controller.isPlaying
         controller.togglePlayback()
-        showOSD(icon: controller.isPlaying ? "pause.fill" : "play.fill")
+        showOSD(icon: wantsPlayback ? "pause.fill" : "play.fill")
     }
 
     private func reportVideoOrientation(for size: CGSize) {
@@ -2529,8 +2582,9 @@ struct VLCLivePlayerView: View {
     }
 
     private func togglePlaybackWithOSD() {
+        let wantsPlayback = !controller.isPlaying
         controller.togglePlayback()
-        showOSD(icon: controller.isPlaying ? "pause.fill" : "play.fill")
+        showOSD(icon: wantsPlayback ? "pause.fill" : "play.fill")
     }
 
     private func startPlayback() {

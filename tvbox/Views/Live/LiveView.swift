@@ -56,6 +56,12 @@ struct LiveView: View {
     private let channelInfoAutoHideDelay: TimeInterval = 3.0
     /// 用户交互令牌，递增后可通知 VLC 子视图重置自动隐藏逻辑。
     @State private var vlcInteractionToken = 0
+    /// 网络切换后强制重建 VLC 直播播放器。
+    @State private var livePlaybackReloadToken = UUID()
+    /// 最近一次网络切换重连时间，用于合并 NWPathMonitor 的连续事件。
+    @State private var lastNetworkPlaybackReconnectAt = Date.distantPast
+    /// 网络切换重连最小间隔。
+    private let networkPlaybackReconnectMinimumInterval: TimeInterval = 1.5
     
     /// 当前实际生效的播放器内核。
     /// 优先读取直播专用字段，再回退老字段，最后使用默认值。
@@ -120,6 +126,9 @@ struct LiveView: View {
                     cleanupPlayer()
                 }
             }
+            .onReceive(NetworkMonitor.shared.networkPathChangedPublisher) { _ in
+                handleNetworkPathChangedForPlayback()
+            }
             .onDisappear {
                 cleanupPlayer()
                 cancelChannelInfoAutoHide()
@@ -178,7 +187,7 @@ struct LiveView: View {
                     }
                 )
                 .ignoresSafeArea()
-                .id("vlc-live-\(viewModel.currentPlaybackIdentifier)-\(viewModel.currentChannel?.id ?? "")")
+                .id("vlc-live-\(viewModel.currentPlaybackIdentifier)-\(viewModel.currentChannel?.id ?? "")-\(livePlaybackReloadToken)")
             }
         } else if let player = avPlayer {
             PlatformVideoPlayer(player: player, videoScaleMode: liveVideoScaleMode)
@@ -1069,6 +1078,21 @@ struct LiveView: View {
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.play()
         avPlayer = newPlayer
+    }
+
+    private func handleNetworkPathChangedForPlayback() {
+        guard viewModel.currentPlayback != nil else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastNetworkPlaybackReconnectAt) >= networkPlaybackReconnectMinimumInterval else { return }
+        lastNetworkPlaybackReconnectAt = now
+
+        if selectedEngine == .system {
+            playChannel(playback: viewModel.currentPlayback)
+        } else {
+            livePlaybackReloadToken = UUID()
+            vlcInteractionToken += 1
+        }
+        wakeUpCurrentChannelInfo()
     }
     
     private func cleanupPlayer() {

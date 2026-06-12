@@ -827,9 +827,9 @@ struct AVPlayerContentView: View {
         let baseline = currentResumePosition()
         let workItem = DispatchWorkItem {
             guard self.player === player else { return }
-            guard player.timeControlStatus != .playing else { return }
             let current = player.currentTime().seconds
             let advanced = current.isFinite && baseline.isFinite ? current - baseline : 0
+            guard player.timeControlStatus != .playing || advanced < 0.5 else { return }
             guard advanced < 0.5 else { return }
             self.restartCurrentMediaFromCurrentPosition()
         }
@@ -849,8 +849,9 @@ struct AVPlayerContentView: View {
     }
 
     private func togglePlayPauseWithOSD() {
+        let wantsPlayback = player?.timeControlStatus != .playing
         togglePlayPause()
-        showOSD(icon: isPlaying ? "pause.fill" : "play.fill")
+        showOSD(icon: wantsPlayback ? "pause.fill" : "play.fill")
     }
 
     private func wakeUpControls() {

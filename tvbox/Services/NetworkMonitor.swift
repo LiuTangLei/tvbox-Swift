@@ -8,6 +8,15 @@ import Combine
 final class NetworkMonitor: ObservableObject {
     static let shared = NetworkMonitor()
 
+    private struct PathSignature: Equatable {
+        let connected: Bool
+        let usesWiFi: Bool
+        let usesCellular: Bool
+        let usesWiredEthernet: Bool
+        let isExpensive: Bool
+        let isConstrained: Bool
+    }
+
     enum ConnectionType: String {
         case wifi = "Wi-Fi"
         case cellular = "蜂窝"
@@ -29,6 +38,7 @@ final class NetworkMonitor: ObservableObject {
     private let monitorQueue = DispatchQueue(label: "com.tvbox.networkmonitor", qos: .utility)
     private var wasDisconnected = false
     private var hasReceivedPathUpdate = false
+    private var lastPathSignature: PathSignature?
     
     private init() {
         startMonitoring()
@@ -42,12 +52,14 @@ final class NetworkMonitor: ObservableObject {
                 let previouslyConnected = self.isConnected
                 let previousType = self.connectionType
                 let resolvedType = Self.resolveConnectionType(path)
+                let signature = Self.pathSignature(path)
+                let previousSignature = self.lastPathSignature
                 let hadPreviousPath = self.hasReceivedPathUpdate
                 let wasRestored = connected && (!previouslyConnected || self.wasDisconnected)
-                let interfaceChanged = hadPreviousPath
+                let pathChanged = hadPreviousPath
                     && connected
                     && previouslyConnected
-                    && previousType != resolvedType
+                    && (previousType != resolvedType || previousSignature != signature)
                 
                 self.isConnected = connected
                 self.connectionType = resolvedType
@@ -56,12 +68,13 @@ final class NetworkMonitor: ObservableObject {
                     self.networkRestoredPublisher.send()
                 }
 
-                if hadPreviousPath && (wasRestored || interfaceChanged) {
+                if hadPreviousPath && (wasRestored || pathChanged) {
                     self.networkPathChangedPublisher.send()
                 }
 
                 self.wasDisconnected = !connected
                 self.hasReceivedPathUpdate = true
+                self.lastPathSignature = signature
             }
         }
         monitor.start(queue: monitorQueue)
@@ -72,6 +85,17 @@ final class NetworkMonitor: ObservableObject {
         if path.usesInterfaceType(.cellular) { return .cellular }
         if path.usesInterfaceType(.wiredEthernet) { return .wiredEthernet }
         return .unknown
+    }
+
+    private static func pathSignature(_ path: NWPath) -> PathSignature {
+        PathSignature(
+            connected: path.status == .satisfied,
+            usesWiFi: path.usesInterfaceType(.wifi),
+            usesCellular: path.usesInterfaceType(.cellular),
+            usesWiredEthernet: path.usesInterfaceType(.wiredEthernet),
+            isExpensive: path.isExpensive,
+            isConstrained: path.isConstrained
+        )
     }
     
     deinit {
