@@ -6,12 +6,15 @@ struct ContentView: View {
     private enum ApiInputTarget {
         case vod
         case bridge
+        case bridgeBackup
     }
     
     /// 全局状态（配置加载、分栏状态等）。
     @EnvironmentObject var appState: AppState
     /// 网络连接状态。
     @EnvironmentObject var networkMonitor: NetworkMonitor
+    /// 直播源状态用于决定底部 Tab 是否展示直播入口。
+    @StateObject private var apiConfig = ApiConfig.shared
     /// 设置页 ViewModel。根视图复用它处理首次配置与多仓库选择。
     @StateObject private var settingsVM = SettingsViewModel()
     /// 预留：控制首次配置页显隐（当前逻辑由 `appState.isConfigLoaded` 驱动）。
@@ -43,7 +46,15 @@ struct ContentView: View {
                     await appState.loadConfig(vodUrl: savedVodUrl, liveUrl: savedLiveUrl)
                 }
             }
+            redirectLiveTabIfNeeded()
         }
+        .onChange(of: apiConfig.liveChannelGroupList.count) { _, _ in
+            redirectLiveTabIfNeeded()
+        }
+    }
+
+    private var hasLiveSources: Bool {
+        !apiConfig.liveChannelGroupList.isEmpty
     }
     
     @ViewBuilder
@@ -82,14 +93,16 @@ struct ContentView: View {
                     Label("首页", systemImage: "house.fill")
                 }
                 .tag(0)
-            
-            LiveView(onExit: {
-                appState.selectedMainTab = 0
-            })
-                .tabItem {
-                    Label("直播", systemImage: "tv.fill")
-                }
-                .tag(1)
+
+            if hasLiveSources {
+                LiveView(onExit: {
+                    appState.selectedMainTab = 0
+                })
+                    .tabItem {
+                        Label("直播", systemImage: "tv.fill")
+                    }
+                    .tag(1)
+            }
             
             SearchView()
                 .tabItem {
@@ -105,6 +118,7 @@ struct ContentView: View {
         }
         .tint(.orange)
         .onChange(of: appState.selectedMainTab) { _, _ in
+            redirectLiveTabIfNeeded()
             HapticManager.shared.selection()
         }
         #else
@@ -112,8 +126,10 @@ struct ContentView: View {
             List(selection: $appState.selectedMainTab) {
                 Label("首页", systemImage: "house.fill")
                     .tag(0)
-                Label("直播", systemImage: "tv.fill")
-                    .tag(1)
+                if hasLiveSources {
+                    Label("直播", systemImage: "tv.fill")
+                        .tag(1)
+                }
                 Label("搜索", systemImage: "magnifyingglass")
                     .tag(2)
                 Label("收藏", systemImage: "heart.fill")
@@ -128,7 +144,7 @@ struct ContentView: View {
         } detail: {
             switch appState.selectedMainTab {
             case 0: HomeView()
-            case 1: LiveView()
+            case 1 where hasLiveSources: LiveView()
             case 2: SearchView()
             case 3:
                 NavigationStack {
@@ -143,6 +159,11 @@ struct ContentView: View {
             }
         }
         #endif
+    }
+
+    private func redirectLiveTabIfNeeded() {
+        guard !hasLiveSources, appState.selectedMainTab == 1 else { return }
+        appState.selectedMainTab = 0
     }
     
     // MARK: - 首次配置页面
@@ -247,7 +268,7 @@ struct ContentView: View {
                             HStack {
                                 Image(systemName: "point.3.connected.trianglepath.dotted")
                                     .foregroundColor(.orange)
-                                TextField("请输入 Bridge Server 地址（可留空，裸域名默认 https）", text: $settingsVM.bridgeServerUrl)
+                                TextField("主 Bridge 地址（HTTP/HTTPS，可留空）", text: $settingsVM.bridgeServerUrl)
                                     .textFieldStyle(.plain)
                                     .foregroundColor(.white)
                                     .onTapGesture {
@@ -271,7 +292,34 @@ struct ContentView: View {
                             .padding()
                             .glassCard(cornerRadius: 15)
 
-                            Text("Bridge 地址可留空；裸域名会自动按 HTTPS 保存，未配置时 type=3 数据源会显示为暂不支持。")
+                            HStack {
+                                Image(systemName: "network")
+                                    .foregroundColor(.orange)
+                                TextField("备用 Bridge 地址（HTTP/HTTPS，可留空）", text: $settingsVM.bridgeBackupServerUrl)
+                                    .textFieldStyle(.plain)
+                                    .foregroundColor(.white)
+                                    .onTapGesture {
+                                        setupInputTarget = .bridgeBackup
+                                    }
+                                    #if os(iOS)
+                                    .autocapitalization(.none)
+                                    .keyboardType(.URL)
+                                    #endif
+
+                                Button {
+                                    if let text = readPasteboardText() {
+                                        settingsVM.bridgeBackupServerUrl = text
+                                    }
+                                } label: {
+                                    Image(systemName: "doc.on.clipboard")
+                                        .foregroundColor(.orange)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding()
+                            .glassCard(cornerRadius: 15)
+
+                            Text("主/备用 Bridge 地址都支持局域网或公网的 HTTP/HTTPS；主地址不可达时会自动切到备用。")
                                 .font(.caption)
                                 .foregroundColor(.white.opacity(0.55))
                                 .padding(.horizontal, 4)
@@ -311,7 +359,7 @@ struct ContentView: View {
                         )
                         
                         // 历史记录
-                        let historyKind: SettingsViewModel.AddressHistoryKind = setupInputTarget == .bridge ? .bridge : .config
+                        let historyKind: SettingsViewModel.AddressHistoryKind = setupInputTarget == .vod ? .config : .bridge
                         let configHistory = settingsVM.addressHistory(for: historyKind)
                         if !configHistory.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
@@ -327,6 +375,8 @@ struct ContentView: View {
                                             settingsVM.vodApiUrl = url
                                         case .bridge:
                                             settingsVM.bridgeServerUrl = url
+                                        case .bridgeBackup:
+                                            settingsVM.bridgeBackupServerUrl = url
                                         }
                                     } label: {
                                         HStack {

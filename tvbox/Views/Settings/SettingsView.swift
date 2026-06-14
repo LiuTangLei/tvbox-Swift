@@ -13,7 +13,7 @@ struct SettingsView: View {
             switch self {
             case .vod: return "点播接口地址"
             case .live: return "直播接口地址"
-            case .bridge: return "Bridge Server 地址"
+            case .bridge: return "Bridge Server"
             }
         }
 
@@ -36,6 +36,7 @@ struct SettingsView: View {
     @State private var showingPicker: PickerType = .none
     @State private var showingUserAgentInput = false
     @State private var userAgentDraft = ""
+    @State private var editingBridgeBackupAddress = false
 
     enum PickerType {
         case none
@@ -112,7 +113,17 @@ struct SettingsView: View {
                             title: "Bridge Server",
                             value: viewModel.bridgeServerSummary
                         ) {
+                            editingBridgeBackupAddress = false
                             activeApiInputType = .bridge
+                        }
+                        if let hint = viewModel.bridgeActiveEndpointHint {
+                            Text(hint)
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.45))
+                                .lineLimit(1)
+                                .padding(.horizontal, 56)
+                                .padding(.bottom, 12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
 
@@ -234,6 +245,7 @@ struct SettingsView: View {
             .navigationTitle("设置")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .tabBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.hidden, for: .navigationBar)
             #endif
@@ -380,32 +392,27 @@ struct SettingsView: View {
     private func apiInputSheet(for inputType: ApiInputType) -> some View {
         NavigationStack {
             VStack(spacing: 16) {
-                HStack {
-                    Image(systemName: "link")
-                        .foregroundColor(.secondary)
-                    TextField(inputType.placeholder, text: currentApiBinding(for: inputType))
-                        .textFieldStyle(.plain)
-                        #if os(iOS)
-                        .autocapitalization(.none)
-                        .keyboardType(.URL)
-                        #endif
-                }
-                .padding()
-                .background(Color.secondary.opacity(0.1))
-                .cornerRadius(10)
+                if inputType == .bridge {
+                    bridgeAddressFields
+                } else {
+                    addressInputField(
+                        icon: "link",
+                        placeholder: inputType.placeholder,
+                        text: currentApiBinding(for: inputType)
+                    )
 
-                // 粘贴按钮
-                HStack {
-                    Button {
-                        if let text = readPasteboardText() {
-                            currentApiBinding(for: inputType).wrappedValue = text
+                    HStack {
+                        Button {
+                            if let text = readPasteboardText() {
+                                currentApiBinding(for: inputType).wrappedValue = text
+                            }
+                        } label: {
+                            Label("粘贴", systemImage: "doc.on.clipboard")
+                                .font(.subheadline)
                         }
-                    } label: {
-                        Label("粘贴", systemImage: "doc.on.clipboard")
-                            .font(.subheadline)
-                    }
 
-                    Spacer()
+                        Spacer()
+                    }
                 }
 
                 // 历史记录
@@ -418,7 +425,11 @@ struct SettingsView: View {
                         ForEach(history(for: inputType), id: \.self) { url in
                             HStack {
                                 Button {
-                                    currentApiBinding(for: inputType).wrappedValue = url
+                                    if inputType == .bridge, editingBridgeBackupAddress {
+                                        viewModel.bridgeBackupServerUrl = url
+                                    } else {
+                                        currentApiBinding(for: inputType).wrappedValue = url
+                                    }
                                 } label: {
                                     HStack {
                                         Image(systemName: "clock")
@@ -494,6 +505,66 @@ struct SettingsView: View {
         #if os(iOS)
         .presentationDetents([.medium, .large])
         #endif
+    }
+
+    private var bridgeAddressFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            addressInputField(
+                icon: "network",
+                placeholder: "主 Bridge 地址，例如 http://192.168.1.10:9978 或 https://bridge.example.com",
+                text: $viewModel.bridgeServerUrl,
+                onFocus: { editingBridgeBackupAddress = false }
+            )
+            addressInputField(
+                icon: "point.3.connected.trianglepath.dotted",
+                placeholder: "备用 Bridge 地址，例如 https://bridge.example.com 或 http://192.168.1.10:9978",
+                text: $viewModel.bridgeBackupServerUrl,
+                onFocus: { editingBridgeBackupAddress = true }
+            )
+            HStack {
+                Button {
+                    if let text = readPasteboardText() {
+                        if editingBridgeBackupAddress {
+                            viewModel.bridgeBackupServerUrl = text
+                        } else {
+                            viewModel.bridgeServerUrl = text
+                        }
+                    }
+                } label: {
+                    Label(editingBridgeBackupAddress ? "粘贴到备用" : "粘贴到主地址", systemImage: "doc.on.clipboard")
+                        .font(.subheadline)
+                }
+
+                Spacer()
+            }
+            Text("主/备用 Bridge 地址都支持局域网或公网的 HTTP/HTTPS；主地址不可达时会自动切到备用，网络变化后会后台探测并切回主地址。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func addressInputField(
+        icon: String,
+        placeholder: String,
+        text: Binding<String>,
+        onFocus: (() -> Void)? = nil
+    ) -> some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .onTapGesture {
+                    onFocus?()
+                }
+                #if os(iOS)
+                .autocapitalization(.none)
+                .keyboardType(.URL)
+                #endif
+        }
+        .padding()
+        .background(Color.secondary.opacity(0.1))
+        .cornerRadius(10)
     }
 
     private var userAgentInputSheet: some View {
@@ -719,6 +790,7 @@ struct SettingsView: View {
         .navigationTitle("选择数据源")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         #endif
     }
 }

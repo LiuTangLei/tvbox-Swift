@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 // MARK: - Gesture Mode Enum
 
@@ -9,6 +10,7 @@ enum PlayerGestureMode: Equatable {
     case seeking(offset: Double)
     case adjustingBrightness(delta: CGFloat)
     case adjustingVolume(delta: CGFloat)
+    case fastForward
 }
 
 // MARK: - PlayerGestureLayer
@@ -17,21 +19,36 @@ enum PlayerGestureMode: Equatable {
 /// 支持水平滑动快进快退、左侧垂直滑动调节亮度、右侧垂直滑动调节音量、
 /// 双击暂停/播放、捏合缩放
 struct PlayerGestureLayer: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     // MARK: - Callbacks
     let onSeek: (Double) -> Void
     let onTogglePlayPause: () -> Void
     let onToggleControls: () -> Void
     let onZoomChanged: (CGFloat) -> Void
+    let onBrightnessChanged: (CGFloat) -> Void
+    let onVolumeChanged: (CGFloat) -> Void
+    let onLongPressFastForwardChanged: (Bool) -> Void
 
     // MARK: - Properties
     let currentTime: Double
     let duration: Double
+    let brightnessValue: CGFloat
+    let volumeValue: CGFloat
 
     // MARK: - State
     @State private var gestureMode: PlayerGestureMode = .none
     @State private var zoomScale: CGFloat = 1.0
     @State private var showIndicator = false
     @State private var dragStartX: CGFloat = 0
+    @State private var dragStartBrightness: CGFloat = UIScreen.main.brightness
+    @State private var dragStartVolume: CGFloat = 0.5
+    @State private var displayedBrightness: CGFloat = UIScreen.main.brightness
+    @State private var displayedVolume: CGFloat = 0.5
+    @State private var didMoveDuringTouch = false
+    @State private var isFastForwarding = false
+    @State private var isTouchPressing = false
+    @State private var longPressTask: Task<Void, Never>?
 
     // MARK: - Pure Computation Functions
 
@@ -101,7 +118,13 @@ struct PlayerGestureLayer: View {
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(dragGesture(in: geometry))
-                .gesture(pinchGesture)
+                .simultaneousGesture(pinchGesture)
+                .onLongPressGesture(
+                    minimumDuration: 0.45,
+                    maximumDistance: 10,
+                    pressing: handleLongPressPressing(_:),
+                    perform: {}
+                )
                 .onTapGesture(count: 2) {
                     HapticManager.shared.lightImpact()
                     onTogglePlayPause()
@@ -110,6 +133,22 @@ struct PlayerGestureLayer: View {
                     onToggleControls()
                 }
                 .overlay { gestureIndicatorOverlay }
+                .onAppear {
+                    displayedBrightness = brightnessValue
+                    displayedVolume = volumeValue
+                }
+                .onChange(of: brightnessValue) { _, newValue in
+                    if case .adjustingBrightness = gestureMode { return }
+                    displayedBrightness = newValue
+                }
+                .onChange(of: volumeValue) { _, newValue in
+                    if case .adjustingVolume = gestureMode { return }
+                    displayedVolume = newValue
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase != .active else { return }
+                    resetGestureState()
+                }
         }
     }
 
@@ -120,6 +159,8 @@ struct PlayerGestureLayer: View {
             .onChanged { value in
                 if gestureMode == .none {
                     dragStartX = value.startLocation.x
+                    dragStartBrightness = brightnessValue
+                    dragStartVolume = volumeValue
                     HapticManager.shared.lightImpact()
                 }
 
@@ -130,7 +171,11 @@ struct PlayerGestureLayer: View {
                 )
 
                 if mode != .none {
+                    didMoveDuringTouch = true
+                    cancelPendingLongPress()
+                    stopFastForward()
                     gestureMode = mode
+                    applyAdjustment(for: mode)
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showIndicator = true
                     }
@@ -147,15 +192,89 @@ struct PlayerGestureLayer: View {
                     onSeek(target - currentTime)
                 case .adjustingBrightness, .adjustingVolume:
                     break
-                case .none:
+                case .none, .fastForward:
                     break
                 }
 
                 gestureMode = .none
+                didMoveDuringTouch = false
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showIndicator = false
                 }
             }
+    }
+
+    private func handleLongPressPressing(_ isPressing: Bool) {
+        isTouchPressing = isPressing
+        if isPressing {
+            longPressTask?.cancel()
+            longPressTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                guard !Task.isCancelled,
+                      isTouchPressing,
+                      !didMoveDuringTouch,
+                      gestureMode == .none else { return }
+                beginLongPressFastForward()
+            }
+        } else {
+            cancelPendingLongPress()
+            stopFastForward()
+            didMoveDuringTouch = false
+        }
+    }
+
+    private func beginLongPressFastForward() {
+        guard !didMoveDuringTouch, gestureMode == .none else { return }
+        HapticManager.shared.lightImpact()
+        isFastForwarding = true
+        gestureMode = .fastForward
+        onLongPressFastForwardChanged(true)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showIndicator = true
+        }
+    }
+
+    private func stopFastForward() {
+        guard isFastForwarding else { return }
+        isFastForwarding = false
+        onLongPressFastForwardChanged(false)
+        if gestureMode == .fastForward {
+            gestureMode = .none
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showIndicator = false
+            }
+        }
+    }
+
+    private func resetGestureState() {
+        isTouchPressing = false
+        cancelPendingLongPress()
+        stopFastForward()
+        didMoveDuringTouch = false
+        gestureMode = .none
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showIndicator = false
+        }
+    }
+
+    private func cancelPendingLongPress() {
+        longPressTask?.cancel()
+        longPressTask = nil
+    }
+
+    private func applyAdjustment(for mode: PlayerGestureMode) {
+        switch mode {
+        case .adjustingBrightness(let delta):
+            let value = Self.clampAdjustment(currentValue: dragStartBrightness, delta: delta)
+            displayedBrightness = value
+            onBrightnessChanged(value)
+        case .adjustingVolume(let delta):
+            let value = Self.clampAdjustment(currentValue: dragStartVolume, delta: delta)
+            displayedVolume = value
+            onVolumeChanged(value)
+        case .none, .seeking, .fastForward:
+            break
+        }
     }
 
     // MARK: - Pinch Gesture
@@ -189,16 +308,36 @@ struct PlayerGestureLayer: View {
     @ViewBuilder
     private var gestureIndicatorOverlay: some View {
         if showIndicator {
-            VStack(spacing: 8) {
-                indicatorIcon
-                indicatorText
+            if case .fastForward = gestureMode {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text("2x播放")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(Color.black.opacity(0.62))
+                            .clipShape(Capsule())
+                    }
+                    Spacer()
+                }
+                .padding(.top, 18)
+                .padding(.trailing, 18)
+                .opacity(showIndicator ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: showIndicator)
+            } else {
+                VStack(spacing: 8) {
+                    indicatorIcon
+                    indicatorText
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .opacity(showIndicator ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: showIndicator)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .opacity(showIndicator ? 1 : 0)
-            .animation(.easeInOut(duration: 0.2), value: showIndicator)
         }
     }
 
@@ -215,6 +354,10 @@ struct PlayerGestureLayer: View {
                 .foregroundColor(.yellow)
         case .adjustingVolume:
             Image(systemName: "speaker.wave.2.fill")
+                .font(.title2)
+                .foregroundColor(.white)
+        case .fastForward:
+            Image(systemName: "forward.fill")
                 .font(.title2)
                 .foregroundColor(.white)
         case .none:
@@ -236,7 +379,7 @@ struct PlayerGestureLayer: View {
                 .foregroundColor(.white)
         case .adjustingBrightness(let delta):
             let percentage = Int(Self.clampAdjustment(
-                currentValue: UIScreen.main.brightness,
+                currentValue: dragStartBrightness,
                 delta: delta
             ) * 100)
             Text("\(percentage)%")
@@ -244,11 +387,15 @@ struct PlayerGestureLayer: View {
                 .foregroundColor(.white)
         case .adjustingVolume(let delta):
             let percentage = Int(Self.clampAdjustment(
-                currentValue: 0.5,
+                currentValue: dragStartVolume,
                 delta: delta
             ) * 100)
             Text("\(percentage)%")
                 .font(.caption)
+                .foregroundColor(.white)
+        case .fastForward:
+            Text("2x")
+                .font(.caption.weight(.bold))
                 .foregroundColor(.white)
         case .none:
             EmptyView()

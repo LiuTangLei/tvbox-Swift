@@ -41,6 +41,8 @@ struct HawkConfig {
     static let LIVE_HOME_SOURCE = "live_home_source"
     static let BRIDGE_ENABLED = "bridge_enabled"
     static let BRIDGE_SERVER_URL = "bridge_server_url"
+    static let BRIDGE_BACKUP_SERVER_URL = "bridge_backup_server_url"
+    static let BRIDGE_ACTIVE_SERVER_URL = "bridge_active_server_url"
     static let BRIDGE_LAST_VERIFIED_URL = "bridge_last_verified_url"
     static let BRIDGE_SERVER_HISTORY = "bridge_server_history"
 }

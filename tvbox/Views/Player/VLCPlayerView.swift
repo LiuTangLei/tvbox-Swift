@@ -3,14 +3,14 @@ import Darwin
 import QuartzCore
 
 #if canImport(VLCKitSPM)
-import VLCKitSPM
+@preconcurrency import VLCKitSPM
 #if os(iOS)
 import UIKit
 #endif
 
 @MainActor
 final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
-    static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     private static let defaultVolume = 100
     private static let maxVolume = 200
     private static let drawableSizeChangeThreshold: CGFloat = 24
@@ -509,6 +509,15 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         guard let index = Self.supportedPlaybackRates.firstIndex(of: playbackRate),
               index - 1 >= 0 else { return }
         setPlaybackRate(Self.supportedPlaybackRates[index - 1])
+    }
+
+    func setRuntimePlaybackRate(_ rate: Float) {
+        let normalized = Self.normalizedPlaybackRate(from: rate)
+        mediaPlayer.rate = normalized
+    }
+
+    func restoreConfiguredPlaybackRate() {
+        applyPlaybackRate()
     }
 
     func setVolume(_ value: Int) {
@@ -1451,6 +1460,7 @@ struct VLCVodPlayerView: View {
     }
 
     let urlString: String
+    var title: String = ""
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
@@ -1461,6 +1471,7 @@ struct VLCVodPlayerView: View {
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
+    var onCloseRequested: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var onVideoSizeChanged: ((CGSize) -> Void)? = nil
@@ -1482,6 +1493,7 @@ struct VLCVodPlayerView: View {
     @State private var lastReportedVideoSize: CGSize = .zero
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
     @State private var activeVideoScaleMode: VideoScaleMode = VideoScaleMode.fromStoredValue(UserDefaults.standard.integer(forKey: HawkConfig.PLAY_SCALE))
+    @State private var longPressPlaybackRateBeforeBoost: Float?
 
     private var controller: VLCPlayerController {
         sharedController ?? ownedController
@@ -1531,9 +1543,31 @@ struct VLCVodPlayerView: View {
                 onTogglePlayPause: { togglePlaybackWithOSD() },
                 onToggleControls: { wakeUpControls() },
                 onZoomChanged: { _ in },
+                onBrightnessChanged: { brightness in
+                    UIScreen.main.brightness = brightness
+                },
+                onVolumeChanged: { value in
+                    controller.setVolume(Int((value * 200).rounded()))
+                },
+                onLongPressFastForwardChanged: { active in
+                    setLongPressFastForward(active)
+                },
                 currentTime: controller.currentTimeSeconds,
-                duration: controller.durationSeconds
+                duration: controller.durationSeconds,
+                brightnessValue: UIScreen.main.brightness,
+                volumeValue: CGFloat(controller.volume) / 200.0
             )
+        }
+        #endif
+        #if os(iOS)
+        .overlay(alignment: .top) {
+            GeometryReader { proxy in
+                playerTopControls(safeTop: proxy.safeAreaInsets.top)
+                    .opacity(showControls ? 1.0 : 0.0)
+                    .allowsHitTesting(showControls)
+                    .animation(.easeInOut(duration: 0.3), value: showControls)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         }
         #endif
         .overlay(alignment: .bottom) {
@@ -1543,6 +1577,7 @@ struct VLCVodPlayerView: View {
                     .padding(12)
                     #endif
                     .opacity(showControls ? 1.0 : 0.0)
+                    .allowsHitTesting(showControls)
                     .animation(.easeInOut(duration: 0.3), value: showControls)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
@@ -1750,6 +1785,54 @@ struct VLCVodPlayerView: View {
         isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
     }
 
+    #if os(iOS)
+    private var playerDisplayTitle: String {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty { return trimmedTitle }
+        return playback?.episodeId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? "正在播放"
+    }
+
+    private func playerTopControls(safeTop: CGFloat) -> some View {
+        ZStack(alignment: .top) {
+            LinearGradient(
+                colors: [Color.black.opacity(0.74), Color.black.opacity(0.36), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(74, safeTop + 70))
+            .allowsHitTesting(false)
+
+            HStack(spacing: 10) {
+                Button {
+                    wakeUpControls()
+                    onCloseRequested?()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .zIndex(2)
+                .accessibilityLabel("返回")
+
+                Text(playerDisplayTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.55), radius: 3, x: 0, y: 1)
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, safeTop + 4)
+            .padding(.bottom, 12)
+            .zIndex(1)
+        }
+    }
+    #endif
+
     private func commitProgressSeek() {
         let target = clampedProgressSeconds(draggingSeconds)
         draggingSeconds = target
@@ -1764,6 +1847,8 @@ struct VLCVodPlayerView: View {
     private func playbackControls(containerWidth: CGFloat) -> some View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
+        let mobileAccent = Color(red: 1.0, green: 0.31, blue: 0.55)
+        let mobileControlSpacing: CGFloat = containerWidth < 390 ? 8 : 12
         #else
         let availableControlWidth = max(containerWidth - 24, 0)
         let controlWidth = min(
@@ -1774,11 +1859,10 @@ struct VLCVodPlayerView: View {
 
         return VStack(spacing: 0) {
             #if os(iOS)
-            // iOS: 紧凑单行布局 — 进度条在上，按钮在下紧贴
             HStack(spacing: 8) {
                 Text(currentDisplaySeconds.durationString)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.8))
+                    .foregroundColor(.white.opacity(0.86))
                     .lineLimit(1)
 
                 Slider(
@@ -1798,104 +1882,75 @@ struct VLCVodPlayerView: View {
                         }
                     }
                 )
-                .accentColor(.white)
+                .accentColor(mobileAccent)
                 .disabled(!controller.hasValidDuration)
 
                 Text(totalDisplayText)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.white.opacity(0.64))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .padding(.top, 8)
-            .padding(.bottom, 4)
+            .padding(.bottom, 2)
 
-            // 控制按钮行 — 紧凑排列
-            HStack(spacing: 0) {
-                // 左：倍速、音轨、字幕
-                HStack(spacing: 6) {
-                    playbackRateMenu
-                    videoScaleMenu
+            HStack(spacing: 12) {
+                Button {
+                    wakeUpControls()
+                    togglePlaybackWithOSD()
+                } label: {
+                    Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 23, weight: .bold))
+                        .frame(width: 40, height: 40)
+                }
+                .buttonStyle(.plain)
+
+                if let onPlayNext {
+                    Button {
+                        guard canPlayNext else { return }
+                        wakeUpControls()
+                        onPlayNext()
+                        showOSD(icon: "forward.end.fill")
+                    } label: {
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 34, height: 40)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canPlayNext)
+                    .opacity(canPlayNext ? 1 : 0.36)
+                }
+
+                Spacer(minLength: 10)
+
+                HStack(spacing: mobileControlSpacing) {
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
                     if shouldShowSubtitleTrackMenu {
                         subtitleTrackMenu
-                        subtitleStyleMenu
+                        if containerWidth >= 520 {
+                            subtitleStyleMenu
+                        }
                     }
-                }
-                .frame(minWidth: 36, alignment: .leading)
-
-                Spacer()
-
-                // 中间：主控按钮
-                HStack(spacing: 20) {
-                    Button {
-                        wakeUpControls()
-                        controller.seek(by: -seekStep)
-                        showOSD(icon: "gobackward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "gobackward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        wakeUpControls()
-                        togglePlaybackWithOSD()
-                    } label: {
-                        Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 20, weight: .bold))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        wakeUpControls()
-                        controller.seek(by: seekStep)
-                        showOSD(icon: "goforward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "goforward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    if let onPlayNext {
+                    playbackRateMenu
+                    videoScaleMenu
+                    if let onToggleFullScreen {
                         Button {
-                            guard canPlayNext else { return }
                             wakeUpControls()
-                            onPlayNext()
-                            showOSD(icon: "forward.end.fill")
+                            onToggleFullScreen()
                         } label: {
-                            Image(systemName: "forward.end.fill")
-                                .font(.system(size: 16, weight: .medium))
-                                .frame(minWidth: 36, minHeight: 36)
+                            Image(systemName: fullscreenToggleIconName)
+                                .font(.system(size: 18, weight: .semibold))
+                                .frame(width: 34, height: 40)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!canPlayNext)
-                        .opacity(canPlayNext ? 1 : 0.4)
                     }
-                }
-
-                Spacer()
-
-                // 右：全屏
-                if let onToggleFullScreen {
-                    Button {
-                        wakeUpControls()
-                        onToggleFullScreen()
-                    } label: {
-                        Image(systemName: fullscreenToggleIconName)
-                            .font(.system(size: 14, weight: .bold))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
+            .foregroundColor(.white)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
             #else
             // macOS: 保持两行布局
             HStack(spacing: 12) {
@@ -2088,6 +2143,18 @@ struct VLCVodPlayerView: View {
                 }
             }
         } label: {
+            #if os(iOS)
+            HStack(spacing: 4) {
+                Text(controller.playbackRate == 1.0 ? "倍速" : playbackRateLabel(controller.playbackRate))
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.82)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 38, minHeight: 34)
+            #else
             HStack(spacing: 4) {
                 Text(playbackRateLabel(controller.playbackRate))
                 Image(systemName: "chevron.up")
@@ -2099,6 +2166,7 @@ struct VLCVodPlayerView: View {
             .padding(.vertical, 6)
             .background(Color.white.opacity(0.12))
             .clipShape(Capsule())
+            #endif
         }
         .buttonStyle(.plain)
     }
@@ -2127,7 +2195,7 @@ struct VLCVodPlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.contains { !$0.isDisabled }
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -2328,6 +2396,20 @@ struct VLCVodPlayerView: View {
     #endif
 
     private func trackMenuLabel(icon: String, title: String) -> some View {
+        #if os(iOS)
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .opacity(0.9)
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 4)
+        .frame(minWidth: 34, maxWidth: 68, minHeight: 34, alignment: .center)
+        #else
         HStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .semibold))
@@ -2342,6 +2424,7 @@ struct VLCVodPlayerView: View {
         .frame(maxWidth: 92, alignment: .leading)
         .background(Color.white.opacity(0.12))
         .clipShape(Capsule())
+        #endif
     }
 
     private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
@@ -2380,6 +2463,20 @@ struct VLCVodPlayerView: View {
             return "speaker.wave.1.fill"
         default:
             return "speaker.wave.2.fill"
+        }
+    }
+
+    private func setLongPressFastForward(_ active: Bool) {
+        if active {
+            if longPressPlaybackRateBeforeBoost == nil {
+                longPressPlaybackRateBeforeBoost = controller.playbackRate
+            }
+            controller.setRuntimePlaybackRate(2.0)
+        } else if let previous = longPressPlaybackRateBeforeBoost {
+            longPressPlaybackRateBeforeBoost = nil
+            controller.setRuntimePlaybackRate(previous)
+        } else {
+            controller.restoreConfiguredPlaybackRate()
         }
     }
 }
@@ -2451,7 +2548,8 @@ struct VLCLivePlayerView: View {
                 onVolumeChanged: { delta in
                     let newVol = max(0, min(200, controller.volume + Int(delta * 200)))
                     controller.setVolume(newVol)
-                }
+                },
+                volumeValue: CGFloat(controller.volume) / 200.0
             )
         }
         .overlay(alignment: .bottom) {
@@ -2607,7 +2705,7 @@ struct VLCLivePlayerView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        controller.audioTracks.contains { !$0.isDisabled }
+        controller.audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -3115,6 +3213,7 @@ final class VLCPlayerController: ObservableObject {
 
 struct VLCVodPlayerView: View {
     let urlString: String
+    var title: String = ""
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
@@ -3125,6 +3224,7 @@ struct VLCVodPlayerView: View {
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
+    var onCloseRequested: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var onVideoSizeChanged: ((CGSize) -> Void)? = nil
@@ -3136,6 +3236,7 @@ struct VLCVodPlayerView: View {
     var body: some View {
         AVPlayerContentView(
             urlString: urlString,
+            title: title,
             playback: playback,
             httpHeaders: httpHeaders,
             startPosition: startPosition,
@@ -3146,6 +3247,7 @@ struct VLCVodPlayerView: View {
             onPlaybackStarted: onPlaybackStarted,
             onPlaybackEnded: onPlaybackEnded,
             onPlaybackFailed: onPlaybackFailed,
+            onCloseRequested: onCloseRequested,
             onToggleFullScreen: onToggleFullScreen,
             onVideoOrientationChanged: onVideoOrientationChanged,
             onVideoSizeChanged: onVideoSizeChanged,

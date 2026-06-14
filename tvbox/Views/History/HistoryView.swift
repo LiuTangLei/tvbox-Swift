@@ -68,20 +68,17 @@ struct HistoryView: View {
         .navigationTitle("历史记录")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         #endif
         .onAppear {
-            Task {
-                await CacheStore.shared.pruneHistory(context: modelContext)
-            }
+            CacheStore.shared.pruneHistory(context: modelContext)
         }
         .toolbar {
             if !visibleRecords.isEmpty {
                 ToolbarItem(placement: .automatic) {
                     // 清空历史使用统一缓存服务，确保行为与其他入口一致。
                     Button {
-                        Task {
-                            await CacheStore.shared.clearHistory(context: modelContext)
-                        }
+                        CacheStore.shared.clearHistory(context: modelContext)
                     } label: {
                         Text("清空")
                             .foregroundColor(.orange)

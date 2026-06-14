@@ -13,7 +13,9 @@ struct tvboxApp: App {
     
     /// 全局共享的 SwiftData 容器。
     /// 这里显式声明 Schema，确保收藏/历史/缓存三类数据使用同一持久化存储。
-    var sharedModelContainer: ModelContainer = {
+    var sharedModelContainer: ModelContainer = Self.makeModelContainer()
+
+    private static func makeModelContainer() -> ModelContainer {
         let schema = Schema([
             VodCollect.self,
             VodRecord.self,
@@ -23,9 +25,15 @@ struct tvboxApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            print("Could not create persistent ModelContainer, falling back to in-memory store: \(error)")
+            do {
+                let fallbackConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+                return try ModelContainer(for: schema, configurations: [fallbackConfiguration])
+            } catch {
+                preconditionFailure("Could not create fallback ModelContainer: \(error)")
+            }
         }
-    }()
+    }
     
     /// 应用窗口与根视图。
     var body: some Scene {
@@ -71,9 +79,11 @@ class AppState: ObservableObject {
     private var lastVodUrl: String = ""
     private var lastLiveUrl: String = ""
     private var networkRestoredCancellable: AnyCancellable?
+    private var networkPathChangedCancellable: AnyCancellable?
     
     init() {
         setupNetworkRestoredAutoRetry()
+        setupBridgeEndpointRecovery()
     }
 
     /// 切到搜索页并让搜索页消费关键词执行搜索。
@@ -128,12 +138,16 @@ class AppState: ObservableObject {
         isConfigLoaded = true
         configLoadError = nil
         currentSourceKey = ApiConfig.shared.homeSourceBean?.key ?? ""
+        if ApiConfig.shared.liveChannelGroupList.isEmpty, selectedMainTab == 1 {
+            selectedMainTab = 0
+        }
     }
     
     /// 网络恢复时，若配置未成功加载过，自动重试一次。
     private func setupNetworkRestoredAutoRetry() {
         networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
             .sink { [weak self] in
+                BridgeClient.shared.checkPrimaryInBackgroundAfterNetworkChange()
                 guard let self else { return }
                 Task { @MainActor [weak self] in
                     guard let self, !self.isConfigLoaded, !self.lastVodUrl.isEmpty else { return }
@@ -141,6 +155,14 @@ class AppState: ObservableObject {
                     await self.loadConfig(vodUrl: self.lastVodUrl, liveUrl: self.lastLiveUrl)
                     self.isRetryingConfig = false
                 }
+            }
+    }
+
+    /// 网络路径变化后，后台探测 Bridge 主地址，若局域网主地址恢复则无感切回。
+    private func setupBridgeEndpointRecovery() {
+        networkPathChangedCancellable = NetworkMonitor.shared.networkPathChangedPublisher
+            .sink {
+                BridgeClient.shared.checkPrimaryInBackgroundAfterNetworkChange()
             }
     }
     

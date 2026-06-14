@@ -24,6 +24,7 @@ targets:
     dependencies:
       - package: VLCKitSPM
         product: VLCKitSPM
+      - sdk: AppIntents.framework
     sources:
       - path: tvbox
         excludes:
@@ -81,6 +82,7 @@ targets:
     dependencies:
       - package: VLCKitSPM
         product: VLCKitSPM
+      - sdk: AppIntents.framework
     sources:
       - path: tvbox
         excludes:

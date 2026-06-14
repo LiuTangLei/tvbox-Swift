@@ -79,6 +79,7 @@ struct PlayableItem: Identifiable, Hashable {
     func replacingStream(
         url: String,
         headers: [String: String],
+        proxied: Bool? = nil,
         origin: Origin? = nil
     ) -> PlayableItem {
         PlayableItem(
@@ -90,7 +91,7 @@ struct PlayableItem: Identifiable, Hashable {
             flag: flag,
             episodeId: episodeId,
             fallbackURL: fallbackURL,
-            proxied: proxied,
+            proxied: proxied ?? self.proxied,
             jxFrom: jxFrom,
             expiresAt: expiresAt,
             subtitles: subtitles,

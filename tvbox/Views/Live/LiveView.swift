@@ -99,7 +99,6 @@ struct LiveView: View {
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarHidden(true)
             .toolbar(.hidden, for: .navigationBar)
-            .toolbar(.hidden, for: .tabBar)
             #endif
             .onAppear {
                 // 首次进入时加载频道并展示频道信息卡。

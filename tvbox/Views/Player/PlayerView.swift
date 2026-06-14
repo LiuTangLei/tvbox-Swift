@@ -198,6 +198,7 @@ final class SystemPlayerSessionController: ObservableObject {
 /// 视频播放器组件 - 对应 Android 版 PlayFragment
 struct PlayerView: View {
     let urlString: String
+    var title: String = ""
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
@@ -208,6 +209,7 @@ struct PlayerView: View {
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
+    var onCloseRequested: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var onVideoSizeChanged: ((CGSize) -> Void)? = nil
@@ -271,6 +273,7 @@ struct PlayerView: View {
         case .system:
             AVPlayerContentView(
                 urlString: urlString,
+                title: title,
                 playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
@@ -281,6 +284,7 @@ struct PlayerView: View {
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
+                onCloseRequested: onCloseRequested,
                 onToggleFullScreen: onToggleFullScreen,
                 onVideoOrientationChanged: onVideoOrientationChanged,
                 onVideoSizeChanged: onVideoSizeChanged,
@@ -292,6 +296,7 @@ struct PlayerView: View {
         case .vlc:
             VLCVodPlayerView(
                 urlString: urlString,
+                title: title,
                 playback: playback,
                 httpHeaders: httpHeaders,
                 startPosition: startPosition,
@@ -302,6 +307,7 @@ struct PlayerView: View {
                 onPlaybackStarted: onPlaybackStarted,
                 onPlaybackEnded: onPlaybackEnded,
                 onPlaybackFailed: onPlaybackFailed,
+                onCloseRequested: onCloseRequested,
                 onToggleFullScreen: onToggleFullScreen,
                 onVideoOrientationChanged: onVideoOrientationChanged,
                 onVideoSizeChanged: onVideoSizeChanged,
@@ -330,8 +336,9 @@ struct AVPlayerContentView: View {
         }
     }
 
-    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+    private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     let urlString: String
+    var title: String = ""
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
@@ -342,6 +349,7 @@ struct AVPlayerContentView: View {
     var onPlaybackStarted: (() -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onPlaybackFailed: (() -> Void)? = nil
+    var onCloseRequested: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     var onVideoOrientationChanged: ((Bool?) -> Void)? = nil
     var onVideoSizeChanged: ((CGSize) -> Void)? = nil
@@ -379,11 +387,15 @@ struct AVPlayerContentView: View {
     @State private var subtitleAppearance = SubtitleAppearance.load()
     @State private var audioSelectionOptions: [String: AVMediaSelectionOption] = [:]
     @State private var subtitleSelectionOptions: [String: AVMediaSelectionOption] = [:]
+    @State private var audioSelectionGroup: AVMediaSelectionGroup?
+    @State private var subtitleSelectionGroup: AVMediaSelectionGroup?
     @State private var audioItemTracks: [String: AVPlayerItemTrack] = [:]
     @State private var trackSelectionSheetKind: TrackSelectionSheetKind?
     @State private var hasReportedPlaybackFailure = false
     @State private var stalledRecoveryWorkItem: DispatchWorkItem?
     @State private var manualPlayRecoveryWorkItem: DispatchWorkItem?
+    @State private var mediaTrackRefreshTask: Task<Void, Never>?
+    @State private var longPressPlaybackRateBeforeBoost: Float?
 
     @State private var videoZoomScale: CGFloat = 1.0
     @State private var activeVideoScaleMode: VideoScaleMode = VideoScaleMode.fromStoredValue(UserDefaults.standard.integer(forKey: HawkConfig.PLAY_SCALE))
@@ -462,9 +474,33 @@ struct AVPlayerContentView: View {
                         videoZoomScale = scale
                     }
                 },
+                onBrightnessChanged: { brightness in
+                    UIScreen.main.brightness = brightness
+                },
+                onVolumeChanged: { value in
+                    setGestureVolume(value)
+                },
+                onLongPressFastForwardChanged: { active in
+                    setLongPressFastForward(active)
+                },
                 currentTime: currentTime,
-                duration: duration
+                duration: duration,
+                brightnessValue: UIScreen.main.brightness,
+                volumeValue: CGFloat(volume)
             )
+        }
+        #endif
+        #if os(iOS)
+        .overlay(alignment: .top) {
+            GeometryReader { proxy in
+                if player != nil {
+                    playerTopControls(safeTop: proxy.safeAreaInsets.top)
+                        .opacity(showControls ? 1.0 : 0.0)
+                        .allowsHitTesting(showControls)
+                        .animation(.easeInOut(duration: 0.3), value: showControls)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+            }
         }
         #endif
         .overlay(alignment: .bottom) {
@@ -472,6 +508,7 @@ struct AVPlayerContentView: View {
                 if player != nil {
                     playbackControls(containerWidth: proxy.size.width)
                         .opacity(showControls ? 1.0 : 0.0)
+                        .allowsHitTesting(showControls)
                         .animation(.easeInOut(duration: 0.3), value: showControls)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
@@ -640,6 +677,9 @@ struct AVPlayerContentView: View {
                 guard currentRate > 0 else { return }
                 let normalized = Self.normalizedPlaybackRate(from: currentRate)
                 DispatchQueue.main.async {
+                    if longPressPlaybackRateBeforeBoost != nil {
+                        return
+                    }
                     rate = normalized
                     if abs(savedPlaybackRate - Double(normalized)) > 0.001 {
                         savedPlaybackRate = Double(normalized)
@@ -705,6 +745,8 @@ struct AVPlayerContentView: View {
         manualPlayRecoveryWorkItem = nil
         stalledRecoveryWorkItem?.cancel()
         stalledRecoveryWorkItem = nil
+        mediaTrackRefreshTask?.cancel()
+        mediaTrackRefreshTask = nil
         playerObservers.forEach { $0.invalidate() }
         playerObservers.removeAll()
     }
@@ -959,15 +1001,27 @@ struct AVPlayerContentView: View {
             return
         }
 
-        refreshAudioTracks(for: item)
-        refreshSubtitleTracks(for: item)
+        mediaTrackRefreshTask?.cancel()
+        mediaTrackRefreshTask = Task { @MainActor in
+            await refreshMediaTracks(for: item, player: player)
+        }
     }
 
-    private func refreshAudioTracks(for item: AVPlayerItem) {
+    private func refreshMediaTracks(for item: AVPlayerItem, player: AVPlayer) async {
+        guard self.player === player, player.currentItem === item else { return }
+        await refreshAudioTracks(for: item)
+        guard !Task.isCancelled, self.player === player, player.currentItem === item else { return }
+        await refreshSubtitleTracks(for: item)
+    }
+
+    private func refreshAudioTracks(for item: AVPlayerItem) async {
         audioSelectionOptions.removeAll()
         audioItemTracks.removeAll()
+        audioSelectionGroup = nil
 
-        if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+        if let group = try? await item.asset.loadMediaSelectionGroup(for: .audible) {
+            guard !Task.isCancelled else { return }
+            audioSelectionGroup = group
             var tracks: [MediaTrackOption] = []
             if group.allowsEmptySelection {
                 tracks.append(.disabled(kind: .audio, id: "av-audio-disabled"))
@@ -993,6 +1047,7 @@ struct AVPlayerContentView: View {
             return
         }
 
+        guard !Task.isCancelled else { return }
         let itemAudioTracks = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
         guard itemAudioTracks.count > 1 else {
             audioTracks = []
@@ -1003,9 +1058,7 @@ struct AVPlayerContentView: View {
         var tracks: [MediaTrackOption] = []
         for (index, itemTrack) in itemAudioTracks.enumerated() {
             let id = "av-item-audio-\(itemTrack.assetTrack?.trackID ?? CMPersistentTrackID(index + 1))"
-            let title = itemTrack.assetTrack?.languageCode?.nilIfBlank
-                ?? itemTrack.assetTrack?.extendedLanguageTag?.nilIfBlank
-                ?? "音轨 \(index + 1)"
+            let title = await avAssetTrackTitle(for: itemTrack.assetTrack, index: index)
             let option = MediaTrackOption(id: id, kind: .audio, title: title, rawValue: index, isDisabled: false)
             tracks.append(option)
             audioItemTracks[id] = itemTrack
@@ -1015,15 +1068,18 @@ struct AVPlayerContentView: View {
         selectedAudioTrackID = tracks.first { audioItemTracks[$0.id]?.isEnabled == true }?.id ?? tracks.first?.id
     }
 
-    private func refreshSubtitleTracks(for item: AVPlayerItem) {
+    private func refreshSubtitleTracks(for item: AVPlayerItem) async {
         subtitleSelectionOptions.removeAll()
+        subtitleSelectionGroup = nil
 
-        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
+        guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else {
             subtitleTracks = []
             selectedSubtitleTrackID = nil
             return
         }
 
+        guard !Task.isCancelled else { return }
+        subtitleSelectionGroup = group
         var tracks: [MediaTrackOption] = [.disabled(kind: .subtitle, id: "av-subtitle-disabled")]
         for (index, option) in group.options.enumerated() {
             let id = avMediaSelectionID(kind: .subtitle, index: index, option: option)
@@ -1051,18 +1107,22 @@ struct AVPlayerContentView: View {
         selectedSubtitleTrackID = nil
         audioSelectionOptions = [:]
         subtitleSelectionOptions = [:]
+        audioSelectionGroup = nil
+        subtitleSelectionGroup = nil
         audioItemTracks = [:]
+        mediaTrackRefreshTask?.cancel()
+        mediaTrackRefreshTask = nil
     }
 
     private func selectAudioTrack(_ track: MediaTrackOption) {
-        guard let item = player?.currentItem else { return }
-        if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+        guard let player, let item = player.currentItem else { return }
+        if let group = audioSelectionGroup {
             if track.isDisabled {
                 item.select(nil, in: group)
             } else if let option = audioSelectionOptions[track.id] {
                 item.select(option, in: group)
             }
-            refreshAudioTracks(for: item)
+            refreshMediaTracks(for: player)
             return
         }
 
@@ -1070,18 +1130,19 @@ struct AVPlayerContentView: View {
         for itemTrack in audioItemTracks.values {
             itemTrack.isEnabled = itemTrack === selectedItemTrack
         }
-        refreshAudioTracks(for: item)
+        refreshMediaTracks(for: player)
     }
 
     private func selectSubtitleTrack(_ track: MediaTrackOption) {
-        guard let item = player?.currentItem,
-              let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else { return }
+        guard let player,
+              let item = player.currentItem,
+              let group = subtitleSelectionGroup else { return }
         if track.isDisabled {
             item.select(nil, in: group)
         } else if let option = subtitleSelectionOptions[track.id] {
             item.select(option, in: group)
         }
-        refreshSubtitleTracks(for: item)
+        refreshMediaTracks(for: player)
     }
 
     private func avMediaSelectionID(kind: MediaTrackKind, index: Int, option: AVMediaSelectionOption) -> String {
@@ -1099,6 +1160,18 @@ struct AVPlayerContentView: View {
         return fallback
     }
 
+    private func avAssetTrackTitle(for track: AVAssetTrack?, index: Int) async -> String {
+        if let languageCode = try? await track?.load(.languageCode),
+           let title = languageCode.nilIfBlank {
+            return title
+        }
+        if let extendedLanguageTag = try? await track?.load(.extendedLanguageTag),
+           let title = extendedLanguageTag.nilIfBlank {
+            return title
+        }
+        return "音轨 \(index + 1)"
+    }
+
     private var seekStep: Double {
         let saved = UserDefaults.standard.integer(forKey: HawkConfig.PLAY_TIME_STEP)
         return Double(saved > 0 ? saved : 10)
@@ -1114,9 +1187,59 @@ struct AVPlayerContentView: View {
         isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
     }
 
+    #if os(iOS)
+    private var playerDisplayTitle: String {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty { return trimmedTitle }
+        return playback?.episodeId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? "正在播放"
+    }
+
+    private func playerTopControls(safeTop: CGFloat) -> some View {
+        ZStack(alignment: .top) {
+            LinearGradient(
+                colors: [Color.black.opacity(0.74), Color.black.opacity(0.36), Color.clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(74, safeTop + 70))
+            .allowsHitTesting(false)
+
+            HStack(spacing: 10) {
+                Button {
+                    wakeUpControls()
+                    onCloseRequested?()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .zIndex(2)
+                .accessibilityLabel("返回")
+
+                Text(playerDisplayTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.55), radius: 3, x: 0, y: 1)
+
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, safeTop + 4)
+            .padding(.bottom, 12)
+            .zIndex(1)
+        }
+    }
+    #endif
+
     private func playbackControls(containerWidth: CGFloat) -> some View {
         #if os(iOS)
         let controlWidth = containerWidth * 1.0
+        let mobileAccent = Color(red: 1.0, green: 0.31, blue: 0.55)
+        let mobileControlSpacing: CGFloat = containerWidth < 390 ? 8 : 12
         #else
         let availableControlWidth = max(containerWidth - 24, 0)
         let controlWidth = min(
@@ -1127,12 +1250,10 @@ struct AVPlayerContentView: View {
 
         return VStack(spacing: 0) {
             #if os(iOS)
-            // iOS: 紧凑单行布局 — 进度条在上，按钮在下紧贴
-            // 进度条行
             HStack(spacing: 8) {
                 Text(currentTime.durationString)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.8))
+                    .foregroundColor(.white.opacity(0.86))
                     .lineLimit(1)
 
                 Slider(
@@ -1152,104 +1273,75 @@ struct AVPlayerContentView: View {
                         }
                     }
                 )
-                .accentColor(.white)
+                .accentColor(mobileAccent)
                 .disabled(duration <= 0)
 
                 Text(duration.durationString)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.white.opacity(0.64))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .padding(.top, 8)
-            .padding(.bottom, 4)
+            .padding(.bottom, 2)
 
-            // 控制按钮行 — 紧凑排列
-            HStack(spacing: 0) {
-                // 左：倍速、音轨、字幕
-                HStack(spacing: 6) {
-                    playbackRateMenu
-                    videoScaleMenu
+            HStack(spacing: 12) {
+                Button {
+                    wakeUpControls()
+                    togglePlayPauseWithOSD()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 23, weight: .bold))
+                        .frame(width: 40, height: 40)
+                }
+                .buttonStyle(.plain)
+
+                if let onPlayNext {
+                    Button {
+                        guard canPlayNext else { return }
+                        wakeUpControls()
+                        onPlayNext()
+                        showOSD(icon: "forward.end.fill")
+                    } label: {
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 34, height: 40)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canPlayNext)
+                    .opacity(canPlayNext ? 1 : 0.36)
+                }
+
+                Spacer(minLength: 10)
+
+                HStack(spacing: mobileControlSpacing) {
                     if shouldShowAudioTrackMenu {
                         audioTrackMenu
                     }
                     if shouldShowSubtitleTrackMenu {
                         subtitleTrackMenu
-                        subtitleStyleMenu
+                        if containerWidth >= 520 {
+                            subtitleStyleMenu
+                        }
                     }
-                }
-                .frame(minWidth: 36, alignment: .leading)
-
-                Spacer()
-
-                // 中间：主控按钮
-                HStack(spacing: 20) {
-                    Button {
-                        wakeUpControls()
-                        seek(by: -seekStep)
-                        showOSD(icon: "gobackward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "gobackward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        wakeUpControls()
-                        togglePlayPauseWithOSD()
-                    } label: {
-                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 20, weight: .bold))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        wakeUpControls()
-                        seek(by: seekStep)
-                        showOSD(icon: "goforward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "goforward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    if let onPlayNext {
+                    playbackRateMenu
+                    videoScaleMenu
+                    if let onToggleFullScreen {
                         Button {
-                            guard canPlayNext else { return }
                             wakeUpControls()
-                            onPlayNext()
-                            showOSD(icon: "forward.end.fill")
+                            onToggleFullScreen()
                         } label: {
-                            Image(systemName: "forward.end.fill")
-                                .font(.system(size: 16, weight: .medium))
-                                .frame(minWidth: 36, minHeight: 36)
+                            Image(systemName: fullscreenToggleIconName)
+                                .font(.system(size: 18, weight: .semibold))
+                                .frame(width: 34, height: 40)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!canPlayNext)
-                        .opacity(canPlayNext ? 1 : 0.4)
                     }
-                }
-
-                Spacer()
-
-                // 右：全屏
-                if let onToggleFullScreen {
-                    Button {
-                        wakeUpControls()
-                        onToggleFullScreen()
-                    } label: {
-                        Image(systemName: fullscreenToggleIconName)
-                            .font(.system(size: 14, weight: .bold))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
+            .foregroundColor(.white)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
             #else
             // macOS: 保持两行布局
             HStack(spacing: 12) {
@@ -1443,6 +1535,18 @@ struct AVPlayerContentView: View {
                 }
             }
         } label: {
+            #if os(iOS)
+            HStack(spacing: 4) {
+                Text(rate == 1.0 ? "倍速" : "\(String(format: "%.1f", rate))x")
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.82)
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 38, minHeight: 34)
+            #else
             HStack(spacing: 4) {
                 Text("\(String(format: "%.1f", rate))x")
                 Image(systemName: "chevron.up")
@@ -1454,6 +1558,7 @@ struct AVPlayerContentView: View {
             .padding(.vertical, 6)
             .background(Color.white.opacity(0.12))
             .clipShape(Capsule())
+            #endif
         }
         .buttonStyle(.plain)
     }
@@ -1482,7 +1587,7 @@ struct AVPlayerContentView: View {
     }
 
     private var shouldShowAudioTrackMenu: Bool {
-        audioTracks.contains { !$0.isDisabled }
+        audioTracks.filter { !$0.isDisabled }.count > 1
     }
 
     private var shouldShowSubtitleTrackMenu: Bool {
@@ -1677,6 +1782,20 @@ struct AVPlayerContentView: View {
     #endif
 
     private func trackMenuLabel(icon: String, title: String) -> some View {
+        #if os(iOS)
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .opacity(0.9)
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundColor(.white)
+        .padding(.horizontal, 4)
+        .frame(minWidth: 34, maxWidth: 68, minHeight: 34, alignment: .center)
+        #else
         HStack(spacing: 4) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .semibold))
@@ -1691,6 +1810,7 @@ struct AVPlayerContentView: View {
         .frame(maxWidth: 92, alignment: .leading)
         .background(Color.white.opacity(0.12))
         .clipShape(Capsule())
+        #endif
     }
 
     private func selectedTrackTitle(in tracks: [MediaTrackOption], selectedID: String?, fallback: String) -> String {
@@ -1723,6 +1843,15 @@ struct AVPlayerContentView: View {
         rate = normalized
         savedPlaybackRate = Double(normalized)
         onPlaybackRateChanged?(Double(normalized))
+        guard let player else { return }
+        player.defaultRate = normalized
+        if player.rate > 0 {
+            player.rate = normalized
+        }
+    }
+
+    private func setRuntimePlaybackRate(_ value: Float) {
+        let normalized = Self.normalizedPlaybackRate(from: value)
         guard let player else { return }
         player.defaultRate = normalized
         if player.rate > 0 {
@@ -1768,6 +1897,7 @@ struct AVPlayerContentView: View {
     private func playAtPreferredRate(_ player: AVPlayer) {
         let normalized = normalizedSavedPlaybackRate
         rate = normalized
+        longPressPlaybackRateBeforeBoost = nil
         player.defaultRate = normalized
         player.playImmediately(atRate: normalized)
     }
@@ -1830,8 +1960,28 @@ struct AVPlayerContentView: View {
         guard let player else { return }
         let current = Double(player.volume)
         let target = min(max(current + delta, 0), 1)
+        volume = target
         player.volume = Float(target)
         showOSD(icon: target <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+    }
+
+    private func setGestureVolume(_ value: CGFloat) {
+        let target = min(max(Double(value), 0), 1)
+        volume = target
+        player?.volume = Float(target)
+    }
+
+    private func setLongPressFastForward(_ active: Bool) {
+        guard player != nil else { return }
+        if active {
+            if longPressPlaybackRateBeforeBoost == nil {
+                longPressPlaybackRateBeforeBoost = rate
+            }
+            setRuntimePlaybackRate(2.0)
+        } else if let previous = longPressPlaybackRateBeforeBoost {
+            longPressPlaybackRateBeforeBoost = nil
+            setRuntimePlaybackRate(previous)
+        }
     }
 }
 

@@ -83,6 +83,8 @@ class SettingsViewModel: ObservableObject {
     @Published var bridgeEnabled = false
     /// Type=3 Bridge Server 地址。
     @Published var bridgeServerUrl: String = ""
+    /// Type=3 Bridge Server 备用地址。
+    @Published var bridgeBackupServerUrl: String = ""
     /// Bridge 连通性状态。
     @Published var bridgeStatusText: String = "未测试"
     /// Bridge 检测中状态。
@@ -157,8 +159,12 @@ class SettingsViewModel: ObservableObject {
         incognitoMode = defaults.bool(forKey: HawkConfig.INCOGNITO)
         bridgeEnabled = defaults.bool(forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeServerUrl = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
+        bridgeBackupServerUrl = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL) ?? "")
         if !bridgeServerUrl.isEmpty {
             defaults.set(bridgeServerUrl, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        }
+        if !bridgeBackupServerUrl.isEmpty {
+            defaults.set(bridgeBackupServerUrl, forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL)
         }
         bridgeStatusText = initialBridgeStatusText(defaults: defaults)
         refreshCacheSize()
@@ -382,25 +388,30 @@ class SettingsViewModel: ObservableObject {
         bridgeEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: HawkConfig.BRIDGE_ENABLED)
         bridgeStatusText = enabled ? "待检测" : "已停用"
+        if enabled {
+            BridgeClient.shared.resetEndpointSelection(preferPrimary: true)
+        }
         notifyBridgeAvailabilityChanged()
     }
 
     func prepareBridgeForSetup() {
-        let normalized = normalizeBridgeServerUrlForStorage()
-        let shouldEnableBridge = !normalized.isEmpty
+        let endpoints = normalizeBridgeServerUrlsForStorage(resetEndpointSelection: true)
+        let shouldEnableBridge = !endpoints.primary.isEmpty || !endpoints.backup.isEmpty
         bridgeEnabled = shouldEnableBridge
         bridgeStatusText = shouldEnableBridge ? "待检测" : "未配置"
         UserDefaults.standard.set(shouldEnableBridge, forKey: HawkConfig.BRIDGE_ENABLED)
-        addToAddressHistory(normalized, kind: .bridge)
+        addToAddressHistory(endpoints.primary, kind: .bridge)
+        addToAddressHistory(endpoints.backup, kind: .bridge)
         notifyBridgeAvailabilityChanged()
     }
 
     func saveBridgeSettingsAndTest() async {
-        let normalized = normalizeBridgeServerUrlForStorage()
+        let endpoints = normalizeBridgeServerUrlsForStorage(resetEndpointSelection: true)
         UserDefaults.standard.set(bridgeEnabled, forKey: HawkConfig.BRIDGE_ENABLED)
-        addToAddressHistory(normalized, kind: .bridge)
+        addToAddressHistory(endpoints.primary, kind: .bridge)
+        addToAddressHistory(endpoints.backup, kind: .bridge)
         notifyBridgeAvailabilityChanged()
-        guard bridgeEnabled, !normalized.isEmpty else {
+        guard bridgeEnabled, (!endpoints.primary.isEmpty || !endpoints.backup.isEmpty) else {
             bridgeStatusText = bridgeEnabled ? "未配置" : "已停用"
             return
         }
@@ -412,8 +423,8 @@ class SettingsViewModel: ObservableObject {
             bridgeStatusText = "已停用"
             return
         }
-        let normalized = normalizeBridgeServerUrlForStorage()
-        guard !normalized.isEmpty else {
+        let endpoints = normalizeBridgeServerUrlsForStorage(resetEndpointSelection: true)
+        guard !endpoints.primary.isEmpty || !endpoints.backup.isEmpty else {
             bridgeStatusText = "未配置"
             return
         }
@@ -421,7 +432,7 @@ class SettingsViewModel: ObservableObject {
         defer { isTestingBridge = false }
         do {
             let health = try await BridgeClient.shared.health()
-            UserDefaults.standard.set(normalized, forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
+            UserDefaults.standard.set(BridgeClient.shared.baseURLString, forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
             bridgeStatusText = bridgeStatusDescription(for: health)
         } catch {
             UserDefaults.standard.removeObject(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
@@ -431,8 +442,9 @@ class SettingsViewModel: ObservableObject {
 
     private func bridgeStatusDescription(for health: BridgeHealth) -> String {
         var parts = ["可用"]
-        let endpoint = BridgeServerEndpoint.display(bridgeServerUrl)
+        let endpoint = BridgeClient.shared.activeEndpointDisplay
         if !endpoint.isEmpty {
+            parts.append(BridgeClient.shared.activeEndpointRoleDescription)
             parts.append(endpoint)
         } else if let address = health.address, !address.isEmpty {
             parts.append(BridgeServerEndpoint.display(address))
@@ -449,31 +461,70 @@ class SettingsViewModel: ObservableObject {
     }
 
     var bridgeServerSummary: String {
-        let endpoint = BridgeServerEndpoint.display(bridgeServerUrl)
-        guard !endpoint.isEmpty else { return bridgeStatusText }
-        if bridgeStatusText.contains(endpoint) { return bridgeStatusText }
-        return "\(endpoint) · \(bridgeStatusText)"
+        let primary = BridgeServerEndpoint.display(bridgeServerUrl)
+        let backup = BridgeServerEndpoint.display(bridgeBackupServerUrl)
+        let endpointText: String
+        switch (primary.isEmpty, backup.isEmpty) {
+        case (true, true):
+            endpointText = ""
+        case (false, true):
+            endpointText = "主 \(primary)"
+        case (true, false):
+            endpointText = "备 \(backup)"
+        case (false, false):
+            endpointText = "主 \(primary) / 备 \(backup)"
+        }
+        guard !endpointText.isEmpty else { return bridgeStatusText }
+        return "\(endpointText) · \(bridgeStatusText)"
+    }
+
+    var bridgeActiveEndpointHint: String? {
+        let primary = BridgeServerEndpoint.normalized(bridgeServerUrl)
+        let backup = BridgeServerEndpoint.normalized(bridgeBackupServerUrl)
+        guard !primary.isEmpty, !backup.isEmpty else { return nil }
+        let active = BridgeClient.shared.baseURLString
+        guard !active.isEmpty else { return nil }
+        if active == backup {
+            return "当前使用：备用 " + BridgeServerEndpoint.display(active)
+        }
+        if active == primary {
+            return "当前使用：主 " + BridgeServerEndpoint.display(active)
+        }
+        return "当前使用：" + BridgeServerEndpoint.display(active)
     }
 
     @discardableResult
-    private func normalizeBridgeServerUrlForStorage() -> String {
+    private func normalizeBridgeServerUrlsForStorage(resetEndpointSelection: Bool) -> (primary: String, backup: String) {
         let defaults = UserDefaults.standard
         let previous = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
-        let normalized = BridgeServerEndpoint.normalized(bridgeServerUrl)
-        bridgeServerUrl = normalized
-        defaults.set(normalized, forKey: HawkConfig.BRIDGE_SERVER_URL)
-        if previous != normalized {
+        let previousBackup = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL) ?? "")
+        let primary = BridgeServerEndpoint.normalized(bridgeServerUrl)
+        let backup = BridgeServerEndpoint.normalized(bridgeBackupServerUrl)
+        bridgeServerUrl = primary
+        bridgeBackupServerUrl = backup
+        defaults.set(primary, forKey: HawkConfig.BRIDGE_SERVER_URL)
+        defaults.set(backup, forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL)
+        if previous != primary || previousBackup != backup {
             defaults.removeObject(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL)
+            if resetEndpointSelection {
+                BridgeClient.shared.resetEndpointSelection(preferPrimary: true)
+            }
         }
-        return normalized
+        if resetEndpointSelection && previous == primary && previousBackup == backup {
+            BridgeClient.shared.resetEndpointSelection(preferPrimary: true)
+        }
+        return (primary, backup)
     }
 
     private func initialBridgeStatusText(defaults: UserDefaults) -> String {
         guard bridgeEnabled else { return "已停用" }
-        guard !bridgeServerUrl.isEmpty else { return "未配置" }
+        guard !bridgeServerUrl.isEmpty || !bridgeBackupServerUrl.isEmpty else { return "未配置" }
         let lastVerified = BridgeServerEndpoint.normalized(defaults.string(forKey: HawkConfig.BRIDGE_LAST_VERIFIED_URL) ?? "")
         if lastVerified == bridgeServerUrl {
-            return "可用 " + BridgeServerEndpoint.display(bridgeServerUrl)
+            return "可用 主 " + BridgeServerEndpoint.display(bridgeServerUrl)
+        }
+        if lastVerified == bridgeBackupServerUrl {
+            return "可用 备用 " + BridgeServerEndpoint.display(bridgeBackupServerUrl)
         }
         return "待检测"
     }

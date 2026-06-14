@@ -32,6 +32,11 @@ struct EpisodeListView: View {
         guard start < episodes.count else { return [] }
         return Array(episodes[start..<end])
     }
+
+    private var selectedEpisode: VodInfo.Episode? {
+        guard episodes.indices.contains(selectedIndex) else { return nil }
+        return episodes[selectedIndex]
+    }
     
     var body: some View {
         VStack(spacing: 12) {
@@ -67,6 +72,30 @@ struct EpisodeListView: View {
                     }
                     .padding(.horizontal, 20)
                 }
+            }
+
+            if let selectedEpisode {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("当前选集")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                    Text(selectedEpisode.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.88))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.white.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                )
+                .padding(.horizontal, 20)
             }
             
             // 剧集网格：自适应换行，避免横向裁切。
@@ -109,10 +138,31 @@ struct EpisodeListView: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .help(episode.name)
                     .disabled(isResolving)
                 }
             }
             .padding(.horizontal, 20)
+        }
+        .onAppear {
+            syncGroupToSelection()
+        }
+        .onChange(of: selectedIndex) { _, _ in
+            syncGroupToSelection()
+        }
+        .onChange(of: episodes.count) { _, _ in
+            syncGroupToSelection()
+        }
+    }
+
+    private func syncGroupToSelection() {
+        guard selectedIndex >= 0, !episodes.isEmpty else {
+            currentGroup = 0
+            return
+        }
+        let targetGroup = min(max(selectedIndex / groupSize, 0), groupCount - 1)
+        if currentGroup != targetGroup {
+            currentGroup = targetGroup
         }
     }
 }

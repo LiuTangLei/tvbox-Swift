@@ -7,6 +7,9 @@ struct SearchView: View {
     @EnvironmentObject private var appState: AppState
     @State private var navigationPath = NavigationPath()
     @State private var searchWordTask: Task<Void, Never>?
+    #if os(iOS)
+    @FocusState private var isSearchFieldFocused: Bool
+    #endif
 
     #if os(iOS)
     /// iOS 卡片网格参数。
@@ -54,6 +57,14 @@ struct SearchView: View {
             .navigationTitle("搜索")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("收起") {
+                        isSearchFieldFocused = false
+                    }
+                }
+            }
             #endif
         }
         .onAppear {
@@ -71,12 +82,16 @@ struct SearchView: View {
             viewModel.prepareForKeywordEditing()
             scheduleSearchWordRefresh()
         }
+        #if os(iOS)
+        .toolbar((navigationPath.isEmpty && !viewModel.isBrowsingFolder) ? .visible : .hidden, for: .tabBar)
+        #endif
     }
 
     private func consumePendingSearchKeyword() {
         Task { @MainActor in
             guard let keyword = appState.consumePendingSearchKeyword() else { return }
             navigationPath = NavigationPath()
+            dismissSearchKeyboard()
             await viewModel.search(keyword: keyword)
         }
     }
@@ -108,10 +123,11 @@ struct SearchView: View {
                     .foregroundColor(.white)
                     .submitLabel(.search)
                     .onSubmit {
-                        Task { await viewModel.search() }
+                        submitSearch()
                     }
                     #if os(iOS)
                     .autocapitalization(.none)
+                    .focused($isSearchFieldFocused)
                     #endif
 
                 if !viewModel.keyword.isEmpty {
@@ -136,7 +152,7 @@ struct SearchView: View {
             )
 
             Button {
-                Task { await viewModel.search() }
+                submitSearch()
             } label: {
                 Text("搜索")
                     .font(.system(size: 15, weight: .bold))
@@ -194,6 +210,9 @@ struct SearchView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
+        #if os(iOS)
+        .scrollDismissesKeyboard(.interactively)
+        #endif
         .navigationDestination(for: Movie.Video.self) { video in
             DetailView(video: video)
         }
@@ -465,8 +484,7 @@ struct SearchView: View {
                 FlowLayout(spacing: 8) {
                     ForEach(viewModel.searchHistory, id: \.self) { keyword in
                         Button {
-                            viewModel.keyword = keyword
-                            Task { await viewModel.search() }
+                            submitSearch(keyword: keyword)
                         } label: {
                             Text(keyword)
                                 .font(.subheadline)
@@ -506,8 +524,7 @@ struct SearchView: View {
 
     private func searchWordButton(_ word: String) -> some View {
         Button {
-            viewModel.keyword = word
-            Task { await viewModel.search() }
+            submitSearch(keyword: word)
         } label: {
             Text(word)
                 .font(.subheadline)
@@ -518,6 +535,20 @@ struct SearchView: View {
                 .cornerRadius(16)
         }
         .buttonStyle(.plain)
+    }
+
+    private func submitSearch(keyword: String? = nil) {
+        if let keyword {
+            viewModel.keyword = keyword
+        }
+        dismissSearchKeyboard()
+        Task { await viewModel.search() }
+    }
+
+    private func dismissSearchKeyboard() {
+        #if os(iOS)
+        isSearchFieldFocused = false
+        #endif
     }
 }
 

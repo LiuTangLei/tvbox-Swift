@@ -268,12 +268,23 @@ enum BridgeServerEndpoint {
             || path.hasPrefix("/proxy/")
         guard bridgeProxyPath else { return false }
 
-        let base = normalized(UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "")
-        guard let baseURL = URL(string: base), let baseHost = baseURL.host?.lowercased() else {
+        let configuredBases = [
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? "",
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL) ?? "",
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL) ?? ""
+        ]
+            .map(normalized)
+            .filter { !$0.isEmpty }
+
+        let baseURLs = configuredBases.compactMap(URL.init(string:))
+        guard !baseURLs.isEmpty else {
             return !path.hasPrefix("/proxy")
         }
-        guard let host = url.host?.lowercased(), host == baseHost else { return false }
-        return effectivePort(url) == effectivePort(baseURL)
+        guard let host = url.host?.lowercased() else { return false }
+        return baseURLs.contains { baseURL in
+            guard let baseHost = baseURL.host?.lowercased(), host == baseHost else { return false }
+            return effectivePort(url) == effectivePort(baseURL)
+        }
     }
 
     private static func effectivePort(_ url: URL) -> Int? {
@@ -786,10 +797,18 @@ final class BridgeClient {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let contextQueue = DispatchQueue(label: "com.tvbox.app.bridge-client.context")
+    private let endpointQueue = DispatchQueue(label: "com.tvbox.app.bridge-client.endpoint")
     private var contextConfigUrl = ""
     private var contextSpider: String?
     private var registeredSourceSignatures: [String: RegistrationRecord] = [:]
     private let registrationCacheTTL: TimeInterval = 3600
+    private var inMemoryActiveBaseURL: String?
+    private var primaryReachableUntil: TimeInterval = 0
+    private var primaryUnreachableUntil: TimeInterval = 0
+    private var primaryProbeTask: Task<Void, Never>?
+    private let primaryReachabilityTTL: TimeInterval = 45
+    private let primaryUnreachableTTL: TimeInterval = 20
+    private let primaryFailoverProbeTimeout: TimeInterval = 2.2
 
     private struct RegistrationRecord {
         let signature: String
@@ -808,13 +827,244 @@ final class BridgeClient {
     
     var isEnabled: Bool {
         UserDefaults.standard.bool(forKey: HawkConfig.BRIDGE_ENABLED)
-            && !baseURLString.isEmpty
+            && !configuredBaseURLStrings.isEmpty
     }
-    
-    var baseURLString: String {
+
+    var primaryBaseURLString: String {
         BridgeServerEndpoint.normalized(
             UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_SERVER_URL) ?? ""
         )
+    }
+
+    var backupBaseURLString: String {
+        BridgeServerEndpoint.normalized(
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_BACKUP_SERVER_URL) ?? ""
+        )
+    }
+
+    var configuredBaseURLStrings: [String] {
+        Self.uniqueEndpoints([primaryBaseURLString, backupBaseURLString])
+    }
+
+    var baseURLString: String {
+        activeBaseURLString()
+    }
+
+    var activeEndpointRoleDescription: String {
+        let active = baseURLString
+        if !backupBaseURLString.isEmpty, active == backupBaseURLString { return "备用" }
+        if !primaryBaseURLString.isEmpty, active == primaryBaseURLString { return "主" }
+        return "当前"
+    }
+
+    var activeEndpointDisplay: String {
+        BridgeServerEndpoint.display(baseURLString)
+    }
+
+    private static func uniqueEndpoints(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let normalized = BridgeServerEndpoint.normalized(value)
+            guard !normalized.isEmpty, !seen.contains(normalized) else { continue }
+            seen.insert(normalized)
+            result.append(normalized)
+        }
+        return result
+    }
+
+    private func activeBaseURLString() -> String {
+        let endpoints = configuredBaseURLStrings
+        guard !endpoints.isEmpty else { return "" }
+        let storedActive = BridgeServerEndpoint.normalized(
+            UserDefaults.standard.string(forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL) ?? ""
+        )
+        return endpointQueue.sync {
+            if let active = inMemoryActiveBaseURL, endpoints.contains(active) {
+                return active
+            }
+            if endpoints.contains(storedActive) {
+                inMemoryActiveBaseURL = storedActive
+                return storedActive
+            }
+            let preferred = !primaryBaseURLString.isEmpty ? primaryBaseURLString : endpoints[0]
+            inMemoryActiveBaseURL = preferred
+            UserDefaults.standard.set(preferred, forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL)
+            return preferred
+        }
+    }
+
+    func resetEndpointSelection(preferPrimary: Bool = true) {
+        let endpoints = configuredBaseURLStrings
+        let preferred: String
+        if preferPrimary, !primaryBaseURLString.isEmpty {
+            preferred = primaryBaseURLString
+        } else {
+            preferred = endpoints.first ?? ""
+        }
+        endpointQueue.sync {
+            inMemoryActiveBaseURL = preferred.isEmpty ? nil : preferred
+            primaryReachableUntil = 0
+            primaryUnreachableUntil = 0
+            primaryProbeTask?.cancel()
+            primaryProbeTask = nil
+        }
+        if preferred.isEmpty {
+            UserDefaults.standard.removeObject(forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL)
+        } else {
+            UserDefaults.standard.set(preferred, forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL)
+        }
+        clearRegistrationCache()
+    }
+
+    func checkPrimaryInBackgroundAfterNetworkChange() {
+        endpointQueue.sync {
+            primaryProbeTask?.cancel()
+            primaryProbeTask = Task { [weak self] in
+                await self?.restorePrimaryIfReachable(reason: "network_changed")
+            }
+        }
+    }
+
+    private func restorePrimaryIfReachable(reason: String) async {
+        let primary = primaryBaseURLString
+        guard isEnabled, !primary.isEmpty, !backupBaseURLString.isEmpty else { return }
+        if await probeEndpoint(primary, timeout: primaryFailoverProbeTimeout) {
+            markPrimaryReachable()
+            setActiveEndpoint(primary, reason: reason)
+        } else {
+            markPrimaryUnreachable()
+        }
+    }
+
+    private func setActiveEndpoint(_ endpoint: String, reason: String) {
+        let normalized = BridgeServerEndpoint.normalized(endpoint)
+        guard configuredBaseURLStrings.contains(normalized) else { return }
+        var changed = false
+        endpointQueue.sync {
+            changed = inMemoryActiveBaseURL != normalized
+            inMemoryActiveBaseURL = normalized
+        }
+        UserDefaults.standard.set(normalized, forKey: HawkConfig.BRIDGE_ACTIVE_SERVER_URL)
+        guard changed else { return }
+        clearRegistrationCache()
+        bridgeClientLogger.info("bridge endpoint switched role=\(self.activeEndpointRoleDescription, privacy: .public) endpoint=\(BridgeServerEndpoint.display(normalized), privacy: .public) reason=\(reason, privacy: .public)")
+    }
+
+    private func markPrimaryReachable() {
+        let now = Date().timeIntervalSinceReferenceDate
+        endpointQueue.sync {
+            primaryReachableUntil = now + primaryReachabilityTTL
+            primaryUnreachableUntil = 0
+        }
+    }
+
+    private func markPrimaryUnreachable() {
+        let now = Date().timeIntervalSinceReferenceDate
+        endpointQueue.sync {
+            primaryReachableUntil = 0
+            primaryUnreachableUntil = now + primaryUnreachableTTL
+        }
+    }
+
+    private func hasRecentPrimaryReachability() -> Bool {
+        let now = Date().timeIntervalSinceReferenceDate
+        return endpointQueue.sync { primaryReachableUntil > now }
+    }
+
+    private func isPrimaryTemporarilyUnreachable() -> Bool {
+        let now = Date().timeIntervalSinceReferenceDate
+        return endpointQueue.sync { primaryUnreachableUntil > now }
+    }
+
+    private func clearRegistrationCache() {
+        contextQueue.sync {
+            registeredSourceSignatures.removeAll()
+        }
+    }
+
+    private func probeEndpoint(_ endpoint: String, timeout: TimeInterval) async -> Bool {
+        let normalized = BridgeServerEndpoint.normalized(endpoint)
+        guard let url = URL(string: normalized + "/health") else { return false }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
+
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return false
+            }
+            if let health = try? JSONDecoder().decode(BridgeHealth.self, from: data) {
+                return health.ok
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func endpointOrderForRequest(path: String) async -> [String] {
+        let endpoints = configuredBaseURLStrings
+        guard endpoints.count > 1 else { return endpoints }
+        let primary = primaryBaseURLString
+        let backup = backupBaseURLString
+        let active = activeBaseURLString()
+
+        if active == primary, !backup.isEmpty {
+            if isPrimaryTemporarilyUnreachable() {
+                setActiveEndpoint(backup, reason: "primary_recently_unreachable")
+                return [backup, primary]
+            }
+            if path != "/health", !hasRecentPrimaryReachability() {
+                if await probeEndpoint(primary, timeout: primaryFailoverProbeTimeout) {
+                    markPrimaryReachable()
+                } else {
+                    markPrimaryUnreachable()
+                    setActiveEndpoint(backup, reason: "primary_probe_failed")
+                    return [backup, primary]
+                }
+            }
+            return [primary, backup]
+        }
+
+        if active == backup, !primary.isEmpty {
+            return [backup, primary]
+        }
+
+        return Self.uniqueEndpoints([active] + endpoints)
+    }
+
+    private func timeoutInterval(for path: String, endpoint: String) -> TimeInterval {
+        let base = timeoutInterval(for: path)
+        guard path == "/health",
+              !backupBaseURLString.isEmpty,
+              endpoint == primaryBaseURLString else {
+            return base
+        }
+        return min(base, primaryFailoverProbeTimeout)
+    }
+
+    private func markEndpointSuccess(_ endpoint: String) {
+        if endpoint == primaryBaseURLString {
+            markPrimaryReachable()
+        }
+        setActiveEndpoint(endpoint, reason: "request_success")
+    }
+
+    private func markEndpointFailure(_ endpoint: String, reason: String) {
+        if endpoint == primaryBaseURLString {
+            markPrimaryUnreachable()
+            if !backupBaseURLString.isEmpty {
+                setActiveEndpoint(backupBaseURLString, reason: reason)
+            }
+        }
     }
 
     func updateConfigContext(configUrl: String, spider: String?) {
@@ -1033,46 +1283,82 @@ final class BridgeClient {
     
     private func request<T: Encodable>(path: String, method: String, body: T?) async throws -> Data {
         guard isEnabled || path == "/health" else { throw BridgeError.notConfigured }
-        let absolute = normalizedBaseURL() + (path.hasPrefix("/") ? path : "/\(path)")
-        guard let url = URL(string: absolute) else { throw BridgeError.invalidBaseURL(baseURLString) }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.timeoutInterval = timeoutInterval(for: path)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyExternalBaseHeaders(to: &request)
+        let requestBody: Data?
         if let body {
-            request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try asciiEscapedJSONData(body)
+            requestBody = try asciiEscapedJSONData(body)
+        } else {
+            requestBody = nil
         }
-        let retryable = canRetryRequest(method: method, path: path)
-        let maxAttempts = retryable ? 3 : 1
-        let endpoint = BridgeServerEndpoint.display(baseURLString)
-        var lastError: Error?
+        let endpoints = await endpointOrderForRequest(path: path)
+        guard !endpoints.isEmpty else { throw BridgeError.notConfigured }
 
-        for attempt in 1...maxAttempts {
-            let attemptStarted = Date()
-            bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public) attempt=\(attempt, privacy: .public)")
-            do {
-                let (data, response) = try await session.data(for: request)
-                let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
-                guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
-                if (200...299).contains(http.statusCode) {
-                    bridgeClientLogger.info("response \(path, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
-                    return data
-                }
-                if isTransientGatewayStatus(http.statusCode), attempt < maxAttempts {
-                    bridgeClientLogger.warning("transient bridge gateway status=\(http.statusCode, privacy: .public) path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
-                    try await sleepBeforeRetry(attempt: attempt)
-                    continue
-                }
-                throw BridgeError.server("HTTP \(http.statusCode) \(path) @ \(endpoint)")
-            } catch {
-                let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
-                lastError = error
-                guard attempt < maxAttempts, retryable, shouldRetryNetworkError(error) else { throw error }
-                bridgeClientLogger.warning("transient bridge network error path=\(path, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                try await sleepBeforeRetry(attempt: attempt)
+        let retryable = canRetryRequest(method: method, path: path)
+        var lastError: Error?
+        var lastErrorCanFailover = false
+
+        for (endpointIndex, endpoint) in endpoints.enumerated() {
+            let absolute = endpoint + (path.hasPrefix("/") ? path : "/\(path)")
+            guard let url = URL(string: absolute) else {
+                lastError = BridgeError.invalidBaseURL(endpoint)
+                lastErrorCanFailover = true
+                continue
             }
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            request.timeoutInterval = timeoutInterval(for: path, endpoint: endpoint)
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            applyExternalBaseHeaders(to: &request, baseURL: endpoint)
+            if let requestBody {
+                request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+                request.httpBody = requestBody
+            }
+
+            let maxAttempts = retryable ? 3 : 1
+            let endpointDisplay = BridgeServerEndpoint.display(endpoint)
+            lastErrorCanFailover = false
+
+            for attempt in 1...maxAttempts {
+                let attemptStarted = Date()
+                bridgeClientLogger.info("request \(method, privacy: .public) \(path, privacy: .public) endpoint=\(endpointDisplay, privacy: .public) attempt=\(attempt, privacy: .public)")
+                do {
+                    let (data, response) = try await session.data(for: request)
+                    let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
+                    guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse }
+                    if (200...299).contains(http.statusCode) {
+                        markEndpointSuccess(endpoint)
+                        bridgeClientLogger.info("response \(path, privacy: .public) endpoint=\(endpointDisplay, privacy: .public) status=\(http.statusCode, privacy: .public) bytes=\(data.count, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
+                        return data
+                    }
+                    if isTransientGatewayStatus(http.statusCode) {
+                        lastError = BridgeError.server("HTTP \(http.statusCode) \(path) @ \(endpointDisplay)")
+                        lastErrorCanFailover = true
+                        if attempt < maxAttempts {
+                            bridgeClientLogger.warning("transient bridge gateway status=\(http.statusCode, privacy: .public) path=\(path, privacy: .public) endpoint=\(endpointDisplay, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
+                            try await sleepBeforeRetry(attempt: attempt)
+                            continue
+                        }
+                        break
+                    }
+                    throw BridgeError.server("HTTP \(http.statusCode) \(path) @ \(endpointDisplay)")
+                } catch {
+                    let elapsedMs = Int(Date().timeIntervalSince(attemptStarted) * 1000)
+                    lastError = error
+                    lastErrorCanFailover = shouldRetryNetworkError(error)
+                    guard attempt < maxAttempts, retryable, shouldRetryNetworkError(error) else { break }
+                    bridgeClientLogger.warning("transient bridge network error path=\(path, privacy: .public) endpoint=\(endpointDisplay, privacy: .public) attempt=\(attempt, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    try await sleepBeforeRetry(attempt: attempt)
+                }
+            }
+
+            if lastErrorCanFailover, endpointIndex + 1 < endpoints.count {
+                markEndpointFailure(endpoint, reason: "request_failed")
+                if let lastError {
+                    bridgeClientLogger.warning("bridge endpoint failed path=\(path, privacy: .public) endpoint=\(endpointDisplay, privacy: .public) switchingToNext=true error=\(lastError.localizedDescription, privacy: .public)")
+                }
+                continue
+            }
+
+            if let lastError { throw lastError }
         }
 
         if let lastError { throw lastError }
@@ -1107,8 +1393,8 @@ final class BridgeClient {
         return 18
     }
 
-    private func applyExternalBaseHeaders(to request: inout URLRequest) {
-        guard let components = URLComponents(string: normalizedBaseURL()),
+    private func applyExternalBaseHeaders(to request: inout URLRequest, baseURL: String) {
+        guard let components = URLComponents(string: baseURL),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
               let host = forwardedHostHeader(from: components) else {

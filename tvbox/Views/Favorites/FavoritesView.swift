@@ -64,6 +64,7 @@ struct FavoritesView: View {
         .navigationTitle("收藏")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         #endif
     }
     

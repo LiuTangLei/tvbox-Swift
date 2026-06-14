@@ -836,12 +836,20 @@ class DetailViewModel: ObservableObject {
         cancelPlaybackWatchdog()
         cancelDirectPlaybackProbe()
         isUsingBridgeMediaFallback = true
-        let fallbackPlayback = currentPlayback?.replacingStream(url: fallbackURL, headers: [:], origin: .bridgeFallback)
+        let fallbackHeaders = currentPlayback?.headers.isEmpty == false ? currentPlayback?.headers ?? [:] : playHeaders
+        let fallbackPlayback = currentPlayback?.replacingStream(
+            url: fallbackURL,
+            headers: fallbackHeaders,
+            proxied: true,
+            origin: .bridgeFallback
+        )
             ?? PlayableItem(
                 url: fallbackURL,
+                headers: fallbackHeaders,
                 sourceKey: currentSource?.key,
                 flag: selectedFlag,
                 episodeId: vodInfo?.currentEpisode?.url,
+                proxied: true,
                 origin: .bridgeFallback
             )
         advancePlaybackReloadToken()
@@ -957,15 +965,13 @@ class DetailViewModel: ObservableObject {
         guard !keyword.isEmpty else { return false }
         playbackFallbackMessage = "线路不可用，正在搜索其它站点..."
 
-        let targetName = Self.normalizedAutoMatchText(keyword)
-        guard !targetName.isEmpty else { return false }
+        guard !Self.normalizedAutoMatchText(keyword).isEmpty else { return false }
         let groups = await sourceService.searchGroups(keyword: keyword)
         guard !Task.isCancelled else { return false }
 
         for group in groups where group.source.isChangeable && group.source.isAvailableForPlayback {
             for candidate in group.videos {
-                let candidateName = Self.normalizedAutoMatchText(candidate.name)
-                guard candidateName == targetName else { continue }
+                guard Self.isLikelySameTitle(candidate.name, keyword) else { continue }
                 let siteVideoKey = playbackSiteVideoKey(sourceKey: group.source.key, vodId: candidate.id)
                 guard !failedSiteVideoKeys.contains(siteVideoKey) else { continue }
 
@@ -1000,7 +1006,7 @@ class DetailViewModel: ObservableObject {
         guard !episodes.isEmpty else { return false }
 
         let matchedIndex = episodes.firstIndex {
-            Self.normalizedAutoMatchText($0.name) == Self.normalizedAutoMatchText(previousEpisodeName)
+            Self.isLikelySameEpisodeName($0.name, previousEpisodeName)
         }
         let targetEpisodeIndex = matchedIndex ?? min(max(previousIndex, 0), episodes.count - 1)
         let episodeURL = episodes[targetEpisodeIndex].url
@@ -1189,6 +1195,28 @@ class DetailViewModel: ObservableObject {
             !CharacterSet.symbols.contains(scalar)
         }
         return String(String.UnicodeScalarView(scalars)).lowercased()
+    }
+
+    private static func isLikelySameTitle(_ lhs: String, _ rhs: String) -> Bool {
+        let left = normalizedAutoMatchText(lhs)
+        let right = normalizedAutoMatchText(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        if left == right { return true }
+        let minLength = min(left.count, right.count)
+        let maxLength = max(left.count, right.count)
+        guard minLength >= 2, maxLength > 0 else { return false }
+        let lengthRatio = Double(minLength) / Double(maxLength)
+        return lengthRatio >= 0.65 && (left.contains(right) || right.contains(left))
+    }
+
+    private static func isLikelySameEpisodeName(_ lhs: String, _ rhs: String) -> Bool {
+        let left = normalizedAutoMatchText(lhs)
+        let right = normalizedAutoMatchText(rhs)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        if left == right { return true }
+        let minLength = min(left.count, right.count)
+        guard minLength >= 2 else { return false }
+        return left.contains(right) || right.contains(left)
     }
     
     /// 重置清晰度解析与选择状态。

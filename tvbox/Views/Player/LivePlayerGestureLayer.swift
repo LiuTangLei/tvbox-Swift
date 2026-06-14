@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import UIKit
 
 // MARK: - LivePlayerGestureLayer
 
@@ -14,6 +15,7 @@ struct LivePlayerGestureLayer: View {
     let onTogglePlayPause: () -> Void
     let onToggleControls: () -> Void
     let onVolumeChanged: (CGFloat) -> Void
+    let volumeValue: CGFloat
 
     // MARK: - State
     @State private var gestureMode: LiveGestureMode = .none
@@ -21,6 +23,7 @@ struct LivePlayerGestureLayer: View {
     @State private var dragStartX: CGFloat = 0
     @State private var accumulatedBrightnessDelta: CGFloat = 0
     @State private var accumulatedVolumeDelta: CGFloat = 0
+    @State private var displayedVolume: CGFloat = 0.5
 
     enum LiveGestureMode: Equatable {
         case none
@@ -43,6 +46,12 @@ struct LivePlayerGestureLayer: View {
                     onToggleControls()
                 }
                 .overlay { gestureIndicatorOverlay }
+                .onAppear {
+                    displayedVolume = volumeValue
+                }
+                .onChange(of: volumeValue) { _, newValue in
+                    displayedVolume = newValue
+                }
         }
     }
 
@@ -71,6 +80,7 @@ struct LivePlayerGestureLayer: View {
                 } else {
                     gestureMode = .adjustingVolume(delta: delta)
                     let volumeDelta = delta - accumulatedVolumeDelta
+                    displayedVolume = max(0, min(1, displayedVolume + volumeDelta))
                     onVolumeChanged(volumeDelta)
                     accumulatedVolumeDelta = delta
                 }
@@ -132,7 +142,7 @@ struct LivePlayerGestureLayer: View {
                 .font(.caption)
                 .foregroundColor(.white)
         case .adjustingVolume:
-            Text("音量")
+            Text("\(Int(displayedVolume * 100))%")
                 .font(.caption)
                 .foregroundColor(.white)
         case .none:

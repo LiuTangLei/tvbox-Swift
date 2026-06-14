@@ -15,6 +15,7 @@ struct DetailView: View {
     @StateObject private var sharedSystemController = SystemPlayerSessionController()
     @StateObject private var sharedVLCController = VLCPlayerController()
     @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @State private var showFullScreen = false
     /// VLC 全屏退出动画期间为 true，防止内联播放器与全屏播放器同时争抢 drawable
@@ -86,6 +87,8 @@ struct DetailView: View {
         #endif
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(viewModel.isPlaying ? .hidden : .visible, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
         #endif
         .task(id: "\(video.sourceKey)-\(video.id)") {
             await viewModel.loadDetail(video: video)
@@ -115,6 +118,7 @@ struct DetailView: View {
             if showFullScreen, let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    title: playerDisplayTitle,
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
@@ -154,10 +158,12 @@ struct DetailView: View {
         #if os(iOS)
         .fullScreenCover(isPresented: $showFullScreen, onDismiss: {
             isFullScreenDismissing = false
+            IOSOrientationController.requestPortrait()
         }) {
             if let url = viewModel.playUrl {
                 FullScreenPlayerView(
                     urlString: url,
+                    title: playerDisplayTitle,
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
@@ -240,6 +246,7 @@ struct DetailView: View {
                 Spacer(minLength: 0)
                 PlayerView(
                     urlString: url,
+                    title: playerDisplayTitle,
                     playback: viewModel.currentPlayback,
                     httpHeaders: viewModel.playHeaders,
                     startPosition: viewModel.currentPlaybackSeconds(),
@@ -250,6 +257,9 @@ struct DetailView: View {
                     onPlaybackStarted: handlePlaybackStarted,
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     onPlaybackFailed: handlePlaybackFailure,
+                    onCloseRequested: {
+                        dismiss()
+                    },
                     onToggleFullScreen: {
                         openFullScreenPlayer()
                     },
@@ -626,6 +636,18 @@ struct DetailView: View {
         viewModel.selectedEpisodeIndex + 1 < viewModel.currentEpisodes.count
     }
 
+    private var playerDisplayTitle: String {
+        let seriesTitle = (viewModel.vodInfo?.name.nilIfBlank
+            ?? viewModel.activeVideo?.name.nilIfBlank
+            ?? video.name)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let episodeTitle = (viewModel.vodInfo?.currentEpisode?.name ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !episodeTitle.isEmpty else { return seriesTitle }
+        guard !seriesTitle.isEmpty, episodeTitle != seriesTitle else { return episodeTitle }
+        return "\(seriesTitle) \(episodeTitle)"
+    }
+
     private var shouldShowPlaybackStatus: Bool {
         viewModel.isResolvingBridgePlayback
             || viewModel.isAutoSwitchingPlayback
@@ -779,15 +801,19 @@ struct DetailView: View {
         lastNetworkPlaybackReconnectAt = now
         pendingNetworkPlaybackReconnectTask?.cancel()
         viewModel.commitPlaybackProgressSnapshot()
-        stopSharedPlayers()
-        viewModel.reconnectCurrentPlaybackAfterNetworkPathChange()
+        let baseline = viewModel.currentPlaybackSeconds()
         pendingNetworkPlaybackReconnectTask = Task { @MainActor in
             defer { pendingNetworkPlaybackReconnectTask = nil }
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
             guard !Task.isCancelled,
-                  viewModel.isAwaitingNetworkPlaybackReconnect,
                   viewModel.isPlaying,
                   viewModel.playUrl != nil else {
+                return
+            }
+            let current = viewModel.currentPlaybackSeconds()
+            guard baseline.isFinite,
+                  current.isFinite,
+                  current <= baseline + 0.75 else {
                 return
             }
             viewModel.commitPlaybackProgressSnapshot()
@@ -865,6 +891,8 @@ struct DetailView: View {
     
     private func openFullScreenPlayer() {
         #if os(iOS)
+        guard viewModel.playUrl != nil, !showFullScreen else { return }
+        isFullScreenDismissing = false
         showFullScreen = true
         #else
         guard viewModel.playUrl != nil else { return }
@@ -1747,6 +1775,7 @@ private func makeBridgeLoginConfiguration() -> WKWebViewConfiguration {
 /// 全屏播放器
 struct FullScreenPlayerView: View {
     let urlString: String
+    var title: String = ""
     var playback: PlayableItem? = nil
     var httpHeaders: [String: String] = [:]
     var startPosition: Double = 0
@@ -1765,7 +1794,8 @@ struct FullScreenPlayerView: View {
     var onCloseRequested: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     #if os(iOS)
-    @State private var requestedVideoOrientation: Bool?
+    @State private var contentRotationFallback = false
+    @State private var fallbackRotationTask: Task<Void, Never>?
     #endif
     
     var body: some View {
@@ -1777,6 +1807,7 @@ struct FullScreenPlayerView: View {
 
                 PlayerView(
                     urlString: urlString,
+                    title: title,
                     playback: playback,
                     httpHeaders: httpHeaders,
                     startPosition: startPosition,
@@ -1787,17 +1818,19 @@ struct FullScreenPlayerView: View {
                     onPlaybackStarted: onPlaybackStarted,
                     onPlaybackEnded: onPlaybackEnded,
                     onPlaybackFailed: onPlaybackFailed,
-                    onToggleFullScreen: {
+                    onCloseRequested: {
                         if let onCloseRequested {
                             onCloseRequested()
                         } else {
                             dismiss()
                         }
                     },
-                    onVideoOrientationChanged: { isLandscape in
-                        #if os(iOS)
-                        applyFullScreenOrientation(for: isLandscape)
-                        #endif
+                    onToggleFullScreen: {
+                        if let onCloseRequested {
+                            onCloseRequested()
+                        } else {
+                            dismiss()
+                        }
                     },
                     isFullscreen: true,
                     canPlayNext: canPlayNext,
@@ -1813,9 +1846,23 @@ struct FullScreenPlayerView: View {
                 .rotationEffect(.degrees(shouldRotatePlayerContent ? 90 : 0))
                 .background(Color.black)
                 .frame(width: proxy.size.width, height: proxy.size.height)
-                .animation(.easeInOut(duration: 0.25), value: shouldRotatePlayerContent)
+                .animation(.none, value: shouldRotatePlayerContent)
+                #if os(iOS)
+                .onChange(of: proxy.size) { _, size in
+                    if size.width > size.height {
+                        contentRotationFallback = false
+                    }
+                }
+                #endif
             }
             .ignoresSafeArea()
+
+            #if os(iOS)
+            if contentRotationFallback {
+                fallbackCloseHitTarget
+                    .zIndex(20)
+            }
+            #endif
 
             #if !os(iOS)
             VStack {
@@ -1840,26 +1887,63 @@ struct FullScreenPlayerView: View {
         }
         #if os(iOS)
         .statusBar(hidden: true)
+        .onAppear {
+            requestLandscapeForFullScreen()
+        }
         .onDisappear {
-            requestedVideoOrientation = nil
+            fallbackRotationTask?.cancel()
+            fallbackRotationTask = nil
+            contentRotationFallback = false
         }
         #endif
     }
 
     #if os(iOS)
-    private func applyFullScreenOrientation(for isLandscape: Bool?) {
-        guard let isLandscape else { return }
-        guard requestedVideoOrientation != isLandscape else { return }
-        requestedVideoOrientation = isLandscape
+    private func requestLandscapeForFullScreen() {
+        fallbackRotationTask?.cancel()
+        contentRotationFallback = false
+        IOSOrientationController.requestLandscape()
+        fallbackRotationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled, !IOSOrientationController.isLandscapeActive else { return }
+            contentRotationFallback = true
+        }
     }
 
+    private func shouldRotatePlayerContent(in size: CGSize) -> Bool {
+        contentRotationFallback && size.height > size.width
+    }
+
+    private var fallbackCloseHitTarget: some View {
+        VStack {
+            HStack {
+                Button {
+                    closeFullScreen()
+                } label: {
+                    Color.clear
+                        .frame(width: 72, height: 72)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHidden(true)
+
+                Spacer(minLength: 0)
+            }
+            Spacer(minLength: 0)
+        }
+        .ignoresSafeArea()
+    }
+    #else
+    private func shouldRotatePlayerContent(in size: CGSize) -> Bool {
+        false
+    }
     #endif
 
-    private func shouldRotatePlayerContent(in size: CGSize) -> Bool {
-        #if os(iOS)
-        requestedVideoOrientation == true && size.height > size.width
-        #else
-        false
-        #endif
+    private func closeFullScreen() {
+        if let onCloseRequested {
+            onCloseRequested()
+        } else {
+            dismiss()
+        }
     }
 }

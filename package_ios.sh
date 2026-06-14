@@ -194,7 +194,7 @@ while [ $# -gt 0 ]; do
 done
 
 echo "清理旧的 iOS 打包产物..."
-rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH" "$STAGING_DIR"
+rm -rf "$DERIVED_DATA_PATH" "$ARCHIVE_PATH" "$EXPORT_PATH" "$STAGING_DIR"
 rm -f "$OUTPUT_IPA"
 
 regenerate_project_if_possible

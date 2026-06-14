@@ -60,6 +60,9 @@ struct HomeView: View {
             guard oldValue != newValue else { return }
             Task { await viewModel.resetAndReload() }
         }
+        #if os(iOS)
+        .toolbar(viewModel.isInFolder ? .hidden : .visible, for: .tabBar)
+        #endif
     }
 
     // MARK: - 顶部栏（源选择器）
